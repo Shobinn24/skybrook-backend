@@ -1,32 +1,77 @@
 # Skybrook
 
-Internal ops dashboard for Everdries. v1 MVP scope: pull inventory from Google Sheets, pull sales from Shopify, output weeks of stock + sustainability report.
+Internal operations dashboard for Everdries. Consolidates inventory and sales data into a single daily-refreshing view.
 
-- Owner spec: `../SPEC.md`
-- Engineering design: `../2026-04-22-skybrook-inventory-design.pdf`
-- Implementation plan: `../2026-04-22-inventory-implementation-plan.md`
-- Open questions + decisions log: `../QUESTIONS.md`
+**v1 MVP scope:**
+- Pull inventory from the Everdries daily inventory Google Sheet
+- Pull sales data from Shopify (Reports API)
+- Output **weeks of stock** per SKU per location (US / CN)
+- Output a **sustainability report** — flags SKUs at risk of stocking out before the next PO arrives, using a projection-based algorithm that walks forward through upcoming incoming shipments
+
+Planning artifacts (spec, design doc, implementation plan, open questions) are maintained outside this repo by the project owner.
+
+## Stack
+
+- Next.js 15 (App Router) + TypeScript
+- Postgres + Drizzle ORM
+- tRPC + Zod for the API layer
+- Tailwind CSS + shadcn/ui patterns
+- Vitest for unit and integration tests
+- Deployed on Railway (app + Postgres + Cron)
 
 ## Local dev
 
-Prereqs: Node 20+, pnpm (via `corepack enable pnpm`), Postgres running locally.
+Prereqs: Node 20+, pnpm (`corepack enable pnpm`), Postgres 14 or newer running locally.
 
 ```bash
 pnpm install
 cp .env.example .env
-# Edit .env with local DATABASE_URL, APP_PASSWORD, etc.
+# Edit .env with local DATABASE_URL, APP_PASSWORD, Google service account JSON,
+# Shopify access tokens, etc.
 pnpm db:migrate
 pnpm dev
 ```
 
-## Test
+Open http://localhost:3000 — you'll be redirected to `/inventory`.
+
+## Tests
 
 ```bash
-pnpm test
+pnpm test          # unit + integration, requires local Postgres
+pnpm test:watch    # watch mode
+pnpm typecheck     # strict TS check
+pnpm build         # production build
 ```
 
-## Data pipeline (MVP)
+## Data pipeline
 
-- Daily cron fires `/api/cron/ingest` at 10am EST.
-- Pulls inventory from the Everdries Google Sheet and sales from Shopify.
-- Phase 2 computes sales velocity, days of stock, and sustainability flags.
+- **Phase 1 (ingest):** daily cron hits `/api/cron/ingest` at 10am EST. Pulls are failure-isolated — one source going down doesn't block the others.
+  - `sheets_inventory` — daily stock levels per SKU per location from the Everdries inventory sheet
+  - `sheets_incoming` — incoming PO quantities + ETAs from the incoming stock sheet
+  - `shopify_us` / `shopify_intl` — sales data from both Shopify stores via the Reports API
+- **Phase 2 (derive):** computes sales velocity (3d / 7d / 30d), days of stock, and sustainability flags. Runs after Phase 1 completes.
+
+## Auth (MVP)
+
+Shared-password gate. Set `APP_PASSWORD` in the environment; users enter it once and get a signed session cookie. Per-user auth comes later.
+
+## Project structure
+
+```
+app/                  Next.js App Router (pages + API routes + cron endpoint)
+components/           Shared React components (shell, inventory, sustainability, trace)
+lib/
+  db/                 Drizzle schema + client
+  domain/             Pure business logic (velocity, days-of-stock, sustainability, routing)
+  sources/            Per-source ingestion (sheets, shopify)
+  jobs/               Phase 1 (ingest) and Phase 2 (derive) orchestrators
+  queries/            Reusable DB query functions, also the tRPC procedure bodies
+  trpc/               tRPC server + routers + client
+  auth.ts             Password-gate helper
+  tz.ts               EST day-boundary helpers
+config/
+  thresholds.ts       Sustainability + velocity knobs
+tests/
+  unit/               Domain logic tests
+  integration/        Full pipeline tests against a seeded Postgres
+```
