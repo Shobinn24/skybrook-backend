@@ -1,0 +1,10 @@
+node_modules
+.next
+.env
+.env.local
+.env*.local
+*.log
+.DS_Store
+drizzle/.snapshot.json
+coverage
+next-env.d.ts
