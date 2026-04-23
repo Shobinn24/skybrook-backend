@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { runPhase2 } from "@/lib/jobs/reconcile";
+import { sheetsInventoryRunner } from "@/lib/sources/sheets";
 import { shopifyIntlRunner, shopifyUsRunner } from "@/lib/sources/shopify";
 import { toEstDate } from "@/lib/tz";
 import { logger } from "@/lib/logger";
@@ -9,9 +10,8 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
-// Sources to run on each scheduled tick. Sheets runners will land here when
-// Task 11 is unblocked (Scott provides service account + tab names).
 const SOURCES: Partial<Record<SourceKey, SourceRunner>> = {
+  sheets_inventory: sheetsInventoryRunner,
   shopify_us: shopifyUsRunner,
   shopify_intl: shopifyIntlRunner,
 };
