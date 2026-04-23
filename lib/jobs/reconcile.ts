@@ -130,7 +130,8 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
           location,
           asOfDate: input.asOfDate,
           velocityWindowDays: DOS_WINDOW,
-          daysOfStock: String(dos === Infinity ? Number.MAX_SAFE_INTEGER : dos),
+          // Sentinel for "no demand" — column is numeric(12,2), max ~10^10.
+          daysOfStock: String(dos === Infinity ? 99999999.99 : dos),
           sourceRefs: { snapshotDate: curr.snapshotDate, velocityWindowDays: DOS_WINDOW },
         })
         .onConflictDoUpdate({
