@@ -38,9 +38,15 @@ export function computeSustainabilityFlag(input: {
   const totalIncoming = input.incoming.reduce((n, p) => n + p.quantity, 0);
   const reasoning = `on_hand=${input.onHand}, velocity=${input.velocityPerDay.toFixed(2)}/day, dos=${dosDisplay}, incoming=${totalIncoming} units over ${input.incoming.length} POs`;
 
-  // Overstock check (takes priority). DOS of Infinity with positive stock = no demand → overstocked.
-  if (dos === Infinity || dos > thresholds.overstockDays) {
-    return { flag: "overstocked", reasoning, daysOfStock: dos === Infinity ? Number.MAX_SAFE_INTEGER : dos, runOutDate: null };
+  // No demand → flag as overstocked regardless of current stock. Projection
+  // would divide by zero. Covers both (onHand>0, velocity=0) which gives
+  // dos=Infinity and (onHand=0, velocity=0) which gives dos=0 — neither makes
+  // sense to project forward through POs.
+  if (input.velocityPerDay <= 0) {
+    return { flag: "overstocked", reasoning, daysOfStock: Number.MAX_SAFE_INTEGER, runOutDate: null };
+  }
+  if (dos > thresholds.overstockDays) {
+    return { flag: "overstocked", reasoning, daysOfStock: dos, runOutDate: null };
   }
 
   // Upcoming POs only (skip any in the past).
