@@ -8,7 +8,7 @@ Internal operations dashboard for Everdries. Consolidates inventory and sales da
 - Output **weeks of stock** per SKU per location (US / CN)
 - Output a **sustainability report** — flags SKUs at risk of stocking out before the next PO arrives, using a projection-based algorithm that walks forward through upcoming incoming shipments
 
-Planning artifacts (spec, design doc, implementation plan, open questions) are maintained outside this repo by the project owner.
+Planning artifacts (spec, design doc, implementation plan, open questions) are maintained outside this repo by the project owner. Engineering-facing metric definitions live in [`docs/metric-definitions.md`](docs/metric-definitions.md).
 
 ## Stack
 
@@ -45,11 +45,11 @@ pnpm build         # production build
 
 ## Data pipeline
 
-- **Phase 1 (ingest):** daily cron hits `/api/cron/ingest` at 10am EST. Pulls are failure-isolated — one source going down doesn't block the others.
-  - `sheets_inventory` — daily stock levels per SKU per location from the Everdries inventory sheet
-  - `sheets_incoming` — incoming PO quantities + ETAs from the incoming stock sheet
-  - `shopify_us` / `shopify_intl` — sales data from both Shopify stores via the Reports API
-- **Phase 2 (derive):** computes sales velocity (3d / 7d / 30d), days of stock, and sustainability flags. Runs after Phase 1 completes.
+- **Phase 1 (ingest):** daily cron POSTs `/api/cron/ingest` at 10am EST with `Authorization: Bearer $CRON_SECRET`. Pulls are failure-isolated — one source going down doesn't block the others.
+  - `sheets_inventory` — daily stock levels per SKU per location (awaiting Scott's service-account credentials)
+  - `sheets_incoming` — incoming PO quantities + ETAs (same sheet suite)
+  - `shopify_us` / `shopify_intl` — sales data from both Shopify stores via the Reports API (`read_reports` scope only)
+- **Phase 2 (derive):** computes sales velocity (3d / 7d / 30d), days of stock, weeks of stock, and sustainability flags. Runs after Phase 1 completes. Always runs; per-SKU rows with missing inputs are skipped and logged.
 
 ## Auth (MVP)
 
