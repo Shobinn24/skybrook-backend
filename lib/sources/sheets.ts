@@ -2,9 +2,32 @@ import { createHash } from "node:crypto";
 import { google, type sheets_v4 } from "googleapis";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { skus, stockSnapshots } from "@/lib/db/schema";
+import { incomingShipments, skus, stockSnapshots } from "@/lib/db/schema";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { toEstDate } from "@/lib/tz";
+
+const INCOMING_TAB = "Incoming_new";
+
+function buildSheetsClient() {
+  const scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"];
+  const jsonContent = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
+  const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+  if (jsonContent) {
+    return google.sheets({
+      version: "v4",
+      auth: new google.auth.GoogleAuth({ credentials: JSON.parse(jsonContent), scopes }),
+    });
+  }
+  if (keyFile) {
+    return google.sheets({
+      version: "v4",
+      auth: new google.auth.GoogleAuth({ keyFile, scopes }),
+    });
+  }
+  throw new Error(
+    "sheets: set GOOGLE_APPLICATION_CREDENTIALS (file path) or GOOGLE_SERVICE_ACCOUNT_JSON (content)"
+  );
+}
 
 // 6 inventory tabs in the New Daily Inventory Log: 3 brands × 2 warehouses.
 // Tab names confirmed by Scott 2026-04-23.
@@ -220,21 +243,7 @@ export const sheetsInventoryRunner: SourceRunner = async (_batchId) => {
   const sheetId = process.env.INVENTORY_SHEET_ID;
   if (!sheetId) throw new Error("sheets_inventory: missing INVENTORY_SHEET_ID");
 
-  const scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"];
-  const jsonContent = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
-  const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
-  let auth;
-  if (jsonContent) {
-    auth = new google.auth.GoogleAuth({ credentials: JSON.parse(jsonContent), scopes });
-  } else if (keyFile) {
-    auth = new google.auth.GoogleAuth({ keyFile, scopes });
-  } else {
-    throw new Error(
-      "sheets_inventory: set GOOGLE_APPLICATION_CREDENTIALS (file path) or GOOGLE_SERVICE_ACCOUNT_JSON (content)"
-    );
-  }
-  const sheets = google.sheets({ version: "v4", auth });
-
+  const sheets = buildSheetsClient();
   const todayYmd = toEstDate(new Date());
 
   const { snapshots, headerSummary } = await fetchInventorySnapshots({
@@ -299,6 +308,181 @@ export const sheetsInventoryRunner: SourceRunner = async (_batchId) => {
             });
         }
       }
+    },
+  };
+};
+
+// ============================================================================
+// Incoming POs (sheet `Incoming_new` in the Monthly Secondary Order spreadsheet)
+//
+// Layout — horizontally pivoted, one column per PO:
+//   Row 1 (idx 0): warehouse banner. Merged cells; only first cell has value.
+//                  E.g. "US" at col F (idx 5), "INTL" at col R (idx 17).
+//   Row 2 (idx 1): month grouping (JANUARY/FEBRUARY/etc).
+//   Row 3 (idx 2): PO label per column (e.g. "KAI Sec Mar26", "KAI 23").
+//   Row 4 (idx 3): ESTIMATED ARRIVAL date per column. Freeform —
+//                  "17 Mar 2026" / "9K - 17 Mar 2026\nRest - 24 Apr 2026" /
+//                  "28 Feb, 5,13,17,17,18 Mar\n3,17 Apr" (partial year, skip).
+//   Row 5 (idx 4): Total qty.
+//   Row 6 (idx 5): "Product / SKU Breakdown / ok" header.
+//   Rows 7+ (idx 6+): SKU rows. Col A = product family (or empty for continuation),
+//                     col C = SKU, col D+ = per-PO qty.
+// ============================================================================
+
+// Extract every "DD Mon YYYY" pattern from a freeform arrival cell.
+// Returns ISO YYYY-MM-DD strings, in cell order.
+export function extractArrivalDates(cell: unknown): string[] {
+  const s = String(cell ?? "");
+  const out: string[] = [];
+  const re = /(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    const day = Number(m[1]);
+    const month = MONTHS[m[2].toLowerCase()];
+    const year = Number(m[3]);
+    if (!month || day < 1 || day > 31) continue;
+    out.push(`${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`);
+  }
+  return out;
+}
+
+// Pick the LATEST arrival date for projection — most pessimistic ETA.
+// Returns null if no valid date in the cell.
+export function pickArrivalDate(cell: unknown): string | null {
+  const dates = extractArrivalDates(cell);
+  if (dates.length === 0) return null;
+  return dates.reduce((a, b) => (a > b ? a : b));
+}
+
+// Find the column index where INTL POs begin. Anything to the left is US.
+// Returns Infinity if no INTL banner — implies all columns are US.
+export function findIntlBoundary(banner: ReadonlyArray<unknown>): number {
+  for (let i = 0; i < banner.length; i++) {
+    const v = String(banner[i] ?? "").trim().toUpperCase();
+    if (v === "INTL" || v === "INTERNATIONAL") return i;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+export type IncomingShipment = {
+  sku: string;
+  destination: "US" | "CN";
+  shipmentName: string;
+  quantity: number;
+  expectedArrival: string;
+  status: "po" | "arrived";
+  sourceRowRef: string;
+};
+
+export type ParseIncomingResult = {
+  rows: IncomingShipment[];
+  poColumns: Array<{ colIdx: number; label: string; date: string | null; destination: "US" | "CN" }>;
+  skippedColumns: Array<{ colIdx: number; label: string; reason: string }>;
+};
+
+// Pure parser — takes the raw grid and produces incoming-shipment rows.
+// `todayYmd` decides which POs are 'arrived' vs still 'po'.
+export function parseIncomingGrid(grid: unknown[][], todayYmd: string): ParseIncomingResult {
+  const SKU_DATA_START_ROW = 6; // 0-indexed; sheet row 7 is first SKU
+  const banner = grid[0] ?? [];
+  const labelRow = grid[2] ?? [];
+  const arrivalRow = grid[3] ?? [];
+
+  const intlBoundary = findIntlBoundary(banner);
+  const poColumns: ParseIncomingResult["poColumns"] = [];
+  const skippedColumns: ParseIncomingResult["skippedColumns"] = [];
+
+  for (let c = 0; c < labelRow.length; c++) {
+    const label = String(labelRow[c] ?? "").trim();
+    if (!label) continue;
+    // Scott uses INTL in the sheet but Skybrook routes only US/CN. INTL → CN.
+    const destination: "US" | "CN" = c >= intlBoundary ? "CN" : "US";
+    const date = pickArrivalDate(arrivalRow[c]);
+    if (!date) {
+      skippedColumns.push({
+        colIdx: c,
+        label,
+        reason: `unparseable arrival cell: ${String(arrivalRow[c] ?? "(empty)").slice(0, 60)}`,
+      });
+      continue;
+    }
+    poColumns.push({ colIdx: c, label, date, destination });
+  }
+
+  const rows: IncomingShipment[] = [];
+  for (let r = SKU_DATA_START_ROW; r < grid.length; r++) {
+    const row = grid[r] ?? [];
+    const sku = String(row[2] ?? "").trim(); // col C
+    if (!sku) continue;
+    for (const po of poColumns) {
+      const qty = parseQty(row[po.colIdx]);
+      if (qty === null || qty <= 0) continue;
+      rows.push({
+        sku,
+        destination: po.destination,
+        shipmentName: po.label,
+        quantity: qty,
+        expectedArrival: po.date!,
+        status: po.date! < todayYmd ? "arrived" : "po",
+        sourceRowRef: `${INCOMING_TAB}!${colIndexToA1(po.colIdx)}${r + 1}`,
+      });
+    }
+  }
+
+  return { rows, poColumns, skippedColumns };
+}
+
+export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
+  const sheetId = process.env.INCOMING_PO_SHEET_ID;
+  if (!sheetId) throw new Error("sheets_incoming: missing INCOMING_PO_SHEET_ID");
+
+  const sheets = buildSheetsClient();
+  const todayYmd = toEstDate(new Date());
+
+  // Read the full Incoming_new tab — bounded (~325 rows × ~35 cols), one round trip.
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `'${INCOMING_TAB}'!A1:AG400`,
+  });
+  const grid = (resp.data.values ?? []) as unknown[][];
+
+  const { rows, poColumns, skippedColumns } = parseIncomingGrid(grid, todayYmd);
+
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify({ poCount: poColumns.length, intlBoundary: findIntlBoundary(grid[0] ?? []) }))
+    .digest("hex")
+    .slice(0, 16);
+
+  return {
+    ok: true,
+    rowCount: rows.length,
+    rawPayload: {
+      poColumns: poColumns.map(({ colIdx, label, date, destination }) => ({ colIdx, label, date, destination })),
+      skippedColumns,
+      sample: rows.slice(0, 5),
+    },
+    schemaFingerprint: fingerprint,
+    async normalize(rawId) {
+      // Sheet is the canonical (and only) source of incoming POs in MVP.
+      // Truncate-replace per pull keeps state in sync without needing a unique
+      // constraint on (sku, shipmentName, expectedArrival, destination). When
+      // a second source lands later, switch to delete-by-source-id.
+      await db.transaction(async (tx) => {
+        await tx.delete(incomingShipments);
+        if (rows.length === 0) return;
+        for (const row of rows) {
+          await tx.insert(incomingShipments).values({
+            sku: row.sku,
+            destination: row.destination,
+            shipmentName: row.shipmentName,
+            quantity: row.quantity,
+            expectedArrival: row.expectedArrival,
+            status: row.status,
+            sourcePullId: rawId,
+            sourceRowRef: row.sourceRowRef,
+          });
+        }
+      });
     },
   };
 };

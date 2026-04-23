@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   colIndexToA1,
+  extractArrivalDates,
+  findIntlBoundary,
   parseDayMonth,
+  parseIncomingGrid,
   parseQty,
+  pickArrivalDate,
   pickLatestColumn,
   walkDateHeaders,
 } from "@/lib/sources/sheets";
@@ -155,5 +159,149 @@ describe("parseQty", () => {
   it("preserves negative values (data error in sheet, surface upstream)", () => {
     expect(parseQty(-5)).toBe(-5);
     expect(parseQty("-12")).toBe(-12);
+  });
+});
+
+describe("extractArrivalDates", () => {
+  it("extracts a single DD Mon YYYY date", () => {
+    expect(extractArrivalDates("17 Mar 2026")).toEqual(["2026-03-17"]);
+  });
+  it("extracts multiple dates from compound cells", () => {
+    expect(extractArrivalDates("9K - 17 Mar 2026\nRest - 24 Apr 2026")).toEqual([
+      "2026-03-17",
+      "2026-04-24",
+    ]);
+  });
+  it("returns empty array when no full DD Mon YYYY pattern exists", () => {
+    expect(extractArrivalDates("28 Feb, 5,13,17,17,18 Mar\n3,17 Apr")).toEqual([]);
+    expect(extractArrivalDates("")).toEqual([]);
+    expect(extractArrivalDates(null)).toEqual([]);
+  });
+  it("handles 4-letter month names (Sept)", () => {
+    expect(extractArrivalDates("12 Sept 2026")).toEqual(["2026-09-12"]);
+  });
+});
+
+describe("pickArrivalDate", () => {
+  it("picks the LATEST date as the pessimistic ETA", () => {
+    expect(pickArrivalDate("9K - 17 Mar 2026\nRest - 24 Apr 2026")).toBe("2026-04-24");
+  });
+  it("returns the only date when there's just one", () => {
+    expect(pickArrivalDate("17 Mar 2026")).toBe("2026-03-17");
+  });
+  it("returns null when no date is present", () => {
+    expect(pickArrivalDate("")).toBeNull();
+    expect(pickArrivalDate("28 Feb, 5,13 Mar")).toBeNull();
+  });
+});
+
+describe("findIntlBoundary", () => {
+  it("returns the column index of the INTL banner", () => {
+    expect(findIntlBoundary(["", "", "", "", "", "US", "", "", "", "", "", "INTL"])).toBe(11);
+  });
+  it("accepts INTERNATIONAL as a synonym", () => {
+    expect(findIntlBoundary(["US", "", "INTERNATIONAL"])).toBe(2);
+  });
+  it("is case-insensitive and tolerates whitespace", () => {
+    expect(findIntlBoundary(["", " intl "])).toBe(1);
+  });
+  it("returns Infinity when no INTL banner — implies all US", () => {
+    expect(findIntlBoundary(["", "US", ""])).toBe(Number.POSITIVE_INFINITY);
+    expect(findIntlBoundary([])).toBe(Number.POSITIVE_INFINITY);
+  });
+});
+
+describe("parseIncomingGrid", () => {
+  // Minimal Incoming_new fixture: 2 PO columns (one US, one INTL → CN) and 2 SKU rows.
+  function makeGrid(): unknown[][] {
+    const grid: unknown[][] = Array.from({ length: 8 }, () => []);
+    // row 1 banner — US at col 3, INTL at col 5
+    grid[0][3] = "US";
+    grid[0][5] = "INTL";
+    // row 2 month grouping — not used by parser
+    // row 3 PO labels
+    grid[2][3] = "KAI Sec Mar26";
+    grid[2][5] = "KAI Sec Apr26";
+    // row 4 arrival dates
+    grid[3][3] = "17 Mar 2026"; // past — should mark as 'arrived'
+    grid[3][5] = "10 May 2026"; // future
+    // row 5 totals — not used by parser
+    // row 6 column headers — not used by parser
+    // rows 7+ SKU data
+    grid[6][2] = "ev-9055-5x-m";
+    grid[6][3] = "2520";
+    grid[6][5] = "1000";
+    grid[7][2] = "ev-9055-5x-l";
+    grid[7][3] = "0"; // skip — qty 0
+    grid[7][5] = "500";
+    return grid;
+  }
+
+  it("emits one row per (sku, PO with positive qty)", () => {
+    const out = parseIncomingGrid(makeGrid(), "2026-04-23");
+    expect(out.rows).toEqual([
+      {
+        sku: "ev-9055-5x-m",
+        destination: "US",
+        shipmentName: "KAI Sec Mar26",
+        quantity: 2520,
+        expectedArrival: "2026-03-17",
+        status: "arrived",
+        sourceRowRef: "Incoming_new!D7",
+      },
+      {
+        sku: "ev-9055-5x-m",
+        destination: "CN",
+        shipmentName: "KAI Sec Apr26",
+        quantity: 1000,
+        expectedArrival: "2026-05-10",
+        status: "po",
+        sourceRowRef: "Incoming_new!F7",
+      },
+      {
+        sku: "ev-9055-5x-l",
+        destination: "CN",
+        shipmentName: "KAI Sec Apr26",
+        quantity: 500,
+        expectedArrival: "2026-05-10",
+        status: "po",
+        sourceRowRef: "Incoming_new!F8",
+      },
+    ]);
+  });
+
+  it("skips PO columns with unparseable arrival dates and reports them", () => {
+    const grid = makeGrid();
+    grid[3][3] = "TBD"; // unparseable
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    expect(out.skippedColumns).toEqual([
+      { colIdx: 3, label: "KAI Sec Mar26", reason: expect.stringContaining("TBD") },
+    ]);
+    // Only the INTL/CN PO survives
+    expect(out.rows.every((r) => r.destination === "CN")).toBe(true);
+  });
+
+  it("treats columns left of INTL boundary as US", () => {
+    const grid = makeGrid();
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    expect(out.poColumns).toEqual([
+      { colIdx: 3, label: "KAI Sec Mar26", date: "2026-03-17", destination: "US" },
+      { colIdx: 5, label: "KAI Sec Apr26", date: "2026-05-10", destination: "CN" },
+    ]);
+  });
+
+  it("treats every column as US when no INTL banner present", () => {
+    const grid = makeGrid();
+    grid[0][5] = ""; // remove INTL banner
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    expect(out.poColumns.map((p) => p.destination)).toEqual(["US", "US"]);
+  });
+
+  it("returns empty rows when no SKUs match", () => {
+    const grid = makeGrid();
+    grid[6][2] = ""; // blank SKU
+    grid[7][2] = "";
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    expect(out.rows).toEqual([]);
   });
 });
