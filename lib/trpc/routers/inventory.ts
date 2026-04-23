@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { daysOfStock, salesVelocity, sustainabilityFlags } from "@/lib/db/schema";
 import { getIncomingStock } from "@/lib/queries/incoming";
+import { getInventoryRows } from "@/lib/queries/inventory";
 import { getStockLevels, getStockValue } from "@/lib/queries/stock";
 import { publicProcedure, router } from "@/lib/trpc/server";
 
@@ -13,6 +14,12 @@ const velocityWindowSchema = z
   .refine((n) => [3, 7, 30].includes(n), "windowDays must be 3, 7, or 30");
 
 export const inventoryRouter = router({
+  // One-shot view for the inventory page — returns rows with stock, velocity,
+  // DOS, weeks of stock, flag, incoming units, and stock value per SKU.
+  getInventoryRows: publicProcedure
+    .input(z.object({ location: locationSchema }))
+    .query(({ input }) => getInventoryRows(input.location)),
+
   getStockLevels: publicProcedure
     .input(z.object({ sku: z.string().optional(), location: locationSchema.optional() }).optional())
     .query(({ input }) => getStockLevels(input ?? {})),
