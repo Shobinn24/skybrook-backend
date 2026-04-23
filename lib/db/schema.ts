@@ -88,6 +88,22 @@ export const salesLineItems = pgTable(
   (t) => ({ unq: uniqueIndex("sales_line_items_channel_src_uq").on(t.channel, t.sourceLineId) })
 );
 
+// Aggregated daily sales per SKU per channel — output of the Shopify Reports API via ShopifyQL.
+// Scope `read_reports` returns this shape; order-level detail (line items) would require
+// `read_all_orders` which Scott opted not to grant.
+export const dailySales = pgTable(
+  "daily_sales",
+  {
+    channel: channelEnum("channel").notNull(),
+    sku: text("sku").notNull(),
+    salesDate: date("sales_date").notNull(),
+    unitsSold: integer("units_sold").notNull(),
+    netSalesUsd: numeric("net_sales_usd", { precision: 14, scale: 4 }).notNull().default("0"),
+    sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.channel, t.sku, t.salesDate] }) })
+);
+
 // --- Derived layer ---
 export const salesVelocity = pgTable(
   "sales_velocity",
