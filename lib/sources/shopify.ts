@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { dailySales } from "@/lib/db/schema";
 import type { SourceRunner } from "@/lib/jobs/ingest";
+import { getShopifyAccessToken } from "@/lib/sources/shopify-auth";
 
 // Shopify Admin GraphQL API version — bump when needed.
 const API_VERSION = "2025-01";
@@ -126,12 +127,11 @@ function makeRunner(channel: Channel): SourceRunner {
   return async (_batchId) => {
     const store =
       channel === "shopify_us" ? process.env.SHOPIFY_US_STORE : process.env.SHOPIFY_INTL_STORE;
-    const token =
-      channel === "shopify_us"
-        ? process.env.SHOPIFY_US_ACCESS_TOKEN
-        : process.env.SHOPIFY_INTL_ACCESS_TOKEN;
     if (!store) throw new Error(`${channel}: missing store URL`);
-    if (!token) throw new Error(`${channel}: missing access token`);
+
+    // Per-store OAuth access token (24h TTL, fetched + cached on demand).
+    // SHOPIFY_API_KEY + SHOPIFY_API_SECRET are read inside getShopifyAccessToken.
+    const token = await getShopifyAccessToken(store);
 
     // Backfill from 2026-03-01 per SPEC §13. Until = today (EST).
     const today = new Date().toISOString().slice(0, 10);
