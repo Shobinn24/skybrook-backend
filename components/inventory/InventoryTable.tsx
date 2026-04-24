@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import { FlagPill } from "./FlagPill";
+import { TracedNumber } from "@/components/trace/TracedNumber";
 import type { Warehouse } from "./WarehouseToggle";
 import type { InventoryRow } from "@/lib/queries/inventory";
 
@@ -158,21 +159,39 @@ export function InventoryTable({
               <tr key={`${r.sku}-${r.location}`} className="border-t border-neutral-100">
                 <td className="whitespace-nowrap px-4 py-2 font-mono text-xs">{r.sku}</td>
                 <td className="px-4 py-2">{r.productName}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{r.onHand.toLocaleString()}</td>
+                <td className="px-4 py-2 text-right tabular-nums">
+                  <TracedNumber trace={r.trace.onHand}>{r.onHand.toLocaleString()}</TracedNumber>
+                </td>
                 <td className="px-4 py-2 text-right tabular-nums text-neutral-600">
-                  {r.incomingUnits.toLocaleString()}
+                  <TracedNumber trace={r.trace.incoming}>
+                    {r.incomingUnits.toLocaleString()}
+                  </TracedNumber>
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums">
-                  {r.velocityPerDay7d !== null ? r.velocityPerDay7d.toFixed(2) : "—"}
+                  {r.velocityPerDay7d !== null ? (
+                    <TracedNumber trace={r.trace.velocity}>
+                      {r.velocityPerDay7d.toFixed(2)}
+                    </TracedNumber>
+                  ) : (
+                    "—"
+                  )}
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums">
-                  {weeksDisplay(r.weeksOfStock)}
+                  {r.trace.weeksOfStock ? (
+                    <TracedNumber trace={r.trace.weeksOfStock}>
+                      {weeksDisplay(r.weeksOfStock)}
+                    </TracedNumber>
+                  ) : (
+                    weeksDisplay(r.weeksOfStock)
+                  )}
                 </td>
                 <td className="px-4 py-2">
                   <FlagPill flag={r.flag} />
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums">
-                  {moneyDisplay(r.stockValueUsd)}
+                  <TracedNumber trace={r.trace.stockValue}>
+                    {moneyDisplay(r.stockValueUsd)}
+                  </TracedNumber>
                 </td>
               </tr>
             ))}

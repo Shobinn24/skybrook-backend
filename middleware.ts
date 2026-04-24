@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
 
-const PUBLIC_PATHS = ["/login", "/api/auth/google", "/api/auth/logout"];
+const PUBLIC_PATHS = [
+  "/login",
+  "/api/auth/google",
+  "/api/auth/logout",
+  // Dev bypass route — internally gated by NODE_ENV + SKYBROOK_DEV_BYPASS.
+  // Safe to list here unconditionally because the handler itself returns 404
+  // in production.
+  "/api/auth/dev-login",
+];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
