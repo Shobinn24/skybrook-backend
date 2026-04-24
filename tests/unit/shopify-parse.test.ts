@@ -1,107 +1,120 @@
 import { describe, it, expect } from "vitest";
-import { parseDailySales } from "@/lib/sources/shopify";
+import { aggregateToDailySales } from "@/lib/sources/shopify";
 
-describe("parseDailySales", () => {
-  it("maps ShopifyQL TableResponse rows into daily sales entries", () => {
-    const tr = {
-      data: {
-        shopifyqlQuery: {
-          __typename: "TableResponse" as const,
-          tableData: {
-            columns: [
-              { name: "product_variant_sku" },
-              { name: "day" },
-              { name: "units_sold" },
-              { name: "net_sales" },
-            ],
-            rowData: [
-              ["ev-bshort-5x-m", "2026-04-22", 27, 540.5],
-              ["ev-bshort-5x-l", "2026-04-22", 33, 660.25],
-            ],
-          },
-        },
-      },
-    };
+type LineItem = {
+  sku: string | null;
+  quantity: number;
+  discountedUnitPriceSet: { shopMoney: { amount: string } } | null;
+};
+type Order = { createdAt: string; lineItems: { nodes: LineItem[] } };
 
-    const result = parseDailySales(tr);
+function order(createdAt: string, lines: LineItem[]): Order {
+  return { createdAt, lineItems: { nodes: lines } };
+}
+function li(sku: string | null, quantity: number, amount: string | null = "20.00"): LineItem {
+  return {
+    sku,
+    quantity,
+    discountedUnitPriceSet: amount != null ? { shopMoney: { amount } } : null,
+  };
+}
+
+describe("aggregateToDailySales", () => {
+  it("sums quantity and net_sales per (sku, day) across orders", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [li("ev-bshort-5x-m", 2, "20.00")]),
+      order("2026-04-22T14:30:00Z", [li("ev-bshort-5x-m", 3, "20.00")]),
+      order("2026-04-22T18:00:00Z", [li("ev-bshort-5x-l", 1, "22.00")]),
+    ];
+    const result = aggregateToDailySales(orders);
     expect(result).toEqual([
-      { sku: "ev-bshort-5x-m", salesDate: "2026-04-22", unitsSold: 27, netSalesUsd: 540.5 },
-      { sku: "ev-bshort-5x-l", salesDate: "2026-04-22", unitsSold: 33, netSalesUsd: 660.25 },
+      { sku: "ev-bshort-5x-l", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 22 },
+      { sku: "ev-bshort-5x-m", salesDate: "2026-04-22", unitsSold: 5, netSalesUsd: 100 },
     ]);
   });
 
-  it("handles alternate column names (variant_sku / net_items_sold / total_sales)", () => {
-    const tr = {
-      data: {
-        shopifyqlQuery: {
-          __typename: "TableResponse" as const,
-          tableData: {
-            columns: [
-              { name: "variant_sku" },
-              { name: "day" },
-              { name: "net_items_sold" },
-              { name: "total_sales" },
-            ],
-            rowData: [["ev-a", "2026-04-22", "7", "100"]],
-          },
-        },
-      },
-    };
-    expect(parseDailySales(tr)).toEqual([
-      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 7, netSalesUsd: 100 },
+  it("slices createdAt to YYYY-MM-DD (UTC) for salesDate", () => {
+    const orders = [
+      order("2026-04-22T23:59:59Z", [li("ev-a", 1, "10.00")]),
+      order("2026-04-23T00:00:01Z", [li("ev-a", 1, "10.00")]),
+    ];
+    const result = aggregateToDailySales(orders);
+    expect(result).toEqual([
+      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 10 },
+      { sku: "ev-a", salesDate: "2026-04-23", unitsSold: 1, netSalesUsd: 10 },
     ]);
   });
 
-  it("throws a meaningful error on ParseError response", () => {
-    const tr = {
-      data: {
-        shopifyqlQuery: {
-          __typename: "ParseError" as const,
-          parseErrors: [{ message: "unknown column: foo" }],
-        },
-      },
-    };
-    expect(() => parseDailySales(tr)).toThrow(/unknown column: foo/);
-  });
-
-  it("throws when required columns are missing", () => {
-    const tr = {
-      data: {
-        shopifyqlQuery: {
-          __typename: "TableResponse" as const,
-          tableData: {
-            columns: [{ name: "day" }, { name: "total_sales" }],
-            rowData: [["2026-04-22", 100]],
-          },
-        },
-      },
-    };
-    expect(() => parseDailySales(tr)).toThrow(/missing expected columns/);
-  });
-
-  it("skips rows with missing sku or non-finite units", () => {
-    const tr = {
-      data: {
-        shopifyqlQuery: {
-          __typename: "TableResponse" as const,
-          tableData: {
-            columns: [
-              { name: "product_variant_sku" },
-              { name: "day" },
-              { name: "units_sold" },
-              { name: "net_sales" },
-            ],
-            rowData: [
-              ["", "2026-04-22", 5, 100],
-              ["ev-b", "2026-04-22", "NaN", 0],
-              ["ev-c", "2026-04-22", 3, 60],
-            ],
-          },
-        },
-      },
-    };
-    expect(parseDailySales(tr)).toEqual([
-      { sku: "ev-c", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 60 },
+  it("skips line items with null sku (gift cards, custom items)", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [
+        li(null, 1, "50.00"),
+        li("ev-real", 2, "20.00"),
+      ]),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-real", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 40 },
     ]);
+  });
+
+  it("skips line items with zero or non-finite quantity", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [
+        li("ev-zero", 0, "20.00"),
+        li("ev-nan", Number.NaN, "20.00"),
+        li("ev-ok", 3, "20.00"),
+      ]),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-ok", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 60 },
+    ]);
+  });
+
+  it("treats null discountedUnitPriceSet as $0 net sales but still counts units", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [li("ev-free", 4, null)]),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-free", salesDate: "2026-04-22", unitsSold: 4, netSalesUsd: 0 },
+    ]);
+  });
+
+  it("counts cancelled/refunded orders in the sum (Scott 2026-04-23)", () => {
+    // No filter on order.displayFinancialStatus — raw units sold matches
+    // the old ShopifyQL units_sold semantics. Caller doesn't need to know.
+    const orders = [
+      order("2026-04-22T10:00:00Z", [li("ev-x", 5, "20.00")]),
+      order("2026-04-22T11:00:00Z", [li("ev-x", 2, "20.00")]), // imagine this one got refunded
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-x", salesDate: "2026-04-22", unitsSold: 7, netSalesUsd: 140 },
+    ]);
+  });
+
+  it("returns results sorted by date then sku for stable snapshots", () => {
+    const orders = [
+      order("2026-04-23T10:00:00Z", [li("ev-z", 1, "20.00")]),
+      order("2026-04-22T10:00:00Z", [li("ev-b", 1, "20.00")]),
+      order("2026-04-22T10:00:00Z", [li("ev-a", 1, "20.00")]),
+    ];
+    const result = aggregateToDailySales(orders);
+    expect(result.map((r) => `${r.salesDate}|${r.sku}`)).toEqual([
+      "2026-04-22|ev-a",
+      "2026-04-22|ev-b",
+      "2026-04-23|ev-z",
+    ]);
+  });
+
+  it("rounds netSalesUsd to 4 decimal places (numeric(14,4) db column)", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [li("ev-a", 3, "19.995")]), // 59.985
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 59.985 },
+    ]);
+  });
+
+  it("returns empty for empty orders input", () => {
+    expect(aggregateToDailySales([])).toEqual([]);
   });
 });
