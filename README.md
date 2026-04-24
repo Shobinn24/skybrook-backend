@@ -1,4 +1,4 @@
-# Skybrook
+# Skybrook Backend
 
 Internal operations dashboard for Everdries. Consolidates inventory and sales data into a single daily-refreshing view.
 
