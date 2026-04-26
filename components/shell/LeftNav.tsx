@@ -11,6 +11,12 @@ export function LeftNav() {
         Inventory
       </Link>
       <Link
+        href="/incoming"
+        className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
+      >
+        Incoming
+      </Link>
+      <Link
         href="/sustainability"
         className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
       >

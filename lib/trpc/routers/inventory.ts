@@ -2,7 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { daysOfStock, salesVelocity, sustainabilityFlags } from "@/lib/db/schema";
-import { getIncomingStock } from "@/lib/queries/incoming";
+import { getIncomingShipmentsView, getIncomingStock } from "@/lib/queries/incoming";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getOverstockRows } from "@/lib/queries/overstock";
 import { getStockLevels, getStockValue } from "@/lib/queries/stock";
@@ -133,4 +133,22 @@ export const inventoryRouter = router({
   // by stock-value descending — biggest-leverage marketing candidates
   // first. Plus a summary block for the KPI strip at the top of the page.
   getOverstockView: publicProcedure.query(() => getOverstockRows()),
+
+  // Page-feeding endpoint for /incoming (SPEC §5.7 q3). Forward-looking
+  // arrivals view: returns the joined SKU + shipment rows sorted by
+  // expectedArrival ascending plus a summary block (total units inbound,
+  // shipment count, SKU count, next arrival). Status defaults to the
+  // pending set (po + dispatched + in_transit) — `arrived` is excluded
+  // unless the caller asks for history, since arrived units already
+  // count in stock_snapshots and would just clutter the page.
+  getIncomingShipmentsView: publicProcedure
+    .input(
+      z
+        .object({
+          destination: locationSchema.optional(),
+          includeArrived: z.boolean().optional(),
+        })
+        .optional(),
+    )
+    .query(({ input }) => getIncomingShipmentsView(input ?? {})),
 });
