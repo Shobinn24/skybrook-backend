@@ -28,6 +28,9 @@ type Pull = {
   status: "success" | "failed" | "partial";
   rowCount: number;
   errorMessage: string | null;
+  fingerprint: string | null;
+  schemaDrifted: boolean;
+  priorFingerprint: string | null;
 };
 
 function freshnessPill(latest: Pull): { kind: "green" | "yellow" | "red" | "gray"; label: string } {
@@ -107,6 +110,7 @@ export default function PipelinePage() {
         const latest = rows[0];
         const f = freshnessPill(latest);
         const fails = rows.filter((r) => r.status === "failed").length;
+        const drifts = rows.filter((r) => r.schemaDrifted).length;
 
         return (
           <section
@@ -114,11 +118,17 @@ export default function PipelinePage() {
             className="rounded border border-neutral-200 bg-white"
           >
             <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 px-4 py-3">
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <h2 className="text-base font-semibold text-neutral-900">
                   {SOURCE_LABEL[source] ?? source}
                 </h2>
                 <StatusPill kind={f.kind} label={f.label} />
+                {drifts > 0 && (
+                  <StatusPill
+                    kind="yellow"
+                    label={`${drifts} schema change${drifts === 1 ? "" : "s"}`}
+                  />
+                )}
               </div>
               <div className="text-xs text-neutral-500">
                 {rows.length} pull{rows.length === 1 ? "" : "s"} shown
@@ -151,7 +161,21 @@ export default function PipelinePage() {
                             {formatTimeFull(r.startedAt)}
                           </td>
                           <td className="px-4 py-2">
-                            <StatusPill kind={s.kind} label={s.label} />
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <StatusPill kind={s.kind} label={s.label} />
+                              {r.schemaDrifted && (
+                                <span
+                                  className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-800"
+                                  title={
+                                    r.priorFingerprint && r.fingerprint
+                                      ? `Schema fingerprint changed from ${r.priorFingerprint} to ${r.fingerprint}`
+                                      : "Schema fingerprint changed since the previous successful pull"
+                                  }
+                                >
+                                  Schema changed
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="whitespace-nowrap px-4 py-2 text-neutral-700">
                             {formatDuration(r.startedAt, r.finishedAt)}

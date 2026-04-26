@@ -202,10 +202,14 @@ function makeRunner(channel: Channel): SourceRunner {
     }
     const sales = aggregateToDailySales(allOrders);
 
-    // Stable fingerprint reflects the query shape — not order contents —
-    // so the same shop/window produces the same fingerprint across runs.
+    // Stable fingerprint reflects the QUERY SHAPE — channel + API
+    // version + entity. The since/today window is intentionally NOT
+    // mixed in: we want the fingerprint to stay constant across daily
+    // pulls so schema-drift detection in /pipeline can flag genuine
+    // changes (channel rename, API version bump) instead of false-
+    // positiving every day.
     const fingerprint = createHash("sha256")
-      .update(`${channel}|${API_VERSION}|orders|${since}|${today}`)
+      .update(`${channel}|${API_VERSION}|orders`)
       .digest("hex")
       .slice(0, 16);
 
