@@ -17,6 +17,12 @@ export function LeftNav() {
         Sustainability
       </Link>
       <Link
+        href="/overstock"
+        className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
+      >
+        Overstock
+      </Link>
+      <Link
         href="/pipeline"
         className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
       >

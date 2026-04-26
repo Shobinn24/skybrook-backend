@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { daysOfStock, salesVelocity, sustainabilityFlags } from "@/lib/db/schema";
 import { getIncomingStock } from "@/lib/queries/incoming";
 import { getInventoryRows } from "@/lib/queries/inventory";
+import { getOverstockRows } from "@/lib/queries/overstock";
 import { getStockLevels, getStockValue } from "@/lib/queries/stock";
 import { publicProcedure, router } from "@/lib/trpc/server";
 
@@ -125,4 +126,11 @@ export const inventoryRouter = router({
       }
       return latest;
     }),
+
+  // Page-feeding endpoint for /overstock (SPEC §5.5). Returns enriched
+  // InventoryRow records (SKU, product name, on-hand, velocity, DOS,
+  // stock value, full trace) filtered to flag === "overstocked", sorted
+  // by stock-value descending — biggest-leverage marketing candidates
+  // first. Plus a summary block for the KPI strip at the top of the page.
+  getOverstockView: publicProcedure.query(() => getOverstockRows()),
 });
