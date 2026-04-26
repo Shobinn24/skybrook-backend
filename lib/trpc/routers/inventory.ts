@@ -5,7 +5,7 @@ import { daysOfStock, salesVelocity, sustainabilityFlags } from "@/lib/db/schema
 import { getIncomingShipmentsView, getIncomingStock } from "@/lib/queries/incoming";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getOverstockRows } from "@/lib/queries/overstock";
-import { getStockLevels, getStockValue } from "@/lib/queries/stock";
+import { getStockLevels, getStockValue, getStockValueByProductLine } from "@/lib/queries/stock";
 import { publicProcedure, router } from "@/lib/trpc/server";
 
 const locationSchema = z.enum(["US", "CN"]);
@@ -28,6 +28,13 @@ export const inventoryRouter = router({
   getStockValue: publicProcedure
     .input(z.object({ location: locationSchema.optional(), productLine: z.string().optional() }).optional())
     .query(({ input }) => getStockValue(input ?? {})),
+
+  // Per-product-line $ rollup for the inventory page (SPEC §5.7 q2).
+  // Honours the warehouse toggle so the breakdown matches the rest
+  // of the page rather than fighting it with combined totals.
+  getStockValueByProductLine: publicProcedure
+    .input(z.object({ location: locationSchema.optional() }).optional())
+    .query(({ input }) => getStockValueByProductLine(input ?? {})),
 
   getIncomingStock: publicProcedure
     .input(z.object({ sku: z.string().optional(), location: locationSchema.optional() }).optional())

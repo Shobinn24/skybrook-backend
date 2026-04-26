@@ -62,3 +62,41 @@ export async function getStockValue(filters: { location?: Location; productLine?
   const total = filtered.reduce((n, r) => n + r.onHand * Number(r.unitCostUsd ?? 0), 0);
   return { totalUsd: total, rowCount: filtered.length };
 }
+
+export type StockValueByLineRow = {
+  productLine: string | null;
+  totalUsd: number;
+  skuCount: number;
+  unitCount: number;
+};
+
+/** Stock value rolled up by `skus.productLine` for the given warehouse
+ * (or both, if `location` is omitted). Closes the per-product-line
+ * sub-bullet of SPEC §5.7 q2 ("total dollar value of current stock").
+ *
+ * SKUs missing a product_line collapse into a single `productLine: null`
+ * bucket so the UI can render an explicit "Uncategorized" row rather
+ * than silently dropping that capital from the totals.
+ *
+ * Sorted by totalUsd descending — biggest dollar buckets surface
+ * first, matching the marketing/operations decision flow ("which line
+ * is holding the most capital").
+ */
+export async function getStockValueByProductLine(
+  filters: { location?: Location } = {},
+): Promise<StockValueByLineRow[]> {
+  const rows = await getStockLevels({ location: filters.location });
+  const buckets = new Map<string | null, { totalUsd: number; skuCount: number; unitCount: number }>();
+  for (const r of rows) {
+    const key = r.productLine;
+    const value = r.onHand * Number(r.unitCostUsd ?? 0);
+    const cur = buckets.get(key) ?? { totalUsd: 0, skuCount: 0, unitCount: 0 };
+    cur.totalUsd += value;
+    cur.skuCount += 1;
+    cur.unitCount += r.onHand;
+    buckets.set(key, cur);
+  }
+  return Array.from(buckets.entries())
+    .map(([productLine, agg]) => ({ productLine, ...agg }))
+    .sort((a, b) => b.totalUsd - a.totalUsd);
+}
