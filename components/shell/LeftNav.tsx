@@ -16,6 +16,12 @@ export function LeftNav() {
       >
         Sustainability
       </Link>
+      <Link
+        href="/pipeline"
+        className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
+      >
+        Pipeline
+      </Link>
       <span
         className="block cursor-not-allowed rounded px-2 py-1.5 text-neutral-400"
         title="Deferred until Meta ingestion is decided"
