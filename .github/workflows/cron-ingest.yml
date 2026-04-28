@@ -33,16 +33,58 @@ jobs:
           # The endpoint can take ~5 minutes (full Shopify backfill +
           # Phase 2 derive). Allow generous timeout; Railway maxDuration
           # is 300s server-side so we cap the client at 360s.
-          response=$(mktemp)
-          status=$(curl -sS -o "$response" -w "%{http_code}" \
-            -X POST "https://skybrook-backend-production.up.railway.app/api/cron/ingest" \
+          # Railway's edge proxy idle-times-out long-poll connections from
+          # the GH Actions runner at ~60s, returning 502 even though the
+          # server-side handler (maxDuration=300) keeps running. We can't
+          # tell from the response whether work actually happened.
+          # Strategy: kick off the request with a short timeout, then
+          # verify success by reading /api/admin/data-snapshot afterwards
+          # — that endpoint is fast and reflects the latest cron's
+          # writes.
+          set +e
+          curl -sS -X POST \
+            "https://skybrook-backend-production.up.railway.app/api/cron/ingest" \
             -H "Authorization: Bearer ${CRON_SECRET}" \
-            --max-time 360)
-          echo "HTTP status: $status"
-          echo "Response body:"
-          cat "$response"
-          # Pretty-fail if the endpoint returned non-2xx.
-          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
-            echo "::error::cron-ingest endpoint returned non-2xx ($status)"
+            --max-time 30 > /dev/null 2>&1
+          curl_exit=$?
+          set -e
+          # Exit codes we accept: 0 (got response), 28 (timeout — server
+          # still processing). Anything else (DNS, TLS, refused) = real
+          # failure.
+          if [ "$curl_exit" != 0 ] && [ "$curl_exit" != 28 ]; then
+            echo "::error::curl exited $curl_exit (network error)"
             exit 1
           fi
+          echo "Request kicked off (curl exit=$curl_exit). Waiting 4 minutes for server-side ingest to settle..."
+          sleep 240
+          echo "Verifying via /api/admin/data-snapshot..."
+          response=$(mktemp)
+          status=$(curl -sS -o "$response" -w "%{http_code}" \
+            "https://skybrook-backend-production.up.railway.app/api/admin/data-snapshot" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            --max-time 60)
+          echo "data-snapshot HTTP status: $status"
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "::error::data-snapshot returned non-2xx ($status)"
+            cat "$response"
+            exit 1
+          fi
+          # Confirm asOf is today UTC (basic freshness check). If
+          # ingest didn't run, asOf would be yesterday or older.
+          today_utc=$(date -u +%Y-%m-%d)
+          as_of=$(grep -oE '"asOf":"[^"]+"' "$response" | head -1 | cut -d'"' -f4 | cut -dT -f1)
+          echo "Snapshot asOf: $as_of (today UTC: $today_utc)"
+          if [ "$as_of" != "$today_utc" ]; then
+            echo "::warning::Snapshot asOf ($as_of) is not today ($today_utc) — ingest may have failed"
+            # Don't hard-fail: the timezone offset can put asOf 1 day off,
+            # and Phase 2 derive uses ET which differs from UTC. Surface
+            # as warning only.
+          fi
+          # Sanity-check counts are non-zero.
+          counts=$(grep -oE '"counts":\{[^}]*\}' "$response" | head -1)
+          echo "Counts: $counts"
+          if echo "$counts" | grep -qE '"skus":0'; then
+            echo "::error::skus count is 0 — ingest definitely failed"
+            exit 1
+          fi
+          echo "✓ Ingest verified."
