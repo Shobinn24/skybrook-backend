@@ -1,0 +1,48 @@
+name: Daily ingest cron
+
+# Triggers the production /api/cron/ingest endpoint once per day so
+# Skybrook's data refreshes overnight without manual curls. Runs at
+# 14:00 UTC daily — 10am EDT (April–Nov) / 9am EST (Nov–April). The
+# 1-hour DST drift is acceptable; what matters is data being fresh
+# by the time Scott + team open the dashboard each morning.
+#
+# Manual trigger via the Actions UI ("workflow_dispatch") is also
+# supported for ad-hoc backfills.
+#
+# Secrets required (set via `gh secret set CRON_SECRET`):
+#   CRON_SECRET — same value as Railway's CRON_SECRET env var.
+
+on:
+  schedule:
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger /api/cron/ingest
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::CRON_SECRET secret is not set on this repo"
+            exit 1
+          fi
+          # The endpoint can take ~5 minutes (full Shopify backfill +
+          # Phase 2 derive). Allow generous timeout; Railway maxDuration
+          # is 300s server-side so we cap the client at 360s.
+          response=$(mktemp)
+          status=$(curl -sS -o "$response" -w "%{http_code}" \
+            -X POST "https://skybrook-backend-production.up.railway.app/api/cron/ingest" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            --max-time 360)
+          echo "HTTP status: $status"
+          echo "Response body:"
+          cat "$response"
+          # Pretty-fail if the endpoint returned non-2xx.
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "::error::cron-ingest endpoint returned non-2xx ($status)"
+            exit 1
+          fi
