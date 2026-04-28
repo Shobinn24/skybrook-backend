@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
+import { syncProductNames } from "@/lib/jobs/product-names";
 import { runPhase2 } from "@/lib/jobs/reconcile";
 import { sheetsIncomingRunner, sheetsInventoryRunner } from "@/lib/sources/sheets";
 import { shopifyIntlRunner, shopifyUsRunner } from "@/lib/sources/shopify";
@@ -29,13 +30,15 @@ export async function POST(req: Request) {
 
   const asOfDate = toEstDate(new Date());
   const batchId = await runIngest({ sources: SOURCES });
+  const productNames = await syncProductNames();
   const phase2 = await runPhase2({ asOfDate, pullBatchId: batchId });
 
-  logger.info("cron.ingest.done", { batchId, asOfDate, ...phase2 });
+  logger.info("cron.ingest.done", { batchId, asOfDate, productNames, ...phase2 });
   return NextResponse.json({
     ok: true,
     batchId,
     asOfDate,
+    productNames,
     phase2,
   });
 }
