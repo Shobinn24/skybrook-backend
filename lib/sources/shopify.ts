@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { and, eq, like, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { dailySales } from "@/lib/db/schema";
 import type { SourceRunner } from "@/lib/jobs/ingest";
+import { decomposePackSku, PACK_SKU_DB_PATTERNS } from "@/lib/domain/sku-pack";
 import { getShopifyAccessToken } from "@/lib/sources/shopify-auth";
 
 // Shopify Admin GraphQL API version — bump when needed.
@@ -154,12 +155,21 @@ export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
     for (const li of order.lineItems.nodes) {
       if (!li.sku) continue; // skip gift cards / custom items
       if (!Number.isFinite(li.quantity) || li.quantity <= 0) continue;
+
+      // Pack-SKU normalization: 10-pack and 15-pack SKUs come out of
+      // 5-pack inventory. Multiply units by the pack factor and key
+      // the row under the canonical 5-pack SKU. Net stays at the
+      // actual order revenue (no multiplier).
+      const decomposed = decomposePackSku(li.sku);
+      const skuKey = decomposed?.canonicalSku ?? li.sku;
+      const unitsContributed = li.quantity * (decomposed?.multiplier ?? 1);
+
       const unitPrice = li.discountedUnitPriceSet?.shopMoney?.amount;
       const priceNum = unitPrice != null ? Number(unitPrice) : 0;
       const net = Number.isFinite(priceNum) ? priceNum * li.quantity : 0;
-      const key = `${li.sku}|${day}`;
+      const key = `${skuKey}|${day}`;
       const prev = agg.get(key) ?? { units: 0, net: 0 };
-      prev.units += li.quantity;
+      prev.units += unitsContributed;
       prev.net += net;
       agg.set(key, prev);
     }
@@ -253,6 +263,18 @@ function makeRunner(channel: Channel): SourceRunner {
               },
             });
         }
+        // Purge orphaned pack-SKU rows left over from before
+        // decomposition was added — `aggregateToDailySales` no longer
+        // emits them, so they'd otherwise sit forever as stale data.
+        // Idempotent: subsequent runs match nothing.
+        await db.delete(dailySales).where(
+          and(
+            eq(dailySales.channel, channel),
+            or(
+              ...PACK_SKU_DB_PATTERNS.map((p) => like(dailySales.sku, p))
+            )!
+          )
+        );
       },
     };
   };

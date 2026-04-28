@@ -117,4 +117,43 @@ describe("aggregateToDailySales", () => {
   it("returns empty for empty orders input", () => {
     expect(aggregateToDailySales([])).toEqual([]);
   });
+
+  it("decomposes 10-pack SKUs into 5-pack equivalents (units × 2, net unchanged)", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [li("ev-9055-10x-l", 1, "200.00")]),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      // 1 ten-pack sold = 2 five-pack equivalents depleted; revenue stays at $200.
+      { sku: "ev-9055-5x-l", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
+    ]);
+  });
+
+  it("decomposes 15-pack SKUs into 5-pack equivalents (units × 3)", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [li("ev-9055-15x-l", 1, "300.00")]),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-9055-5x-l", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 300 },
+    ]);
+  });
+
+  it("rolls up 5-pack and 10-pack sales of the same garment into one row", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [li("ev-9055-5x-l", 4, "100.00")]),  //  4 units
+      order("2026-04-22T11:00:00Z", [li("ev-9055-10x-l", 2, "200.00")]), // 2 × 2 = 4 units
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      // 4 + 4 = 8 five-pack-equivalents, $400 + $400 = $800 revenue.
+      { sku: "ev-9055-5x-l", salesDate: "2026-04-22", unitsSold: 8, netSalesUsd: 800 },
+    ]);
+  });
+
+  it("does not decompose 1-pack SKUs (separate inventory)", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [li("ev-og-1x-beige-l", 3, "30.00")]),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-og-1x-beige-l", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 90 },
+    ]);
+  });
 });
