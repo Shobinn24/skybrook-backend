@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { syncProductNames } from "@/lib/jobs/product-names";
 import { runPhase2 } from "@/lib/jobs/reconcile";
+import { syncUnitCosts } from "@/lib/jobs/unit-costs";
 import { sheetsIncomingRunner, sheetsInventoryRunner } from "@/lib/sources/sheets";
 import { shopifyIntlRunner, shopifyUsRunner } from "@/lib/sources/shopify";
 import { toEstDate } from "@/lib/tz";
@@ -31,14 +32,16 @@ export async function POST(req: Request) {
   const asOfDate = toEstDate(new Date());
   const batchId = await runIngest({ sources: SOURCES });
   const productNames = await syncProductNames();
+  const unitCosts = await syncUnitCosts();
   const phase2 = await runPhase2({ asOfDate, pullBatchId: batchId });
 
-  logger.info("cron.ingest.done", { batchId, asOfDate, productNames, ...phase2 });
+  logger.info("cron.ingest.done", { batchId, asOfDate, productNames, unitCosts, ...phase2 });
   return NextResponse.json({
     ok: true,
     batchId,
     asOfDate,
     productNames,
+    unitCosts,
     phase2,
   });
 }

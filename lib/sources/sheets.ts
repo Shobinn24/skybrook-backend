@@ -12,7 +12,9 @@ import { toEstDate } from "@/lib/tz";
 // (2026-04-28), so a 10-pack inventory row would be misformatted source
 // data; rather than silently halve/double quantities we leave it alone
 // and let it surface as activeZeroSales for human investigation.
-function canonicalizeInventorySku(rawSku: string): string {
+// Exported for cross-source canonicalization (cost sheet sync, etc.) so
+// every place that joins SKUs to `skus` lands on the same canonical form.
+export function canonicalizeInventorySku(rawSku: string): string {
   const lower = rawSku.trim().toLowerCase();
   const dec = decomposePackSku(lower);
   return dec && dec.multiplier === 1 ? dec.canonicalSku : lower;
