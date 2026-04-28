@@ -413,4 +413,18 @@ describe("parseIncomingGrid", () => {
     const out = parseIncomingGrid(grid, "2026-04-23");
     expect(out.poColumns.map((p) => p.destination)).toEqual(["US", "US"]);
   });
+
+  it("lowercases SKU values so they match Shopify daily_sales", () => {
+    // Inventory sheet has SKUs like `EV-mixed-xxs` next to `ev-hw-xxs`.
+    // Shopify ingest lowercases at parse since b89fbd6, so any uppercase SKU
+    // here orphans against daily_sales. Parser must lowercase too.
+    const grid = makeGrid();
+    grid[6][2] = "EV-9055-5x-M"; // mixed case from a sloppy sheet entry
+    grid[7][2] = "EV-9055-5X-L";
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    const skus = out.rows.map((r) => r.sku);
+    expect(skus).toContain("ev-9055-5x-m");
+    expect(skus).toContain("ev-9055-5x-l");
+    expect(skus.every((s) => s === s.toLowerCase())).toBe(true);
+  });
 });

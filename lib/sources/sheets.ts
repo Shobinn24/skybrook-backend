@@ -232,7 +232,10 @@ export async function fetchInventorySnapshots(input: {
     const len = Math.min(skuCol.length, qtyCol.length);
     const rows: Array<{ sku: string; onHand: number }> = [];
     for (let r = 0; r < len; r++) {
-      const sku = String(skuCol[r]?.[0] ?? "").trim();
+      // Inventory sheet has historically mixed cases (`EV-mixed-xxs` next to
+      // `ev-hw-xxs`). Shopify ingest lowercases at parse since `b89fbd6`, so
+      // any non-lowercased sku here would orphan against `daily_sales`.
+      const sku = String(skuCol[r]?.[0] ?? "").trim().toLowerCase();
       const qty = parseQty(qtyCol[r]?.[0]);
       if (!sku || qty === null) continue;
       rows.push({ sku, onHand: qty });
@@ -281,6 +284,22 @@ export const sheetsInventoryRunner: SourceRunner = async (_batchId) => {
     },
     schemaFingerprint: fingerprint,
     async normalize(rawId) {
+      // One-time idempotent legacy cleanup: prior runs persisted mixed-case
+      // SKUs (`EV-mixed-xxs` alongside `ev-hw-xxs`) because the inventory
+      // sheet itself mixes cases. After Shopify lowercased its side at parse
+      // (`b89fbd6`), Postgres `=` left those legacy uppercase rows orphaned
+      // from `daily_sales`. Now that this runner also lowercases at parse,
+      // the only uppercase rows are stale — drop them. Derived tables
+      // (sales_velocity / days_of_stock / sustainability_flags) are
+      // upsert-only so their stale uppercase rows linger unless purged here;
+      // Phase 2 rewrites the canonical lowercase rows after this runs.
+      // After the first successful run, all queries match nothing → no-op.
+      await db.execute(sql`DELETE FROM stock_snapshots WHERE sku ~ '[A-Z]'`);
+      await db.execute(sql`DELETE FROM sales_velocity WHERE sku ~ '[A-Z]'`);
+      await db.execute(sql`DELETE FROM days_of_stock WHERE sku ~ '[A-Z]'`);
+      await db.execute(sql`DELETE FROM sustainability_flags WHERE sku ~ '[A-Z]'`);
+      await db.execute(sql`DELETE FROM skus WHERE sku ~ '[A-Z]'`);
+
       for (const snap of snapshots) {
         for (const r of snap.rows) {
           await db
@@ -481,7 +500,8 @@ export function parseIncomingGrid(grid: unknown[][], todayYmd: string): ParseInc
   const rows: IncomingShipment[] = [];
   for (let r = SKU_DATA_START_ROW; r < grid.length; r++) {
     const row = grid[r] ?? [];
-    const sku = String(row[2] ?? "").trim(); // col C
+    // Lowercase to match Shopify daily_sales (lowercased since `b89fbd6`).
+    const sku = String(row[2] ?? "").trim().toLowerCase(); // col C
     if (!sku) continue;
     for (const po of poColumns) {
       const qty = parseQty(row[po.colIdx]);
