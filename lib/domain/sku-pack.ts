@@ -15,39 +15,50 @@
 // Both get matched. Family also accepts an inner HF qualifier
 // (`EV-9055-HF-10-xl` → `ev-9055-hf-5x-xl`).
 
-const PACK_TOKEN_RE = /^ev-([a-zA-Z0-9-]+)-(10x?|15x?)-(.+)$/i;
+const PACK_TOKEN_RE = /^ev-([a-zA-Z0-9-]+)-(1|5|10|15)x?-(.+)$/i;
 
-const MULTIPLIER: Record<string, number> = {
-  "10": 2,
-  "10x": 2,
-  "15": 3,
-  "15x": 3,
+// (numeric pack token) → (canonical x-form, multiplier in 5-pack units)
+//   1, 5  → cosmetic rename only ("ev-x-5-l" → "ev-x-5x-l", multiplier 1)
+//   10    → decompose to 5x with multiplier 2
+//   15    → decompose to 5x with multiplier 3
+const TARGET: Record<string, { canonicalToken: string; multiplier: number }> = {
+  "1": { canonicalToken: "1x", multiplier: 1 },
+  "5": { canonicalToken: "5x", multiplier: 1 },
+  "10": { canonicalToken: "5x", multiplier: 2 },
+  "15": { canonicalToken: "5x", multiplier: 3 },
 };
 
 export type DecomposedSku = {
-  canonicalSku: string; // the 5-pack equivalent SKU
+  canonicalSku: string; // the canonical x-form (decomposed if needed)
   multiplier: number; // how many 5-packs one of the original equals
 };
 
 export function decomposePackSku(sku: string): DecomposedSku | null {
-  const m = sku.match(PACK_TOKEN_RE);
+  const lower = sku.toLowerCase();
+  const m = lower.match(PACK_TOKEN_RE);
   if (!m) return null;
-  const [, family, packToken, rest] = m;
-  const mult = MULTIPLIER[packToken.toLowerCase()];
-  if (!mult) return null;
-  return {
-    canonicalSku: `ev-${family}-5x-${rest}`.toLowerCase(),
-    multiplier: mult,
-  };
+  const [, family, packMatch, rest] = m;
+  const numericPack = packMatch.replace(/x$/, "");
+  const target = TARGET[numericPack];
+  if (!target) return null;
+  const canonicalSku = `ev-${family}-${target.canonicalToken}-${rest}`;
+  // Already canonical and no multiplier needed → caller treats as no-op.
+  if (canonicalSku === lower && target.multiplier === 1) return null;
+  return { canonicalSku, multiplier: target.multiplier };
 }
 
-// SQL LIKE patterns matching legacy pack SKUs that may be sitting in
-// daily_sales from before ingest-side decomposition landed. The cron
+// SQL LIKE patterns for legacy pack/dash-form SKUs that may sit in
+// daily_sales from before ingest-side normalization landed. The cron
 // purges these after each Shopify run to keep the orphan list clean.
-// Patterns are case-insensitive (used with ILIKE).
+// Patterns are case-insensitive when used with ILIKE — but the cleanup
+// also looks for any uppercase-bearing rows separately so case is moot
+// here. Each pattern targets a token that's been replaced by its
+// x-form by `decomposePackSku`.
 export const PACK_SKU_DB_PATTERNS: ReadonlyArray<string> = [
+  "ev-%-1-%",
+  "ev-%-5-%",
   "ev-%-10x-%",
-  "ev-%-15x-%",
   "ev-%-10-%",
+  "ev-%-15x-%",
   "ev-%-15-%",
 ];

@@ -68,4 +68,29 @@ describe("decomposePackSku", () => {
       multiplier: 2,
     });
   });
+
+  it("renames dash-form 5-pack to x-form without multiplying (cosmetic only)", () => {
+    // Shopify emits both `ev-9055-hf-5-xl` and `ev-9055-hf-5x-xl` for
+    // the same garment — the dash form must fold into the canonical x form.
+    expect(decomposePackSku("ev-9055-hf-5-xl")).toEqual({
+      canonicalSku: "ev-9055-hf-5x-xl",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("EV-bshort-hf-5-xxl")).toEqual({
+      canonicalSku: "ev-bshort-hf-5x-xxl",
+      multiplier: 1,
+    });
+  });
+
+  it("renames dash-form 1-pack to x-form (cosmetic, multiplier 1)", () => {
+    expect(decomposePackSku("ev-hw-hf-1-black-xl")).toEqual({
+      canonicalSku: "ev-hw-hf-1x-black-xl",
+      multiplier: 1,
+    });
+  });
+
+  it("returns null for already-canonical x-form SKUs (no work to do)", () => {
+    expect(decomposePackSku("ev-9055-hf-5x-xl")).toBeNull();
+    expect(decomposePackSku("ev-og-1x-beige-l")).toBeNull();
+  });
 });
