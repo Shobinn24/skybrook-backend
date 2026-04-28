@@ -3,8 +3,20 @@ import { google, type sheets_v4 } from "googleapis";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { incomingShipments, skus, stockSnapshots } from "@/lib/db/schema";
+import { decomposePackSku } from "@/lib/domain/sku-pack";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { toEstDate } from "@/lib/tz";
+
+// Take the dash→x cosmetic rename from `decomposePackSku` but skip the
+// 10/15 → 5x decomposition. Scott tracks inventory at the 5-pack level
+// (2026-04-28), so a 10-pack inventory row would be misformatted source
+// data; rather than silently halve/double quantities we leave it alone
+// and let it surface as activeZeroSales for human investigation.
+function canonicalizeInventorySku(rawSku: string): string {
+  const lower = rawSku.trim().toLowerCase();
+  const dec = decomposePackSku(lower);
+  return dec && dec.multiplier === 1 ? dec.canonicalSku : lower;
+}
 
 const INCOMING_TAB = "Incoming_new";
 
@@ -233,9 +245,12 @@ export async function fetchInventorySnapshots(input: {
     const rows: Array<{ sku: string; onHand: number }> = [];
     for (let r = 0; r < len; r++) {
       // Inventory sheet has historically mixed cases (`EV-mixed-xxs` next to
-      // `ev-hw-xxs`). Shopify ingest lowercases at parse since `b89fbd6`, so
-      // any non-lowercased sku here would orphan against `daily_sales`.
-      const sku = String(skuCol[r]?.[0] ?? "").trim().toLowerCase();
+      // `ev-hw-xxs`) and dash-form pack tokens (`ev-9055-hf-5-l` instead of
+      // the canonical `ev-9055-hf-5x-l` Shopify daily_sales lands on after
+      // `b89fbd6`/`9641126`). Lowercase + canonicalize at parse so `skus`
+      // and `stock_snapshots` end up in the same canonical form as
+      // `daily_sales`, preventing case- or dash-form-mirrored orphans.
+      const sku = canonicalizeInventorySku(String(skuCol[r]?.[0] ?? ""));
       const qty = parseQty(qtyCol[r]?.[0]);
       if (!sku || qty === null) continue;
       rows.push({ sku, onHand: qty });
@@ -299,6 +314,25 @@ export const sheetsInventoryRunner: SourceRunner = async (_batchId) => {
       await db.execute(sql`DELETE FROM days_of_stock WHERE sku ~ '[A-Z]'`);
       await db.execute(sql`DELETE FROM sustainability_flags WHERE sku ~ '[A-Z]'`);
       await db.execute(sql`DELETE FROM skus WHERE sku ~ '[A-Z]'`);
+
+      // Same shape of idempotent legacy cleanup for dash-form pack tokens.
+      // The inventory sheet historically wrote `ev-9055-hf-5-3xl` (no `x`);
+      // after `9641126` lowered the daily_sales side to canonical
+      // `ev-9055-hf-5x-3xl`, the dash-form `skus`/`stock_snapshots` rows
+      // mirror the orphaning pattern that the casing fix just resolved.
+      // Now that this runner canonicalizes at parse, dash-form rows are
+      // stale. Drop them only for 1- and 5-pack tokens — 10/15-pack tokens
+      // are intentionally NOT decomposed at the inventory parser, so
+      // deleting them would create a re-insert/delete loop. Same idempotent
+      // behavior: after one successful run, queries match nothing.
+      const DASH_PATTERNS = ["ev-%-1-%", "ev-%-5-%"];
+      for (const p of DASH_PATTERNS) {
+        await db.execute(sql`DELETE FROM stock_snapshots WHERE sku LIKE ${p}`);
+        await db.execute(sql`DELETE FROM sales_velocity WHERE sku LIKE ${p}`);
+        await db.execute(sql`DELETE FROM days_of_stock WHERE sku LIKE ${p}`);
+        await db.execute(sql`DELETE FROM sustainability_flags WHERE sku LIKE ${p}`);
+        await db.execute(sql`DELETE FROM skus WHERE sku LIKE ${p}`);
+      }
 
       for (const snap of snapshots) {
         for (const r of snap.rows) {
@@ -500,8 +534,9 @@ export function parseIncomingGrid(grid: unknown[][], todayYmd: string): ParseInc
   const rows: IncomingShipment[] = [];
   for (let r = SKU_DATA_START_ROW; r < grid.length; r++) {
     const row = grid[r] ?? [];
-    // Lowercase to match Shopify daily_sales (lowercased since `b89fbd6`).
-    const sku = String(row[2] ?? "").trim().toLowerCase(); // col C
+    // Lowercase + dash→x pack canonicalization to match daily_sales
+    // (`b89fbd6`/`9641126`).
+    const sku = canonicalizeInventorySku(String(row[2] ?? "")); // col C
     if (!sku) continue;
     for (const po of poColumns) {
       const qty = parseQty(row[po.colIdx]);

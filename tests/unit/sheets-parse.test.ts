@@ -427,4 +427,33 @@ describe("parseIncomingGrid", () => {
     expect(skus).toContain("ev-9055-5x-l");
     expect(skus.every((s) => s === s.toLowerCase())).toBe(true);
   });
+
+  it("normalizes dash-form 1/5-pack SKUs to canonical x-form", () => {
+    // Inventory + incoming sheets historically wrote `ev-9055-hf-5-3xl`
+    // (no `x`). daily_sales is normalized to `-5x-` since 9641126 — parser
+    // must produce the same canonical form so they match end-to-end.
+    const grid = makeGrid();
+    grid[6][2] = "ev-9055-hf-5-3xl"; // dash-form 5-pack
+    grid[7][2] = "ev-foo-1-l"; // dash-form 1-pack
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    const skus = out.rows.map((r) => r.sku);
+    expect(skus).toContain("ev-9055-hf-5x-3xl");
+    expect(skus).toContain("ev-foo-1x-l");
+    expect(skus.every((s) => !/^ev-.+-(1|5)-/.test(s))).toBe(true);
+  });
+
+  it("does NOT decompose 10/15-pack SKUs at the inventory parser", () => {
+    // Inventory is tracked at the 5-pack level (Scott 2026-04-28). A 10-pack
+    // row in the inventory sheet would be misformatted source data; rather
+    // than silently halve quantities by decomposing, leave it alone so it
+    // surfaces as activeZeroSales for human investigation.
+    const grid = makeGrid();
+    grid[6][2] = "ev-foo-10-l";
+    grid[7][2] = "ev-foo-15x-l";
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    const skus = out.rows.map((r) => r.sku);
+    expect(skus).toContain("ev-foo-10-l");
+    expect(skus).toContain("ev-foo-15x-l");
+    expect(skus).not.toContain("ev-foo-5x-l");
+  });
 });
