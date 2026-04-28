@@ -19,8 +19,11 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // Cron endpoints authenticate via CRON_SECRET bearer header, not cookies.
-  if (pathname.startsWith("/api/cron/")) return NextResponse.next();
+  // Cron + admin endpoints authenticate via CRON_SECRET bearer header,
+  // not session cookies. Each handler enforces its own auth.
+  if (pathname.startsWith("/api/cron/") || pathname.startsWith("/api/admin/")) {
+    return NextResponse.next();
+  }
 
   const secret = process.env.SESSION_SECRET;
   if (!secret) {
