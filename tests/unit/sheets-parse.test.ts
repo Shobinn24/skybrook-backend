@@ -180,6 +180,13 @@ describe("extractArrivalDates", () => {
   it("handles 4-letter month names (Sept)", () => {
     expect(extractArrivalDates("12 Sept 2026")).toEqual(["2026-09-12"]);
   });
+  it("handles full month names (June, March, etc.) — Scott uses both forms", () => {
+    expect(extractArrivalDates("3 June 2026")).toEqual(["2026-06-03"]);
+    expect(extractArrivalDates("10 June 2026")).toEqual(["2026-06-10"]);
+    expect(extractArrivalDates("15 March 2026")).toEqual(["2026-03-15"]);
+    expect(extractArrivalDates("1 January 2027")).toEqual(["2027-01-01"]);
+    expect(extractArrivalDates("31 December 2026")).toEqual(["2026-12-31"]);
+  });
 });
 
 describe("pickArrivalDate", () => {
@@ -212,20 +219,25 @@ describe("findIntlBoundary", () => {
 });
 
 describe("parseIncomingGrid", () => {
-  // Minimal Incoming_new fixture: 2 PO columns (one US, one INTL → CN) and 2 SKU rows.
+  // Minimal Incoming_new fixture (legacy layout): banner row 1, label row 3,
+  // arrival row 4, total row 5. Col C carries the row-header keywords that the
+  // header-driven parser uses to find rows.
   function makeGrid(): unknown[][] {
     const grid: unknown[][] = Array.from({ length: 8 }, () => []);
-    // row 1 banner — US at col 3, INTL at col 5
+    // row 1 banner — US at col 3, INTL at col 5 (legacy: separate banner row)
     grid[0][3] = "US";
     grid[0][5] = "INTL";
     // row 2 month grouping — not used by parser
     // row 3 PO labels
+    grid[2][2] = "SHIPMENT NAME";
     grid[2][3] = "KAI Sec Mar26";
     grid[2][5] = "KAI Sec Apr26";
     // row 4 arrival dates
+    grid[3][2] = "ESTIMATED ARRIVAL";
     grid[3][3] = "17 Mar 2026"; // past — should mark as 'arrived'
     grid[3][5] = "10 May 2026"; // future
-    // row 5 totals — not used by parser
+    // row 5 totals
+    grid[4][2] = "Total";
     // row 6 column headers — not used by parser
     // rows 7+ SKU data
     grid[6][2] = "ev-9055-5x-m";
@@ -234,6 +246,38 @@ describe("parseIncomingGrid", () => {
     grid[7][2] = "ev-9055-5x-l";
     grid[7][3] = "0"; // skip — qty 0
     grid[7][5] = "500";
+    return grid;
+  }
+
+  // 2026-04-28 layout: banner row gone; US/INTL is co-located with the Total
+  // row. Header rows are: SHIPMENT NAME (idx 1), ESTIMATED ARRIVAL (idx 2),
+  // Total (idx 3, also carrying "US"/"INTL"). First SKU at idx 5.
+  function makeGridMergedBanner(): unknown[][] {
+    const grid: unknown[][] = Array.from({ length: 7 }, () => []);
+    // row 1: months — not used by parser
+    grid[0][2] = "DATE PLACED";
+    // row 2: shipment names
+    grid[1][2] = "SHIPMENT NAME";
+    grid[1][3] = "KAI Sec Mar26";
+    grid[1][5] = "KAI Sec Apr26";
+    // row 3: arrival dates
+    grid[2][2] = "ESTIMATED ARRIVAL";
+    grid[2][3] = "17 Mar 2026";
+    grid[2][5] = "10 May 2026";
+    // row 4: Total + warehouse banner co-located
+    grid[3][2] = "Total";
+    grid[3][3] = "US";
+    grid[3][4] = "5,576"; // numeric qty interspersed — must not false-match INTL
+    grid[3][5] = "INTL";
+    // row 5: "Product" header in col A, totals in col D — col C empty, naturally skipped
+    grid[4][0] = "Product";
+    // rows 6+: SKU data
+    grid[5][2] = "ev-9055-5x-m";
+    grid[5][3] = "2520";
+    grid[5][5] = "1000";
+    grid[6][2] = "ev-9055-5x-l";
+    grid[6][3] = "0";
+    grid[6][5] = "500";
     return grid;
   }
 
@@ -303,5 +347,70 @@ describe("parseIncomingGrid", () => {
     grid[7][2] = "";
     const out = parseIncomingGrid(grid, "2026-04-23");
     expect(out.rows).toEqual([]);
+  });
+
+  it("handles 2026-04-28 layout where US/INTL is merged into the Total row", () => {
+    // Regression: prior parser hardcoded banner=row0, label=row2, arrival=row3.
+    // After Scott reorganized the sheet, the banner row was removed and US/INTL
+    // now lives on the same row as Total. Header-driven discovery must find the
+    // rows by their col-C labels.
+    const out = parseIncomingGrid(makeGridMergedBanner(), "2026-04-23");
+    expect(out.poColumns).toEqual([
+      { colIdx: 3, label: "KAI Sec Mar26", date: "2026-03-17", destination: "US" },
+      { colIdx: 5, label: "KAI Sec Apr26", date: "2026-05-10", destination: "CN" },
+    ]);
+    expect(out.rows).toEqual([
+      {
+        sku: "ev-9055-5x-m",
+        destination: "US",
+        shipmentName: "KAI Sec Mar26",
+        quantity: 2520,
+        expectedArrival: "2026-03-17",
+        status: "arrived",
+        sourceRowRef: "Incoming_new!D6",
+      },
+      {
+        sku: "ev-9055-5x-m",
+        destination: "CN",
+        shipmentName: "KAI Sec Apr26",
+        quantity: 1000,
+        expectedArrival: "2026-05-10",
+        status: "po",
+        sourceRowRef: "Incoming_new!F6",
+      },
+      {
+        sku: "ev-9055-5x-l",
+        destination: "CN",
+        shipmentName: "KAI Sec Apr26",
+        quantity: 500,
+        expectedArrival: "2026-05-10",
+        status: "po",
+        sourceRowRef: "Incoming_new!F7",
+      },
+    ]);
+    expect(out.skippedColumns).toEqual([]);
+  });
+
+  it("returns a layout-error diagnostic when col-C header rows are missing", () => {
+    const grid = Array.from({ length: 8 }, () => []) as unknown[][];
+    // No SHIPMENT NAME / ESTIMATED ARRIVAL / Total in col C — Scott deleted
+    // the header row or renamed it. Parser must surface this, not silently
+    // produce 0 rows.
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    expect(out.rows).toEqual([]);
+    expect(out.poColumns).toEqual([]);
+    expect(out.skippedColumns).toHaveLength(1);
+    expect(out.skippedColumns[0].colIdx).toBe(-1);
+    expect(out.skippedColumns[0].label).toBe("(layout)");
+    expect(out.skippedColumns[0].reason).toContain("missing header rows");
+  });
+
+  it("ignores qty cells on the Total/banner row when scanning for INTL", () => {
+    // Numeric qty strings like "5,576" must not be confused with the INTL banner.
+    const grid = makeGridMergedBanner();
+    // Replace the INTL banner with a numeric qty — should fall back to Infinity.
+    grid[3][5] = "12,345";
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    expect(out.poColumns.map((p) => p.destination)).toEqual(["US", "US"]);
   });
 });

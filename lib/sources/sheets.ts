@@ -45,8 +45,18 @@ const INVENTORY_TABS: ReadonlyArray<{
 ];
 
 const MONTHS: Record<string, number> = {
-  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
-  jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,
+  jan: 1, january: 1,
+  feb: 2, february: 2,
+  mar: 3, march: 3,
+  apr: 4, april: 4,
+  may: 5,
+  jun: 6, june: 6,
+  jul: 7, july: 7,
+  aug: 8, august: 8,
+  sep: 9, sept: 9, september: 9,
+  oct: 10, october: 10,
+  nov: 11, november: 11,
+  dec: 12, december: 12,
 };
 
 // 0-based column index → A1 letter. 0='A', 25='Z', 26='AA', 701='ZZ', 702='AAA'.
@@ -364,6 +374,38 @@ export function findIntlBoundary(banner: ReadonlyArray<unknown>): number {
   return Number.POSITIVE_INFINITY;
 }
 
+// Find the first row whose column C cell equals `label` (case-insensitive, trimmed).
+// Returns -1 if not found. Bounded scan — header rows are always near the top.
+export function findHeaderRowByColC(
+  grid: ReadonlyArray<ReadonlyArray<unknown>>,
+  label: string,
+): number {
+  const target = label.trim().toUpperCase();
+  const limit = Math.min(grid.length, 30);
+  for (let i = 0; i < limit; i++) {
+    if (String(grid[i]?.[2] ?? "").trim().toUpperCase() === target) return i;
+  }
+  return -1;
+}
+
+// Scan rows 0..maxRowExclusive for an "INTL"/"INTERNATIONAL" cell and return its
+// column index. Used to locate the warehouse banner whether it lives on its own
+// row (legacy layout) or is co-located with the Total row (current layout).
+export function findIntlBoundaryInGrid(
+  grid: ReadonlyArray<ReadonlyArray<unknown>>,
+  maxRowExclusive: number,
+): number {
+  const stop = Math.min(grid.length, Math.max(maxRowExclusive, 0));
+  for (let r = 0; r < stop; r++) {
+    const row = grid[r] ?? [];
+    for (let c = 0; c < row.length; c++) {
+      const v = String(row[c] ?? "").trim().toUpperCase();
+      if (v === "INTL" || v === "INTERNATIONAL") return c;
+    }
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
 export type IncomingShipment = {
   sku: string;
   destination: "US" | "CN";
@@ -382,17 +424,44 @@ export type ParseIncomingResult = {
 
 // Pure parser — takes the raw grid and produces incoming-shipment rows.
 // `todayYmd` decides which POs are 'arrived' vs still 'po'.
+//
+// Layout discovery is header-driven (col C contains stable row labels:
+// "SHIPMENT NAME", "ESTIMATED ARRIVAL", "Total"). This survives Scott
+// inserting/removing rows above the data block — which happened 2026-04-28
+// when the banner row was merged into the Total row.
 export function parseIncomingGrid(grid: unknown[][], todayYmd: string): ParseIncomingResult {
-  const SKU_DATA_START_ROW = 6; // 0-indexed; sheet row 7 is first SKU
-  const banner = grid[0] ?? [];
-  const labelRow = grid[2] ?? [];
-  const arrivalRow = grid[3] ?? [];
+  const labelRowIdx = findHeaderRowByColC(grid, "SHIPMENT NAME");
+  const arrivalRowIdx = findHeaderRowByColC(grid, "ESTIMATED ARRIVAL");
+  const totalRowIdx = findHeaderRowByColC(grid, "Total");
 
-  const intlBoundary = findIntlBoundary(banner);
+  if (labelRowIdx < 0 || arrivalRowIdx < 0 || totalRowIdx < 0) {
+    return {
+      rows: [],
+      poColumns: [],
+      skippedColumns: [
+        {
+          colIdx: -1,
+          label: "(layout)",
+          reason: `missing header rows in col C: SHIPMENT NAME=${labelRowIdx} ESTIMATED ARRIVAL=${arrivalRowIdx} Total=${totalRowIdx}`,
+        },
+      ],
+    };
+  }
+
+  const labelRow = grid[labelRowIdx] ?? [];
+  const arrivalRow = grid[arrivalRowIdx] ?? [];
+  // Banner cell (US/INTL) may be on its own row (legacy) or merged with the
+  // Total row (current). Scan all header rows up to and including Total.
+  const intlBoundary = findIntlBoundaryInGrid(grid, totalRowIdx + 1);
+  // SKU rows start somewhere after Total. Empty col-C rows are naturally
+  // skipped by the SKU loop, so any header rows between Total and the first
+  // SKU don't need explicit handling.
+  const SKU_DATA_START_ROW = totalRowIdx + 1;
   const poColumns: ParseIncomingResult["poColumns"] = [];
   const skippedColumns: ParseIncomingResult["skippedColumns"] = [];
 
-  for (let c = 0; c < labelRow.length; c++) {
+  // Cols A–C carry the product family / identifier / SKU; PO columns start at D.
+  for (let c = 3; c < labelRow.length; c++) {
     const label = String(labelRow[c] ?? "").trim();
     if (!label) continue;
     // Scott uses INTL in the sheet but Skybrook routes only US/CN. INTL → CN.
