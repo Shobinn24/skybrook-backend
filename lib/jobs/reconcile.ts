@@ -25,6 +25,18 @@ const LOCATIONS: Location[] = ["US", "CN"];
 const VELOCITY_WINDOWS = [3, 7, 30];
 const DOS_WINDOW = 7; // days-of-stock uses 7-day velocity
 
+// Velocity rows we persist per (SKU, window, asOfDate). 'all' is the
+// cross-channel total; the other two are the per-warehouse slices the
+// dashboard needs to show different numbers per location toggle.
+const VELOCITY_AGGREGATIONS: ReadonlyArray<{
+  channel: string;
+  routedLocation?: Location;
+}> = [
+  { channel: "all" },
+  { channel: "shopify_us", routedLocation: "US" },
+  { channel: "shopify_intl", routedLocation: "CN" },
+];
+
 // MVP heuristic (see QUESTIONS.md §3 tradeoff "Reports API instead of Orders API"):
 // Main (US) store ships mostly to US → assume its sales deplete US stock.
 // Intl store is 100% non-US by design → its sales deplete CN stock.
@@ -71,27 +83,30 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
   let skipped = 0;
 
   for (const s of allSkus) {
-    // Sales velocity — combined ("all" channel) at each window.
+    // Sales velocity — combined + per-channel at each window.
     for (const windowDays of VELOCITY_WINDOWS) {
-      const perDay = computeVelocity({
-        events: saleEvents,
-        asOfDate: input.asOfDate,
-        windowDays,
-        sku: s.sku,
-      });
-      await db
-        .insert(salesVelocity)
-        .values({
-          sku: s.sku,
-          channel: "all",
-          windowDays,
+      for (const agg of VELOCITY_AGGREGATIONS) {
+        const perDay = computeVelocity({
+          events: saleEvents,
           asOfDate: input.asOfDate,
-          unitsPerDay: String(perDay),
-        })
-        .onConflictDoUpdate({
-          target: [salesVelocity.sku, salesVelocity.channel, salesVelocity.windowDays, salesVelocity.asOfDate],
-          set: { unitsPerDay: sql`excluded.units_per_day` },
+          windowDays,
+          sku: s.sku,
+          routedLocation: agg.routedLocation,
         });
+        await db
+          .insert(salesVelocity)
+          .values({
+            sku: s.sku,
+            channel: agg.channel,
+            windowDays,
+            asOfDate: input.asOfDate,
+            unitsPerDay: String(perDay),
+          })
+          .onConflictDoUpdate({
+            target: [salesVelocity.sku, salesVelocity.channel, salesVelocity.windowDays, salesVelocity.asOfDate],
+            set: { unitsPerDay: sql`excluded.units_per_day` },
+          });
+      }
     }
 
     for (const location of LOCATIONS) {

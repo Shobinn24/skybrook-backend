@@ -29,6 +29,18 @@ describe("Phase 2 derive (MVP — no reconciliation)", () => {
     expect(Number(evA7?.unitsPerDay)).toBeCloseTo(7, 3);
   });
 
+  it("writes per-channel velocity rows so US and CN can show different numbers", async () => {
+    await runPhase2({ asOfDate: "2026-04-23" });
+    const rows = await db.select().from(salesVelocity);
+    const channels = new Set(rows.map((r) => r.channel));
+    expect(channels).toEqual(new Set(["all", "shopify_us", "shopify_intl"]));
+    // EV-A: shopify_us=5/day, shopify_intl=2/day
+    const evAUs = rows.find((r) => r.sku === "EV-A" && r.windowDays === 7 && r.channel === "shopify_us");
+    const evAIntl = rows.find((r) => r.sku === "EV-A" && r.windowDays === 7 && r.channel === "shopify_intl");
+    expect(Number(evAUs?.unitsPerDay)).toBeCloseTo(5, 3);
+    expect(Number(evAIntl?.unitsPerDay)).toBeCloseTo(2, 3);
+  });
+
   it("writes days_of_stock rows for each (SKU, location) with a snapshot", async () => {
     await runPhase2({ asOfDate: "2026-04-23" });
     const rows = await db.select().from(daysOfStock);

@@ -1,7 +1,6 @@
-import { and, desc, eq, gte, lte } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
-  dailySales,
   daysOfStock,
   incomingShipments,
   salesVelocity,
@@ -10,18 +9,12 @@ import {
 import { getStockLevels, type StockLevel } from "./stock";
 import type { Location } from "@/lib/domain/warehouse-routing";
 
-// Interim channel→location heuristic (matches lib/jobs/reconcile.ts). Must
-// stay in sync: the derive job used the same routing when computing DOS, so
-// reproducing it here gives the trace popover the exact velocity the DOS came
-// from. Replace when per-order destination country lands in daily_sales.
-function channelToLocation(channel: string): Location {
-  return channel === "shopify_us" ? "US" : "CN";
-}
-
-function addDaysYmd(ymd: string, delta: number): string {
-  const d = new Date(`${ymd}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + delta);
-  return d.toISOString().slice(0, 10);
+// Each warehouse view reads its own per-channel velocity row. runPhase2
+// persists 'shopify_us' (→ US warehouse) and 'shopify_intl' (→ CN warehouse)
+// rows alongside the legacy 'all' aggregate. Replace when per-order
+// destination country lands in daily_sales.
+function velocityChannelForLocation(location: Location): string {
+  return location === "US" ? "shopify_us" : "shopify_intl";
 }
 
 /**
@@ -101,41 +94,19 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
   const flagBySku = new Map<string, (typeof flagRows)[number]>();
   for (const r of flagRows) if (!flagBySku.has(r.sku)) flagBySku.set(r.sku, r);
 
-  // Latest combined velocity per SKU (channel='all', 7d).
+  // Per-warehouse velocity per SKU (7d). Each location maps to its
+  // originating Shopify channel — runPhase2 persists these channel rows
+  // so US and CN show different numbers per location toggle.
+  const velocityChannel = velocityChannelForLocation(location);
   const velRows = await db
     .select()
     .from(salesVelocity)
-    .where(and(eq(salesVelocity.channel, "all"), eq(salesVelocity.windowDays, 7)))
+    .where(and(eq(salesVelocity.channel, velocityChannel), eq(salesVelocity.windowDays, 7)))
     .orderBy(desc(salesVelocity.asOfDate));
   const velBySku = new Map<string, (typeof velRows)[number]>();
   for (const r of velRows) if (!velBySku.has(r.sku)) velBySku.set(r.sku, r);
 
-  // Location-routed velocity is what the derive job used to compute DOS, but
-  // sales_velocity only persists the combined (channel='all') rows. Recompute
-  // the location slice from daily_sales so the Weeks-of-stock popover shows
-  // numbers that reconcile instead of the misleading combined figure.
   const latestDosDate = dosRows[0]?.asOfDate ?? null;
-  const locVelocityBySku = new Map<string, { unitsInWindow: number; perDay: number }>();
-  if (latestDosDate) {
-    const windowStart = addDaysYmd(latestDosDate, -6);
-    const sales = await db
-      .select()
-      .from(dailySales)
-      .where(
-        and(
-          gte(dailySales.salesDate, windowStart),
-          lte(dailySales.salesDate, latestDosDate)
-        )
-      );
-    for (const s of sales) {
-      if (channelToLocation(s.channel) !== location) continue;
-      const prev = locVelocityBySku.get(s.sku)?.unitsInWindow ?? 0;
-      locVelocityBySku.set(s.sku, {
-        unitsInWindow: prev + s.unitsSold,
-        perDay: (prev + s.unitsSold) / 7,
-      });
-    }
-  }
 
   // Group pending incoming shipments per SKU so the trace can list each PO.
   const incomingRows = await db
@@ -197,8 +168,8 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
       velocity:
         velRow && velocityPerDay !== null
           ? {
-              label: `Sales velocity (7d) — ${s.sku}`,
-              formula: "Total units sold in the trailing 7 days ÷ 7 (all channels combined)",
+              label: `Sales velocity (7d) — ${s.sku} @ ${s.location}`,
+              formula: `Units sold via ${velocityChannel} in the trailing 7 days ÷ 7`,
               inputs: [
                 { label: "Window", value: "Trailing 7 days" },
                 { label: "As-of date (EST)", value: velRow.asOfDate },
@@ -211,31 +182,29 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
                 { label: "Derived at", ref: velRow.asOfDate },
                 {
                   label: "Underlying sales",
-                  ref: "daily_sales (channel='shopify_us' + 'shopify_intl')",
+                  ref: `daily_sales (channel='${velocityChannel}')`,
                 },
               ],
               note:
-                "This column is combined across channels. Days-of-stock and weeks-of-stock use location-routed velocity (shopify_us → US, shopify_intl → CN) which will be a smaller number per-warehouse — see the Weeks of stock popover for that math.",
+                "Per spec §5.1, sales decrement whichever warehouse fulfilled them. Until per-order destination country ships, we route by channel: shopify_us sales deplete US stock, shopify_intl deplete CN stock.",
             }
           : null,
       weeksOfStock:
         (() => {
           if (dos === null || !Number.isFinite(dos)) return null;
-          const loc = locVelocityBySku.get(s.sku);
-          const locPerDay = loc?.perDay ?? 0;
-          if (locPerDay <= 0) return null;
+          if (velocityPerDay === null || velocityPerDay <= 0) return null;
           return {
             label: `Weeks of stock — ${s.sku} @ ${s.location}`,
-            formula: "(On hand ÷ location-routed daily velocity) ÷ 7",
+            formula: "(On hand ÷ daily velocity) ÷ 7",
             inputs: [
               { label: "On hand", value: `${s.onHand.toLocaleString()} units` },
               {
                 label: `Daily velocity @ ${s.location} (7d)`,
-                value: `${fmtNumber(locPerDay)} units/day`,
+                value: `${fmtNumber(velocityPerDay)} units/day`,
               },
               {
                 label: "Units sold in window",
-                value: `${(loc?.unitsInWindow ?? 0).toLocaleString()} units`,
+                value: `${fmtNumber(velocityPerDay * 7, 0)} units`,
               },
               { label: "Days of stock", value: fmtNumber(dos) },
               { label: "Weeks of stock", value: fmtNumber(dos / 7) },
@@ -249,8 +218,6 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
               },
               { label: "Table", ref: "days_of_stock (window=7d)" },
             ],
-            note:
-              "Per spec §5.1, sales decrement whichever warehouse fulfilled them. Until per-order destination country ships, we route by channel: shopify_us sales deplete US stock, shopify_intl deplete CN stock.",
           };
         })(),
       incoming: {

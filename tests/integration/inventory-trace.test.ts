@@ -82,6 +82,16 @@ describe("inventory row traces", () => {
     }
   });
 
+  it("US and CN show different velocity for the same SKU (per-channel slice)", async () => {
+    const us = await getInventoryRows("US");
+    const cn = await getInventoryRows("CN");
+    const evAUs = us.find((r) => r.sku === "EV-A");
+    const evACn = cn.find((r) => r.sku === "EV-A");
+    expect(evAUs?.velocityPerDay7d).toBeCloseTo(5, 3); // shopify_us only
+    expect(evACn?.velocityPerDay7d).toBeCloseTo(2, 3); // shopify_intl only
+    expect(evAUs!.velocityPerDay7d).not.toBe(evACn!.velocityPerDay7d);
+  });
+
   it("every populated trace carries at least one source reference", async () => {
     const rows = await getInventoryRows("US");
     for (const r of rows) {
