@@ -156,4 +156,36 @@ describe("aggregateToDailySales", () => {
       { sku: "ev-og-1x-beige-l", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 90 },
     ]);
   });
+
+  it("lowercases SKUs at ingest so mixed-case Shopify SKUs match the lowercase catalog", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [
+        // Same garment sold under three different casings — should fold to one row.
+        li("EV-hw-l", 2, "20.00"),
+        li("ev-hw-l", 1, "20.00"),
+        li("EV-HW-L", 3, "20.00"),
+      ]),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-hw-l", salesDate: "2026-04-22", unitsSold: 6, netSalesUsd: 120 },
+    ]);
+  });
+
+  it("decomposes Shopify's dash-form pack tokens (EV-hw-10-l → ev-hw-5x-l × 2)", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [li("EV-hw-10-l", 1, "200.00")]),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-hw-5x-l", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
+    ]);
+  });
+
+  it("decomposes HF-in-family pack SKUs (EV-9055-HF-10-xl)", () => {
+    const orders = [
+      order("2026-04-22T10:00:00Z", [li("EV-9055-HF-10-xl", 1, "200.00")]),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-9055-hf-5x-xl", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
+    ]);
+  });
 });

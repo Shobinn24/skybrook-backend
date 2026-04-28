@@ -45,4 +45,27 @@ describe("decomposePackSku", () => {
       multiplier: 2,
     });
   });
+
+  it("accepts the dash-form pack token (Shopify uses both 10x and 10)", () => {
+    // Production has rows like `EV-hw-10-l` alongside `ev-9055-10x-l`.
+    expect(decomposePackSku("EV-hw-10-l")).toEqual({
+      canonicalSku: "ev-hw-5x-l",
+      multiplier: 2,
+    });
+    expect(decomposePackSku("EV-OG-15-xxl")).toEqual({
+      canonicalSku: "ev-og-5x-xxl",
+      multiplier: 3,
+    });
+  });
+
+  it("handles HF-in-family pack SKUs (e.g. EV-9055-HF-10-xl)", () => {
+    expect(decomposePackSku("EV-9055-HF-10-xl")).toEqual({
+      canonicalSku: "ev-9055-hf-5x-xl",
+      multiplier: 2,
+    });
+    expect(decomposePackSku("EV-HW-HF-10-xxl")).toEqual({
+      canonicalSku: "ev-hw-hf-5x-xxl",
+      multiplier: 2,
+    });
+  });
 });

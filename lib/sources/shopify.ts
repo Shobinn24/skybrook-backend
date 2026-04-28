@@ -156,12 +156,16 @@ export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
       if (!li.sku) continue; // skip gift cards / custom items
       if (!Number.isFinite(li.quantity) || li.quantity <= 0) continue;
 
+      // Lowercase first — Shopify mixes cases (`EV-hw-l` vs `ev-hw-l`)
+      // for the same product, and Postgres `=` is case-sensitive, so
+      // mixed-case rows wouldn't match the lowercase skus catalog.
+      const skuLower = li.sku.toLowerCase();
       // Pack-SKU normalization: 10-pack and 15-pack SKUs come out of
       // 5-pack inventory. Multiply units by the pack factor and key
       // the row under the canonical 5-pack SKU. Net stays at the
       // actual order revenue (no multiplier).
-      const decomposed = decomposePackSku(li.sku);
-      const skuKey = decomposed?.canonicalSku ?? li.sku;
+      const decomposed = decomposePackSku(skuLower);
+      const skuKey = decomposed?.canonicalSku ?? skuLower;
       const unitsContributed = li.quantity * (decomposed?.multiplier ?? 1);
 
       const unitPrice = li.discountedUnitPriceSet?.shopMoney?.amount;
@@ -263,14 +267,16 @@ function makeRunner(channel: Channel): SourceRunner {
               },
             });
         }
-        // Purge orphaned pack-SKU rows left over from before
-        // decomposition was added — `aggregateToDailySales` no longer
-        // emits them, so they'd otherwise sit forever as stale data.
-        // Idempotent: subsequent runs match nothing.
+        // Purge legacy rows for this channel that the current ingest
+        // would have eliminated:
+        //   - mixed-case SKUs   (now lowercased at aggregation)
+        //   - 10/15-pack rows   (now decomposed to 5x form)
+        // Idempotent — subsequent runs match nothing.
         await db.delete(dailySales).where(
           and(
             eq(dailySales.channel, channel),
             or(
+              sql`${dailySales.sku} <> LOWER(${dailySales.sku})`,
               ...PACK_SKU_DB_PATTERNS.map((p) => like(dailySales.sku, p))
             )!
           )

@@ -9,11 +9,18 @@
 // 1-pack SKUs (`-1x-`) are NOT decomposed — they map to physically
 // separate inventory items (OG/HW single underwear), not multi-pack
 // repackaging.
+//
+// Two SKU shapes seen in production for the same pack: with and
+// without the trailing `x` (e.g. `EV-hw-10x-l` and `EV-hw-10-l`).
+// Both get matched. Family also accepts an inner HF qualifier
+// (`EV-9055-HF-10-xl` → `ev-9055-hf-5x-xl`).
 
-const PACK_TOKEN_RE = /^ev-([a-zA-Z0-9]+)-(10x|15x)-(.+)$/i;
+const PACK_TOKEN_RE = /^ev-([a-zA-Z0-9-]+)-(10x?|15x?)-(.+)$/i;
 
 const MULTIPLIER: Record<string, number> = {
+  "10": 2,
   "10x": 2,
+  "15": 3,
   "15x": 3,
 };
 
@@ -34,10 +41,13 @@ export function decomposePackSku(sku: string): DecomposedSku | null {
   };
 }
 
-// Helpful for the SQL cleanup that purges orphaned pack-SKU rows from
-// daily_sales after the decomposition lands — exported so the shopify
-// normalize step uses the same regex shape as the parser.
+// SQL LIKE patterns matching legacy pack SKUs that may be sitting in
+// daily_sales from before ingest-side decomposition landed. The cron
+// purges these after each Shopify run to keep the orphan list clean.
+// Patterns are case-insensitive (used with ILIKE).
 export const PACK_SKU_DB_PATTERNS: ReadonlyArray<string> = [
   "ev-%-10x-%",
   "ev-%-15x-%",
+  "ev-%-10-%",
+  "ev-%-15-%",
 ];
