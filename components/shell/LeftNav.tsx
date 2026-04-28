@@ -29,6 +29,12 @@ export function LeftNav() {
         Overstock
       </Link>
       <Link
+        href="/stock-value"
+        className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
+      >
+        Stock value
+      </Link>
+      <Link
         href="/pipeline"
         className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
       >

@@ -5,7 +5,12 @@ import { daysOfStock, salesVelocity, sustainabilityFlags } from "@/lib/db/schema
 import { getIncomingShipmentsView, getIncomingStock } from "@/lib/queries/incoming";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getOverstockRows } from "@/lib/queries/overstock";
-import { getStockLevels, getStockValue, getStockValueByProductLine } from "@/lib/queries/stock";
+import {
+  getStockLevels,
+  getStockValue,
+  getStockValueByProduct,
+  getStockValueByProductLine,
+} from "@/lib/queries/stock";
 import { publicProcedure, router } from "@/lib/trpc/server";
 
 const locationSchema = z.enum(["US", "CN"]);
@@ -35,6 +40,13 @@ export const inventoryRouter = router({
   getStockValueByProductLine: publicProcedure
     .input(z.object({ location: locationSchema.optional() }).optional())
     .query(({ input }) => getStockValueByProductLine(input ?? {})),
+
+  // Per-product (garment-name) $ rollup for the dedicated /stock-value
+  // page. Resolves Scott's #10 ask 2026-04-28 ("split it up by product
+  // not main/sec").
+  getStockValueByProduct: publicProcedure
+    .input(z.object({ location: locationSchema.optional() }).optional())
+    .query(({ input }) => getStockValueByProduct(input ?? {})),
 
   getIncomingStock: publicProcedure
     .input(z.object({ sku: z.string().optional(), location: locationSchema.optional() }).optional())

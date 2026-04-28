@@ -100,3 +100,46 @@ export async function getStockValueByProductLine(
     .map(([productLine, agg]) => ({ productLine, ...agg }))
     .sort((a, b) => b.totalUsd - a.totalUsd);
 }
+
+export type StockValueByProductRow = {
+  productName: string;
+  totalUsd: number;
+  skuCount: number;
+  unitCount: number;
+};
+
+/** Stock value rolled up by `skus.productName` for the given warehouse
+ * (or both, if `location` is omitted). Resolves Scott's punch-list #10
+ * (2026-04-28): "split it up by product not main/sec".
+ *
+ * Where `getStockValueByProductLine` groups by the warehouse / brand
+ * dimension (Main / HF / Sec), this groups by the actual garment line
+ * — "Style 9055", "Boyshort Beige", etc. — which is the lens Scott
+ * uses for capital-tied-up decisions. Names come from the velocity
+ * sheet (`5af248d`) with the SKU-pattern parser as fallback, so the
+ * vast majority of SKUs land in a meaningful bucket and only the ones
+ * we couldn't name fall into the SKU-as-name bucket.
+ *
+ * Sorted by totalUsd descending — biggest dollar buckets surface
+ * first.
+ */
+export async function getStockValueByProduct(
+  filters: { location?: Location } = {},
+): Promise<StockValueByProductRow[]> {
+  const rows = await getStockLevels({ location: filters.location });
+  const buckets = new Map<string, { totalUsd: number; skuCount: number; unitCount: number }>();
+  for (const r of rows) {
+    // productName is non-null (defaulted to sku in getStockLevels), so
+    // every row gets a bucket — no "uncategorized" sink to lose capital in.
+    const key = r.productName;
+    const value = r.onHand * Number(r.unitCostUsd ?? 0);
+    const cur = buckets.get(key) ?? { totalUsd: 0, skuCount: 0, unitCount: 0 };
+    cur.totalUsd += value;
+    cur.skuCount += 1;
+    cur.unitCount += r.onHand;
+    buckets.set(key, cur);
+  }
+  return Array.from(buckets.entries())
+    .map(([productName, agg]) => ({ productName, ...agg }))
+    .sort((a, b) => b.totalUsd - a.totalUsd);
+}
