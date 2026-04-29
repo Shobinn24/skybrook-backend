@@ -32,6 +32,13 @@ import { logger } from "@/lib/logger";
 const COST_TAB = "EVSKUmap";
 const COST_RANGE = `${COST_TAB}!A1:Z2070`;
 
+// Trailing size tokens we recognize when stripping for size-extension
+// mirror lookup. Mirrors the canonicalized form (e.g. `xxl`, not `2xl`)
+// since `decomposePackSku` already folds 2xl→xxl at parse time.
+const SIZE_TOKENS = new Set([
+  "xxs", "xs", "s", "m", "l", "xl", "xxl", "3xl", "4xl", "5xl",
+]);
+
 function buildSheetsClient() {
   const scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"];
   const json = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
@@ -147,11 +154,20 @@ export type UnitCostSyncResult = {
   skippedErrors: number;
   latestColumn: string;
   duplicates: number;
-  // Mirror pass — fc-line SKUs (e.g. ev-bshort-fc-*) inherit cost from
+  // fc-line mirror — fc SKUs (e.g. ev-bshort-fc-*) inherit cost from
   // their non-fc sibling. Scott 2026-04-29: "Boyshort 5-color > Same
   // price as boyshort regular… Color doesn't change cost."
   mirrored: number;
   mirroredIntl: number;
+  // Size-extension mirror — extreme sizes (4xl, 5xl, xxs) often aren't
+  // in EVSKUmap because Scott prices at the line level, not per size.
+  // EVSKUmap data shows 98 of 141 product groups have flat cost across
+  // sizes; the remaining 43 only differ in the 4xl/5xl INTL discount.
+  // So filling missing sizes from a same-base priced sibling is safe.
+  // Per Shobinn's call (2026-04-29): "I think the cost is the same
+  // regardless of the size."
+  sizeExtended: number;
+  sizeExtendedIntl: number;
 };
 
 // Drop the `-fc-` qualifier from the SKU to find its non-fc sibling.
@@ -163,12 +179,29 @@ function fcMirrorBase(sku: string): string | null {
   return sku.replace("-fc-", "-");
 }
 
+// `ev-bshort-hf-5x-5xl` → { base: "ev-bshort-hf-5x", size: "5xl" }
+// Returns null when the trailing token isn't a recognized size — these
+// SKUs aren't size-extension candidates (e.g. an ebook or service SKU).
+function stripSize(sku: string): { base: string; size: string } | null {
+  const idx = sku.lastIndexOf("-");
+  if (idx < 0) return null;
+  const last = sku.slice(idx + 1);
+  if (!SIZE_TOKENS.has(last)) return null;
+  return { base: sku.slice(0, idx), size: last };
+}
+
 // numeric(12, 4) — Postgres returns a string. Compare textually after
 // normalizing both sides to 4 decimal places.
 function eqCost(currentRaw: unknown, next: number): boolean {
   if (currentRaw == null) return false;
   return Number(currentRaw).toFixed(4) === next.toFixed(4);
 }
+
+const isPriced = (raw: unknown): boolean => {
+  if (raw == null) return false;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) && n > 0;
+};
 
 export async function syncUnitCosts(opts?: {
   // Tests inject a deterministic provider; production reads the sheet.
@@ -261,56 +294,104 @@ export async function syncUnitCosts(opts?: {
     await db.update(skus).set(patch).where(eq(skus.sku, sku));
   }
 
-  // Mirror pass: any fc-line SKU still without a cost inherits from its
-  // non-fc sibling's cost (this run's fresh cost preferred over the
-  // pre-existing DB value). Runs independently for US and INTL — fc SKU
-  // can have one column inherited and the other left null if the base
-  // SKU only has US priced.
+  // Mirror passes — fc-line and size-extension. Run alternately so
+  // cascades resolve: an fc-line extreme size depends on the non-fc
+  // base getting size-extended first. Bounded loop with early exit.
   let mirrored = 0;
   let mirroredIntl = 0;
-  const isPriced = (raw: unknown): boolean => {
-    if (raw == null) return false;
-    const n = typeof raw === "number" ? raw : Number(raw);
-    return Number.isFinite(n) && n > 0;
-  };
-  const baseUsCost = (baseSku: string): number | null => {
-    const fresh = seen.get(baseSku)?.us;
-    if (fresh != null && fresh > 0) return fresh;
-    const stored = Number(currentUsBySku.get(baseSku) ?? NaN);
-    return Number.isFinite(stored) && stored > 0 ? stored : null;
-  };
-  const baseIntlCost = (baseSku: string): number | null => {
-    const fresh = seen.get(baseSku)?.intl ?? null;
-    if (fresh != null && fresh > 0) return fresh;
-    const stored = Number(currentIntlBySku.get(baseSku) ?? NaN);
-    return Number.isFinite(stored) && stored > 0 ? stored : null;
-  };
-  for (const fcSku of allSkus) {
-    const baseSku = fcMirrorBase(fcSku);
-    if (!baseSku) continue;
-    const patch: { unitCostUsd?: string; unitCostIntlUsd?: string } = {};
-    if (!isPriced(currentUsBySku.get(fcSku))) {
-      const inherited = baseUsCost(baseSku);
-      if (inherited !== null) {
-        const s = inherited.toFixed(4);
-        patch.unitCostUsd = s;
-        currentUsBySku.set(fcSku, s);
-        mirrored++;
+  let sizeExtended = 0;
+  let sizeExtendedIntl = 0;
+
+  const fcMirrorPass = async (): Promise<number> => {
+    let writes = 0;
+    for (const fcSku of allSkus) {
+      const baseSku = fcMirrorBase(fcSku);
+      if (!baseSku) continue;
+      const patch: { unitCostUsd?: string; unitCostIntlUsd?: string } = {};
+      if (!isPriced(currentUsBySku.get(fcSku))) {
+        const inherited = readPriced(seen.get(baseSku)?.us, currentUsBySku.get(baseSku));
+        if (inherited !== null) {
+          const s = inherited.toFixed(4);
+          patch.unitCostUsd = s;
+          currentUsBySku.set(fcSku, s);
+          mirrored++;
+        }
+      }
+      if (!isPriced(currentIntlBySku.get(fcSku))) {
+        const inherited = readPriced(seen.get(baseSku)?.intl, currentIntlBySku.get(baseSku));
+        if (inherited !== null) {
+          const s = inherited.toFixed(4);
+          patch.unitCostIntlUsd = s;
+          currentIntlBySku.set(fcSku, s);
+          mirroredIntl++;
+        }
+      }
+      if (patch.unitCostUsd || patch.unitCostIntlUsd) {
+        await db.update(skus).set(patch).where(eq(skus.sku, fcSku));
+        writes++;
       }
     }
-    if (!isPriced(currentIntlBySku.get(fcSku))) {
-      const inherited = baseIntlCost(baseSku);
-      if (inherited !== null) {
-        const s = inherited.toFixed(4);
-        patch.unitCostIntlUsd = s;
-        currentIntlBySku.set(fcSku, s);
-        mirroredIntl++;
+    return writes;
+  };
+
+  const sizeExtensionPass = async (): Promise<number> => {
+    // Build base → list-of-priced-siblings lookup from current state.
+    const usDonorByBase = new Map<string, number>();
+    const intlDonorByBase = new Map<string, number>();
+    for (const sku of allSkus) {
+      const split = stripSize(sku);
+      if (!split) continue;
+      const usVal = readPriced(seen.get(sku)?.us, currentUsBySku.get(sku));
+      const intlVal = readPriced(seen.get(sku)?.intl, currentIntlBySku.get(sku));
+      // First donor wins per base — deterministic since `allSkus` is
+      // populated in DB order and Set iteration preserves insertion order.
+      if (usVal !== null && !usDonorByBase.has(split.base)) {
+        usDonorByBase.set(split.base, usVal);
+      }
+      if (intlVal !== null && !intlDonorByBase.has(split.base)) {
+        intlDonorByBase.set(split.base, intlVal);
       }
     }
-    if (patch.unitCostUsd || patch.unitCostIntlUsd) {
-      await db.update(skus).set(patch).where(eq(skus.sku, fcSku));
+
+    let writes = 0;
+    for (const sku of allSkus) {
+      const split = stripSize(sku);
+      if (!split) continue;
+      const patch: { unitCostUsd?: string; unitCostIntlUsd?: string } = {};
+      if (!isPriced(currentUsBySku.get(sku))) {
+        const donor = usDonorByBase.get(split.base);
+        if (donor != null) {
+          const s = donor.toFixed(4);
+          patch.unitCostUsd = s;
+          currentUsBySku.set(sku, s);
+          sizeExtended++;
+        }
+      }
+      if (!isPriced(currentIntlBySku.get(sku))) {
+        const donor = intlDonorByBase.get(split.base);
+        if (donor != null) {
+          const s = donor.toFixed(4);
+          patch.unitCostIntlUsd = s;
+          currentIntlBySku.set(sku, s);
+          sizeExtendedIntl++;
+        }
+      }
+      if (patch.unitCostUsd || patch.unitCostIntlUsd) {
+        await db.update(skus).set(patch).where(eq(skus.sku, sku));
+        writes++;
+      }
     }
-  }
+    return writes;
+  };
+
+  // Two iterations is sufficient for any realistic dependency:
+  //   pass 1: fc-mirror handles fc-lines whose base is sheet-priced.
+  //   pass 2: size-extension fills extreme sizes from same-base siblings.
+  //   pass 3: fc-mirror catches fc-lines whose base just got
+  //           size-extended (e.g. ev-bshort-fc-hf-5x-5xl ← ev-bshort-hf-5x-5xl).
+  await fcMirrorPass();
+  await sizeExtensionPass();
+  await fcMirrorPass();
 
   logger.info("unit-costs.done", {
     updated,
@@ -321,6 +402,8 @@ export async function syncUnitCosts(opts?: {
     duplicates,
     mirrored,
     mirroredIntl,
+    sizeExtended,
+    sizeExtendedIntl,
     latestColumn: latestColumn.dateLabel,
     sheetSkus: rows.length,
     distinctSkus: seen.size,
@@ -337,5 +420,16 @@ export async function syncUnitCosts(opts?: {
     duplicates,
     mirrored,
     mirroredIntl,
+    sizeExtended,
+    sizeExtendedIntl,
   };
+}
+
+// Prefer this run's fresh sheet value over the pre-existing DB value.
+// Returns the first positive number found, or null if neither is priced.
+function readPriced(fresh: number | null | undefined, stored: unknown): number | null {
+  if (fresh != null && fresh > 0) return fresh;
+  if (stored == null) return null;
+  const n = typeof stored === "number" ? stored : Number(stored);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }

@@ -119,6 +119,84 @@ describe("syncUnitCosts — dual-column", () => {
     expect(Number(fc.unitCostIntlUsd)).toBeCloseTo(3.9);
   });
 
+  it("extends size: extreme sizes inherit cost from a same-base sibling", async () => {
+    // Scenario: regular size is in EVSKUmap, 5xl is not. 5xl should
+    // pick up cost from L. Mirrors Shobinn's 2026-04-29 call: in
+    // EVSKUmap, 98 of 141 product groups have flat cost across sizes.
+    await db.insert(skus).values([
+      {
+        sku: "ev-bshort-hf-5x-l",
+        productName: "Boyshort HF L",
+        firstSeenAt: "2026-01-01",
+        active: true,
+      },
+      {
+        sku: "ev-bshort-hf-5x-5xl",
+        productName: "Boyshort HF 5XL",
+        firstSeenAt: "2026-01-01",
+        active: true,
+      },
+    ]);
+
+    const result = await syncUnitCosts({
+      costsProvider: provider([
+        { sku: "ev-bshort-hf-5x-l", costUsd: 9.52, costIntlUsd: 8.74 },
+        // 5xl deliberately absent — that's the case this test pins.
+      ]),
+    });
+
+    expect(result.sizeExtended).toBe(1);
+    expect(result.sizeExtendedIntl).toBe(1);
+    const fiveXl = await readSku("ev-bshort-hf-5x-5xl");
+    expect(Number(fiveXl.unitCostUsd)).toBeCloseTo(9.52);
+    expect(Number(fiveXl.unitCostIntlUsd)).toBeCloseTo(8.74);
+  });
+
+  it("cascades fc-mirror after size-extension primes the base", async () => {
+    // Most demanding case: ev-bshort-fc-hf-5x-5xl is fc-line, base
+    // ev-bshort-hf-5x-5xl is also missing from EVSKUmap. Sequence:
+    //   1. fc-mirror tries fc → base → fails (base unpriced)
+    //   2. size-extension primes the base from ev-bshort-hf-5x-l
+    //   3. fc-mirror runs again, now fc-line picks up
+    await db.insert(skus).values([
+      {
+        sku: "ev-bshort-hf-5x-l",
+        productName: "Boyshort HF L",
+        firstSeenAt: "2026-01-01",
+        active: true,
+      },
+      {
+        sku: "ev-bshort-hf-5x-5xl",
+        productName: "Boyshort HF 5XL",
+        firstSeenAt: "2026-01-01",
+        active: true,
+      },
+      {
+        sku: "ev-bshort-fc-hf-5x-5xl",
+        productName: "Boyshort FC HF 5XL",
+        firstSeenAt: "2026-01-01",
+        active: true,
+      },
+    ]);
+
+    const result = await syncUnitCosts({
+      costsProvider: provider([
+        { sku: "ev-bshort-hf-5x-l", costUsd: 9.52, costIntlUsd: 8.74 },
+      ]),
+    });
+
+    // Base 5xl gets size-extended; fc-line 5xl gets fc-mirrored after.
+    expect(result.sizeExtended).toBeGreaterThanOrEqual(1);
+    expect(result.mirrored).toBeGreaterThanOrEqual(1);
+
+    const base5xl = await readSku("ev-bshort-hf-5x-5xl");
+    const fc5xl = await readSku("ev-bshort-fc-hf-5x-5xl");
+    expect(Number(base5xl.unitCostUsd)).toBeCloseTo(9.52);
+    expect(Number(base5xl.unitCostIntlUsd)).toBeCloseTo(8.74);
+    expect(Number(fc5xl.unitCostUsd)).toBeCloseTo(9.52);
+    expect(Number(fc5xl.unitCostIntlUsd)).toBeCloseTo(8.74);
+  });
+
   it("fc-line SKU mirrors only the column its base has priced", async () => {
     // Base has US only; INTL absent. fc should inherit US, leave INTL null.
     await db.insert(skus).values([
