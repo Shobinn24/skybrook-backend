@@ -16,6 +16,8 @@ export function SortableHeader<K extends string>({
   onChange,
   align = "left",
   className = "",
+  paddingClass = "px-4 py-2",
+  rowSpan,
   title,
 }: {
   label: ReactNode;
@@ -24,6 +26,13 @@ export function SortableHeader<K extends string>({
   onChange: (next: SortConfig<K>) => void;
   align?: "left" | "right";
   className?: string;
+  // Sustainability uses a tighter px-3 grid; default matches the
+  // inventory/incoming/overstock tables.
+  paddingClass?: string;
+  // For tables with a stacked two-row header (e.g. sustainability),
+  // sortable headers in the first tier need rowSpan={2} to span
+  // through the per-shipment sub-header row.
+  rowSpan?: number;
   title?: string;
 }) {
   const isActive = config.key === sortKey;
@@ -42,7 +51,7 @@ export function SortableHeader<K extends string>({
   const flexCls = align === "right" ? "justify-end" : "justify-start";
 
   return (
-    <th className={`px-4 py-2 font-medium ${alignCls} ${className}`}>
+    <th rowSpan={rowSpan} className={`${paddingClass} font-medium ${alignCls} ${className}`}>
       <button
         type="button"
         onClick={handleClick}

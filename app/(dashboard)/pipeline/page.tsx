@@ -1,6 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { trpc } from "@/lib/trpc/client";
+import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
 import { StatusPill } from "@/components/shell/StatusPill";
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -81,8 +83,43 @@ function formatDuration(start: string | Date, end: string | Date | null): string
   return s === 0 ? `${m}m` : `${m}m ${s}s`;
 }
 
+type PipelineSortKey = "started" | "status" | "duration" | "rows";
+
+// Sort by failures-first when sorting by status — that's what an oncall
+// operator wants to surface. partial > success keeps "partial" between
+// the two extremes.
+const STATUS_ORDER: Record<Pull["status"], number> = { failed: 0, partial: 1, success: 2 };
+
+function durationMs(p: Pull): number {
+  if (!p.finishedAt) return -1;
+  return new Date(p.finishedAt).getTime() - new Date(p.startedAt).getTime();
+}
+
+function sortPipelineRows(rows: Pull[], sort: SortConfig<PipelineSortKey>): Pull[] {
+  const dir = sort.direction === "asc" ? 1 : -1;
+  const cmp = (a: Pull, b: Pull): number => {
+    switch (sort.key) {
+      case "started":
+        return (new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()) * dir;
+      case "status":
+        return (STATUS_ORDER[a.status] - STATUS_ORDER[b.status]) * dir;
+      case "duration":
+        return (durationMs(a) - durationMs(b)) * dir;
+      case "rows":
+        return (a.rowCount - b.rowCount) * dir;
+    }
+  };
+  return [...rows].sort(cmp);
+}
+
 export default function PipelinePage() {
   const { data, isLoading, error } = trpc.pipeline.getPullHistoryAllSources.useQuery();
+  // Single sort config applied to every per-source table — operators
+  // typically scan all four with the same lens (e.g. "show me failures").
+  const [sort, setSort] = useState<SortConfig<PipelineSortKey>>({
+    key: "started",
+    direction: "desc",
+  });
 
   if (isLoading) {
     return <div className="text-sm text-neutral-500">Loading pull history…</div>;
@@ -106,8 +143,14 @@ export default function PipelinePage() {
       </div>
 
       {SOURCE_ORDER.map((source) => {
-        const rows = ((data?.[source] as unknown) as Pull[] | undefined) ?? [];
-        const latest = rows[0];
+        const rawRows = ((data?.[source] as unknown) as Pull[] | undefined) ?? [];
+        // Latest is always the most-recent pull — drives the freshness
+        // pill regardless of how the table is sorted, so the section
+        // header stays meaningful when an operator sorts by Rows etc.
+        const latest = [...rawRows].sort(
+          (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+        )[0];
+        const rows = sortPipelineRows(rawRows, sort);
         const f = freshnessPill(latest);
         const fails = rows.filter((r) => r.status === "failed").length;
         const drifts = rows.filter((r) => r.schemaDrifted).length;
@@ -143,13 +186,35 @@ export default function PipelinePage() {
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead className="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+                  <thead className="bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500">
                     <tr>
-                      <th className="px-4 py-2 font-medium">Started</th>
-                      <th className="px-4 py-2 font-medium">Status</th>
-                      <th className="px-4 py-2 font-medium">Duration</th>
-                      <th className="px-4 py-2 font-medium text-right">Rows</th>
-                      <th className="px-4 py-2 font-medium">Notes</th>
+                      <SortableHeader<PipelineSortKey>
+                        label="Started"
+                        sortKey="started"
+                        config={sort}
+                        onChange={setSort}
+                      />
+                      <SortableHeader<PipelineSortKey>
+                        label="Status"
+                        sortKey="status"
+                        config={sort}
+                        onChange={setSort}
+                        title="Sorts failures first"
+                      />
+                      <SortableHeader<PipelineSortKey>
+                        label="Duration"
+                        sortKey="duration"
+                        config={sort}
+                        onChange={setSort}
+                      />
+                      <SortableHeader<PipelineSortKey>
+                        label="Rows"
+                        sortKey="rows"
+                        config={sort}
+                        onChange={setSort}
+                        align="right"
+                      />
+                      <th className="px-4 py-2 text-left font-medium">Notes</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100">

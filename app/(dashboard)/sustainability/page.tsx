@@ -1,7 +1,10 @@
 "use client";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { WarehouseToggle, type Warehouse } from "@/components/inventory/WarehouseToggle";
+import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
 import { trpc } from "@/lib/trpc/client";
+
+type SustainSortKey = "sku" | "product" | "sales" | "prorated" | "stock";
 
 const WINDOW_OPTIONS = [7, 14, 30] as const;
 type WindowDays = (typeof WINDOW_OPTIONS)[number];
@@ -27,12 +30,38 @@ function fmtNum(n: number, digits = 0): string {
 export default function SustainabilityPage() {
   const [warehouse, setWarehouse] = useState<Warehouse>("US");
   const [windowDays, setWindowDays] = useState<WindowDays>(14);
+  const [sort, setSort] = useState<SortConfig<SustainSortKey>>({
+    key: "sku",
+    direction: "asc",
+  });
   const { data, isLoading, error } = trpc.inventory.getSustainabilityTimeline.useQuery(
     { location: warehouse, windowDays },
     { refetchOnWindowFocus: false }
   );
 
-  const rows = data?.rows ?? [];
+  const rawRows = data?.rows ?? [];
+  // Sorting only applies to the 5 sticky-left columns. Per-shipment
+  // column blocks stay aligned to row order — sorting by per-shipment
+  // cells would shuffle rows in 5-cell-wide column blocks and read as
+  // noise, not signal.
+  const rows = useMemo(() => {
+    const dir = sort.direction === "asc" ? 1 : -1;
+    const cmp = (a: typeof rawRows[number], b: typeof rawRows[number]): number => {
+      switch (sort.key) {
+        case "sku":
+          return a.sku.localeCompare(b.sku) * dir;
+        case "product":
+          return a.productName.localeCompare(b.productName) * dir;
+        case "sales":
+          return (a.salesInWindow - b.salesInWindow) * dir;
+        case "prorated":
+          return (a.proratedThirtyD - b.proratedThirtyD) * dir;
+        case "stock":
+          return (a.currentStock - b.currentStock) * dir;
+      }
+    };
+    return [...rawRows].sort(cmp);
+  }, [rawRows, sort]);
   const shipmentCols = data?.shipmentColumns ?? [];
 
   return (
@@ -83,21 +112,51 @@ export default function SustainabilityPage() {
             {/* HEADER — two-row stacked: shipment column blocks span 5 cols each */}
             <thead className="bg-neutral-50 text-left text-[11px] uppercase tracking-wide text-neutral-600">
               <tr>
-                <th
+                <SortableHeader<SustainSortKey>
+                  label="SKU"
+                  sortKey="sku"
+                  config={sort}
+                  onChange={setSort}
                   rowSpan={2}
-                  className="sticky left-0 z-10 border-r border-neutral-200 bg-neutral-50 px-3 py-2 font-medium"
-                >
-                  SKU
-                </th>
-                <th rowSpan={2} className="px-3 py-2 font-medium">Product</th>
-                <th rowSpan={2} className="px-3 py-2 text-right font-medium">Sales</th>
-                <th rowSpan={2} className="px-3 py-2 text-right font-medium">Prorated 30D</th>
-                <th
+                  paddingClass="px-3 py-2"
+                  className="sticky left-0 z-10 border-r border-neutral-200 bg-neutral-50"
+                />
+                <SortableHeader<SustainSortKey>
+                  label="Product"
+                  sortKey="product"
+                  config={sort}
+                  onChange={setSort}
                   rowSpan={2}
-                  className="border-r border-neutral-200 px-3 py-2 text-right font-medium"
-                >
-                  Stock
-                </th>
+                  paddingClass="px-3 py-2"
+                />
+                <SortableHeader<SustainSortKey>
+                  label="Sales"
+                  sortKey="sales"
+                  config={sort}
+                  onChange={setSort}
+                  align="right"
+                  rowSpan={2}
+                  paddingClass="px-3 py-2"
+                />
+                <SortableHeader<SustainSortKey>
+                  label="Prorated 30D"
+                  sortKey="prorated"
+                  config={sort}
+                  onChange={setSort}
+                  align="right"
+                  rowSpan={2}
+                  paddingClass="px-3 py-2"
+                />
+                <SortableHeader<SustainSortKey>
+                  label="Stock"
+                  sortKey="stock"
+                  config={sort}
+                  onChange={setSort}
+                  align="right"
+                  rowSpan={2}
+                  paddingClass="px-3 py-2"
+                  className="border-r border-neutral-200"
+                />
                 {shipmentCols.map((col, i) => (
                   <th
                     key={`${col.eta}|${col.shipmentName}`}
