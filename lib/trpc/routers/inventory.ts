@@ -11,6 +11,7 @@ import {
   getStockValueByProduct,
   getStockValueByProductLine,
 } from "@/lib/queries/stock";
+import { getSkuDetail } from "@/lib/queries/sku-detail";
 import { getSustainabilityTimeline } from "@/lib/queries/sustainability-timeline";
 import { toEstDate } from "@/lib/tz";
 import { publicProcedure, router } from "@/lib/trpc/server";
@@ -167,6 +168,15 @@ export const inventoryRouter = router({
       }
       return latest;
     }),
+
+  // Per-SKU detail page (SPEC §5.7 q1+q6). Single fat query that
+  // returns the full picture for one SKU: per-warehouse stock + value
+  // + flag + DOS + incoming POs, plus a velocity matrix at 3/7/30d
+  // across `all` / `shopify_us` / `shopify_intl` channels. Returns
+  // null when the SKU isn't in the catalog (404 at the page level).
+  getSkuDetail: publicProcedure
+    .input(z.object({ sku: z.string().min(1) }))
+    .query(({ input }) => getSkuDetail(input.sku)),
 
   // Page-feeding endpoint for /overstock (SPEC §5.5). Returns enriched
   // InventoryRow records (SKU, product name, on-hand, velocity, DOS,

@@ -1,5 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { FlagPill } from "./FlagPill";
 import { TracedNumber } from "@/components/trace/TracedNumber";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
@@ -175,7 +176,14 @@ export function InventoryTable({
           <tbody>
             {sorted.map((r) => (
               <tr key={`${r.sku}-${r.location}`} className="border-t border-neutral-100">
-                <td className="whitespace-nowrap px-4 py-2 font-mono text-xs">{r.sku}</td>
+                <td className="whitespace-nowrap px-4 py-2 font-mono text-xs">
+                  <Link
+                    href={`/sku/${encodeURIComponent(r.sku)}`}
+                    className="text-neutral-900 hover:text-neutral-600 hover:underline"
+                  >
+                    {r.sku}
+                  </Link>
+                </td>
                 <td className="px-4 py-2">{r.productName}</td>
                 <td className="px-4 py-2 text-right tabular-nums">
                   <TracedNumber trace={r.trace.onHand}>{r.onHand.toLocaleString()}</TracedNumber>
