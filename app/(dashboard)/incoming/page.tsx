@@ -3,9 +3,19 @@
 import { useMemo, useState } from "react";
 import { KpiCard } from "@/components/inventory/KpiCard";
 import { StatusPill } from "@/components/shell/StatusPill";
+import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
 import { trpc } from "@/lib/trpc/client";
 
 type LocationFilter = "all" | "US" | "CN";
+
+type SortKey =
+  | "sku"
+  | "productName"
+  | "destination"
+  | "shipmentName"
+  | "status"
+  | "quantity"
+  | "expectedArrival";
 
 const STATUS_LABEL: Record<string, string> = {
   po: "PO",
@@ -71,6 +81,10 @@ export default function IncomingShipmentsPage() {
   const [location, setLocation] = useState<LocationFilter>("all");
   const [includeArrived, setIncludeArrived] = useState(false);
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortConfig<SortKey>>({
+    key: "expectedArrival",
+    direction: "asc",
+  });
 
   const { data, isLoading, error } = trpc.inventory.getIncomingShipmentsView.useQuery({
     destination: location === "all" ? undefined : location,
@@ -79,16 +93,31 @@ export default function IncomingShipmentsPage() {
 
   const filteredRows = useMemo(() => {
     const rows = data?.rows ?? [];
-    if (!search.trim()) return rows;
-    const needle = search.toLowerCase();
-    return rows.filter((r) => {
-      return (
-        r.sku.toLowerCase().includes(needle) ||
-        (r.productName ?? "").toLowerCase().includes(needle) ||
-        r.shipmentName.toLowerCase().includes(needle)
-      );
+    const matched = !search.trim()
+      ? rows
+      : rows.filter((r) => {
+          const needle = search.toLowerCase();
+          return (
+            r.sku.toLowerCase().includes(needle) ||
+            (r.productName ?? "").toLowerCase().includes(needle) ||
+            r.shipmentName.toLowerCase().includes(needle)
+          );
+        });
+    const dir = sort.direction === "asc" ? 1 : -1;
+    return [...matched].sort((a, b) => {
+      switch (sort.key) {
+        case "sku": return a.sku.localeCompare(b.sku) * dir;
+        case "productName": return (a.productName ?? "").localeCompare(b.productName ?? "") * dir;
+        case "destination": return a.destination.localeCompare(b.destination) * dir;
+        case "shipmentName": return a.shipmentName.localeCompare(b.shipmentName) * dir;
+        case "status": return a.status.localeCompare(b.status) * dir;
+        case "quantity": return (a.quantity - b.quantity) * dir;
+        case "expectedArrival":
+        default:
+          return a.expectedArrival.localeCompare(b.expectedArrival) * dir;
+      }
     });
-  }, [data?.rows, search]);
+  }, [data?.rows, search, sort]);
 
   if (isLoading) {
     return <div className="text-sm text-neutral-500">Loading incoming shipments…</div>;
@@ -185,13 +214,13 @@ export default function IncomingShipmentsPage() {
             <table className="w-full text-sm">
               <thead className="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
                 <tr>
-                  <th className="px-4 py-2 font-medium">SKU</th>
-                  <th className="px-4 py-2 font-medium">Product</th>
-                  <th className="px-4 py-2 font-medium">Destination</th>
-                  <th className="px-4 py-2 font-medium">Shipment</th>
-                  <th className="px-4 py-2 font-medium">Status</th>
-                  <th className="px-4 py-2 font-medium text-right">Quantity</th>
-                  <th className="px-4 py-2 font-medium">Expected arrival</th>
+                  <SortableHeader label="SKU" sortKey="sku" config={sort} onChange={setSort} />
+                  <SortableHeader label="Product" sortKey="productName" config={sort} onChange={setSort} />
+                  <SortableHeader label="Destination" sortKey="destination" config={sort} onChange={setSort} />
+                  <SortableHeader label="Shipment" sortKey="shipmentName" config={sort} onChange={setSort} />
+                  <SortableHeader label="Status" sortKey="status" config={sort} onChange={setSort} />
+                  <SortableHeader label="Quantity" sortKey="quantity" config={sort} onChange={setSort} align="right" />
+                  <SortableHeader label="Expected arrival" sortKey="expectedArrival" config={sort} onChange={setSort} />
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">

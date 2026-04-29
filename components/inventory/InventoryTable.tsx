@@ -2,10 +2,20 @@
 import { useMemo, useState } from "react";
 import { FlagPill } from "./FlagPill";
 import { TracedNumber } from "@/components/trace/TracedNumber";
+import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
 import type { Warehouse } from "./WarehouseToggle";
 import type { InventoryRow } from "@/lib/queries/inventory";
 
-type SortKey = "flag" | "sku" | "onHand" | "weeksOfStock" | "stockValue";
+type SortKey =
+  | "flag"
+  | "sku"
+  | "productName"
+  | "onHand"
+  | "incoming"
+  | "velocity"
+  | "weeksOfStock"
+  | "unitCost"
+  | "stockValue";
 
 // Rank flags so sorting by "flag" puts the most-urgent on top.
 const FLAG_RANK: Record<string, number> = {
@@ -39,7 +49,7 @@ export function InventoryTable({
   warehouse: Warehouse;
   rows: InventoryRow[];
 }) {
-  const [sort, setSort] = useState<SortKey>("flag");
+  const [sort, setSort] = useState<SortConfig<SortKey>>({ key: "flag", direction: "asc" });
   const [filter, setFilter] = useState("");
 
   const sorted = useMemo(() => {
@@ -49,28 +59,37 @@ export function InventoryTable({
           r.productName.toLowerCase().includes(filter.toLowerCase())
         )
       : rows;
-    const copy = [...filtered];
-    switch (sort) {
-      case "sku":
-        return copy.sort((a, b) => a.sku.localeCompare(b.sku));
-      case "onHand":
-        return copy.sort((a, b) => a.onHand - b.onHand);
-      case "weeksOfStock": {
-        const toNum = (x: number | null) => (x === null ? Infinity : x);
-        return copy.sort((a, b) => toNum(a.weeksOfStock) - toNum(b.weeksOfStock));
-      }
-      case "stockValue":
-        return copy.sort((a, b) => b.stockValueUsd - a.stockValueUsd);
-      case "flag":
-      default:
-        return copy.sort((a, b) => {
+    const dir = sort.direction === "asc" ? 1 : -1;
+    const nullish = (x: number | null) => (x === null ? Infinity : x);
+    const compare = (a: InventoryRow, b: InventoryRow) => {
+      switch (sort.key) {
+        case "sku":
+          return a.sku.localeCompare(b.sku) * dir;
+        case "productName":
+          return a.productName.localeCompare(b.productName) * dir;
+        case "onHand":
+          return (a.onHand - b.onHand) * dir;
+        case "incoming":
+          return (a.incomingUnits - b.incomingUnits) * dir;
+        case "velocity":
+          return (nullish(a.velocityPerDay7d) - nullish(b.velocityPerDay7d)) * dir;
+        case "weeksOfStock":
+          return (nullish(a.weeksOfStock) - nullish(b.weeksOfStock)) * dir;
+        case "unitCost":
+          return (nullish(a.unitCostUsd) - nullish(b.unitCostUsd)) * dir;
+        case "stockValue":
+          return (a.stockValueUsd - b.stockValueUsd) * dir;
+        case "flag":
+        default: {
           const fa = a.flag ? FLAG_RANK[a.flag] ?? 99 : 99;
           const fb = b.flag ? FLAG_RANK[b.flag] ?? 99 : 99;
-          if (fa !== fb) return fa - fb;
-          const toNum = (x: number | null) => (x === null ? Infinity : x);
-          return toNum(a.weeksOfStock) - toNum(b.weeksOfStock);
-        });
-    }
+          if (fa !== fb) return (fa - fb) * dir;
+          // Within a flag bucket, weeks-of-stock asc gives stable tiebreak.
+          return nullish(a.weeksOfStock) - nullish(b.weeksOfStock);
+        }
+      }
+    };
+    return [...filtered].sort(compare);
   }, [rows, sort, filter]);
 
   const exportCsv = () => {
@@ -130,17 +149,6 @@ export function InventoryTable({
             placeholder="Filter SKU or product…"
             className="rounded border border-neutral-300 px-2 py-1 text-sm"
           />
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as SortKey)}
-            className="rounded border border-neutral-300 px-2 py-1 text-sm"
-          >
-            <option value="flag">Sort: Status (worst first)</option>
-            <option value="weeksOfStock">Sort: Weeks of stock ↑</option>
-            <option value="onHand">Sort: Stock ↑</option>
-            <option value="sku">Sort: SKU</option>
-            <option value="stockValue">Sort: Value ↓</option>
-          </select>
           <button
             onClick={exportCsv}
             className="rounded bg-neutral-900 px-3 py-1 text-sm font-medium text-white hover:bg-neutral-700"
@@ -153,15 +161,15 @@ export function InventoryTable({
         <table className="w-full text-sm">
           <thead className="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-600">
             <tr>
-              <th className="px-4 py-2 font-medium">SKU</th>
-              <th className="px-4 py-2 font-medium">Product</th>
-              <th className="px-4 py-2 font-medium text-right">Stock</th>
-              <th className="px-4 py-2 font-medium text-right">Incoming</th>
-              <th className="px-4 py-2 font-medium text-right">Velocity/day</th>
-              <th className="px-4 py-2 font-medium text-right">Weeks of stock</th>
-              <th className="px-4 py-2 font-medium">Status</th>
-              <th className="px-4 py-2 font-medium text-right">Unit cost</th>
-              <th className="px-4 py-2 font-medium text-right">Stock value</th>
+              <SortableHeader label="SKU" sortKey="sku" config={sort} onChange={setSort} />
+              <SortableHeader label="Product" sortKey="productName" config={sort} onChange={setSort} />
+              <SortableHeader label="Stock" sortKey="onHand" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="Incoming" sortKey="incoming" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="Velocity/day" sortKey="velocity" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="Weeks of stock" sortKey="weeksOfStock" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="Status" sortKey="flag" config={sort} onChange={setSort} />
+              <SortableHeader label="Unit cost" sortKey="unitCost" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="Stock value" sortKey="stockValue" config={sort} onChange={setSort} align="right" />
             </tr>
           </thead>
           <tbody>

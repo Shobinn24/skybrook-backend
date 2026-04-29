@@ -2,9 +2,19 @@
 
 import { useMemo, useState } from "react";
 import { KpiCard } from "@/components/inventory/KpiCard";
+import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
 import { trpc } from "@/lib/trpc/client";
 
 type LocationFilter = "all" | "US" | "CN";
+
+type SortKey =
+  | "sku"
+  | "productName"
+  | "location"
+  | "onHand"
+  | "velocity"
+  | "daysOfStock"
+  | "stockValue";
 
 function fmtMoney(n: number): string {
   return n.toLocaleString("en-US", {
@@ -31,10 +41,14 @@ export default function OverstockPage() {
   const { data, isLoading, error } = trpc.inventory.getOverstockView.useQuery();
   const [search, setSearch] = useState("");
   const [location, setLocation] = useState<LocationFilter>("all");
+  const [sort, setSort] = useState<SortConfig<SortKey>>({
+    key: "stockValue",
+    direction: "desc",
+  });
 
   const filteredRows = useMemo(() => {
     const rows = data?.rows ?? [];
-    return rows.filter((r) => {
+    const matched = rows.filter((r) => {
       if (location !== "all" && r.location !== location) return false;
       if (
         search.trim() &&
@@ -45,7 +59,22 @@ export default function OverstockPage() {
       }
       return true;
     });
-  }, [data?.rows, search, location]);
+    const dir = sort.direction === "asc" ? 1 : -1;
+    const nullish = (x: number | null) => (x === null ? Infinity : x);
+    return [...matched].sort((a, b) => {
+      switch (sort.key) {
+        case "sku": return a.sku.localeCompare(b.sku) * dir;
+        case "productName": return a.productName.localeCompare(b.productName) * dir;
+        case "location": return a.location.localeCompare(b.location) * dir;
+        case "onHand": return (a.onHand - b.onHand) * dir;
+        case "velocity": return (nullish(a.velocityPerDay7d) - nullish(b.velocityPerDay7d)) * dir;
+        case "daysOfStock": return (nullish(a.daysOfStock) - nullish(b.daysOfStock)) * dir;
+        case "stockValue":
+        default:
+          return (a.stockValueUsd - b.stockValueUsd) * dir;
+      }
+    });
+  }, [data?.rows, search, location, sort]);
 
   if (isLoading) {
     return <div className="text-sm text-neutral-500">Loading overstock view…</div>;
@@ -134,18 +163,20 @@ export default function OverstockPage() {
             <table className="w-full text-sm">
               <thead className="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
                 <tr>
-                  <th className="px-4 py-2 font-medium">SKU</th>
-                  <th className="px-4 py-2 font-medium">Product</th>
-                  <th className="px-4 py-2 font-medium">Location</th>
-                  <th className="px-4 py-2 font-medium text-right">On hand</th>
-                  <th
-                    className="px-4 py-2 font-medium text-right"
+                  <SortableHeader label="SKU" sortKey="sku" config={sort} onChange={setSort} />
+                  <SortableHeader label="Product" sortKey="productName" config={sort} onChange={setSort} />
+                  <SortableHeader label="Location" sortKey="location" config={sort} onChange={setSort} />
+                  <SortableHeader label="On hand" sortKey="onHand" config={sort} onChange={setSort} align="right" />
+                  <SortableHeader
+                    label="Velocity 7d"
+                    sortKey="velocity"
+                    config={sort}
+                    onChange={setSort}
+                    align="right"
                     title="Velocity (units/day, 7-day window)"
-                  >
-                    Velocity 7d
-                  </th>
-                  <th className="px-4 py-2 font-medium text-right">Days of stock</th>
-                  <th className="px-4 py-2 font-medium text-right">Stock value</th>
+                  />
+                  <SortableHeader label="Days of stock" sortKey="daysOfStock" config={sort} onChange={setSort} align="right" />
+                  <SortableHeader label="Stock value" sortKey="stockValue" config={sort} onChange={setSort} align="right" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">
