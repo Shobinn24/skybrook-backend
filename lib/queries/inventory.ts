@@ -46,6 +46,7 @@ export type InventoryRow = {
   productName: string;
   productLine: string | null;
   onHand: number;
+  unitCostUsd: number | null;
   stockValueUsd: number;
   velocityPerDay7d: number | null;
   daysOfStock: number | null;
@@ -243,6 +244,7 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
       productName: s.productName,
       productLine: s.productLine,
       onHand: s.onHand,
+      unitCostUsd: s.unitCostUsd ? Number(s.unitCostUsd) : null,
       stockValueUsd,
       velocityPerDay7d: velocityPerDay,
       daysOfStock: dos,

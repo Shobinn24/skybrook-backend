@@ -25,6 +25,13 @@ function moneyDisplay(n: number): string {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 }
 
+// Per-unit cost is small ($1–$30 range), so show 2 decimals — operators
+// care about the cents when reading this column.
+function unitCostDisplay(n: number | null): string {
+  if (n === null || n === 0) return "—";
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+}
+
 export function InventoryTable({
   warehouse,
   rows,
@@ -77,6 +84,7 @@ export function InventoryTable({
       "flag",
       "run_out_date",
       "incoming_units",
+      "unit_cost_usd",
       "stock_value_usd",
       "snapshot_date",
     ];
@@ -96,6 +104,7 @@ export function InventoryTable({
           r.flag ?? "",
           r.runOutDate ?? "",
           r.incomingUnits,
+          r.unitCostUsd?.toFixed(4) ?? "",
           r.stockValueUsd.toFixed(2),
           r.snapshotDate,
         ].join(",")
@@ -151,6 +160,7 @@ export function InventoryTable({
               <th className="px-4 py-2 font-medium text-right">Velocity/day</th>
               <th className="px-4 py-2 font-medium text-right">Weeks of stock</th>
               <th className="px-4 py-2 font-medium">Status</th>
+              <th className="px-4 py-2 font-medium text-right">Unit cost</th>
               <th className="px-4 py-2 font-medium text-right">Stock value</th>
             </tr>
           </thead>
@@ -188,6 +198,9 @@ export function InventoryTable({
                 <td className="px-4 py-2">
                   <FlagPill flag={r.flag} />
                 </td>
+                <td className="px-4 py-2 text-right tabular-nums text-neutral-600">
+                  {unitCostDisplay(r.unitCostUsd)}
+                </td>
                 <td className="px-4 py-2 text-right tabular-nums">
                   <TracedNumber trace={r.trace.stockValue}>
                     {moneyDisplay(r.stockValueUsd)}
@@ -197,7 +210,7 @@ export function InventoryTable({
             ))}
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-sm text-neutral-500">
+                <td colSpan={9} className="px-4 py-6 text-center text-sm text-neutral-500">
                   No stock data for {warehouse} yet. Run the daily ingest to populate.
                 </td>
               </tr>
