@@ -22,23 +22,55 @@
 // went unmatched against `ev-9055-5x-xxl` (1.7k units / 4 weeks). We
 // canonicalize trailing `-2xl` → `-xxl` since `xxl` is the dominant
 // form across both the inventory sheet and Shopify.
+//
+// Family-aware pack base: most families track inventory at the 5-pack
+// level, but `mens` and `cb` track at the 3-pack level instead (Scott
+// 2026-04-29). For those families, `6x` → 2× 3x, `9x` → 3× 3x (mens),
+// `12x` → 4× 3x (cb). Family rules are exclusive — when a family has
+// its own ruleset, default rules don't fall through, so `ev-mens-10x-l`
+// (which shouldn't exist in practice) won't accidentally decompose to
+// 5-pack base.
 
-const PACK_TOKEN_RE = /^ev-([a-zA-Z0-9-]+)-(1|5|10|15)x?-(.+)$/i;
+const PACK_TOKEN_RE = /^ev-([a-zA-Z0-9-]+)-(1|3|5|6|9|10|12|15)x?-(.+)$/i;
 
-// (numeric pack token) → (canonical x-form, multiplier in 5-pack units)
+type PackTarget = { canonicalToken: string; multiplier: number };
+
+// Default 5-pack base: applies to every family without its own ruleset.
 //   1, 5  → cosmetic rename only ("ev-x-5-l" → "ev-x-5x-l", multiplier 1)
 //   10    → decompose to 5x with multiplier 2
 //   15    → decompose to 5x with multiplier 3
-const TARGET: Record<string, { canonicalToken: string; multiplier: number }> = {
+const DEFAULT_PACK_RULES: Record<string, PackTarget> = {
   "1": { canonicalToken: "1x", multiplier: 1 },
   "5": { canonicalToken: "5x", multiplier: 1 },
   "10": { canonicalToken: "5x", multiplier: 2 },
   "15": { canonicalToken: "5x", multiplier: 3 },
 };
 
+// Family-specific rules. Keyed by exact family token (the chunk between
+// `ev-` and the pack token). When a family is listed here, ITS rules
+// are used exclusively — defaults do not fall through.
+const FAMILY_PACK_RULES: Record<string, Record<string, PackTarget>> = {
+  // Mens 3-pack base. 6-pack = 2× 3x, 9-pack = 3× 3x.
+  mens: {
+    "3": { canonicalToken: "3x", multiplier: 1 },
+    "6": { canonicalToken: "3x", multiplier: 2 },
+    "9": { canonicalToken: "3x", multiplier: 3 },
+  },
+  // CB 3-pack base. 6-pack = 2× 3x, 12-pack = 4× 3x.
+  cb: {
+    "3": { canonicalToken: "3x", multiplier: 1 },
+    "6": { canonicalToken: "3x", multiplier: 2 },
+    "12": { canonicalToken: "3x", multiplier: 4 },
+  },
+};
+
+function rulesForFamily(family: string): Record<string, PackTarget> {
+  return FAMILY_PACK_RULES[family] ?? DEFAULT_PACK_RULES;
+}
+
 export type DecomposedSku = {
   canonicalSku: string; // the canonical x-form (decomposed if needed)
-  multiplier: number; // how many 5-packs one of the original equals
+  multiplier: number; // how many canonical-base packs one of the original equals
 };
 
 export function decomposePackSku(sku: string): DecomposedSku | null {
@@ -47,7 +79,7 @@ export function decomposePackSku(sku: string): DecomposedSku | null {
   if (!m) return null;
   const [, family, packMatch, rest] = m;
   const numericPack = packMatch.replace(/x$/, "");
-  const target = TARGET[numericPack];
+  const target = rulesForFamily(family)[numericPack];
   if (!target) return null;
   const canonicalRest = canonicalizeSizeToken(rest);
   const canonicalSku = `ev-${family}-${target.canonicalToken}-${canonicalRest}`;
@@ -66,8 +98,9 @@ function canonicalizeSizeToken(rest: string): string {
 // from before ingest-side normalization landed. The cron purges these
 // after each Shopify run to keep the orphan list clean. Patterns
 // target tokens that `decomposePackSku` has since replaced with the
-// canonical form: dash-form pack tokens, 10/15-pack rows, and the
-// `-2xl` size alias (now folded into `-xxl`).
+// canonical form: dash-form pack tokens, 10/15-pack rows for default
+// families, mens 6/9-pack rows (now 3x base), cb 6/12-pack rows (now
+// 3x base), and the `-2xl` size alias (now folded into `-xxl`).
 export const PACK_SKU_DB_PATTERNS: ReadonlyArray<string> = [
   "ev-%-1-%",
   "ev-%-5-%",
@@ -75,5 +108,15 @@ export const PACK_SKU_DB_PATTERNS: ReadonlyArray<string> = [
   "ev-%-10-%",
   "ev-%-15x-%",
   "ev-%-15-%",
+  "ev-mens-3-%",
+  "ev-mens-6x-%",
+  "ev-mens-6-%",
+  "ev-mens-9x-%",
+  "ev-mens-9-%",
+  "ev-cb-3-%",
+  "ev-cb-6x-%",
+  "ev-cb-6-%",
+  "ev-cb-12x-%",
+  "ev-cb-12-%",
   "ev-%-2xl",
 ];

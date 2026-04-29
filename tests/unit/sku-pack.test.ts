@@ -126,4 +126,74 @@ describe("decomposePackSku", () => {
       multiplier: 2,
     });
   });
+
+  it("decomposes mens 6-pack to 3-pack with multiplier 2", () => {
+    // Scott 2026-04-29: "Men's 6 and 9 pack are multiples of the 3 pack".
+    // Mens family tracks inventory at 3-pack base, not 5-pack.
+    expect(decomposePackSku("ev-mens-6x-l")).toEqual({
+      canonicalSku: "ev-mens-3x-l",
+      multiplier: 2,
+    });
+    expect(decomposePackSku("ev-mens-6-xxl")).toEqual({
+      canonicalSku: "ev-mens-3x-xxl",
+      multiplier: 2,
+    });
+  });
+
+  it("decomposes mens 9-pack to 3-pack with multiplier 3", () => {
+    expect(decomposePackSku("ev-mens-9x-l")).toEqual({
+      canonicalSku: "ev-mens-3x-l",
+      multiplier: 3,
+    });
+    expect(decomposePackSku("EV-MENS-9-3xl")).toEqual({
+      canonicalSku: "ev-mens-3x-3xl",
+      multiplier: 3,
+    });
+  });
+
+  it("renames dash-form mens 3-pack to x-form (cosmetic only)", () => {
+    expect(decomposePackSku("ev-mens-3-l")).toEqual({
+      canonicalSku: "ev-mens-3x-l",
+      multiplier: 1,
+    });
+  });
+
+  it("decomposes cb 6-pack to 3-pack with multiplier 2 and 12-pack with multiplier 4", () => {
+    // Scott 2026-04-29: cb 6 and 12-pack SKUs are multiples of the 3-pack.
+    expect(decomposePackSku("ev-cb-6x-l")).toEqual({
+      canonicalSku: "ev-cb-3x-l",
+      multiplier: 2,
+    });
+    expect(decomposePackSku("ev-cb-12x-xxl")).toEqual({
+      canonicalSku: "ev-cb-3x-xxl",
+      multiplier: 4,
+    });
+    expect(decomposePackSku("ev-cb-12-l")).toEqual({
+      canonicalSku: "ev-cb-3x-l",
+      multiplier: 4,
+    });
+  });
+
+  it("returns null for already-canonical mens/cb 3-pack SKUs", () => {
+    expect(decomposePackSku("ev-mens-3x-l")).toBeNull();
+    expect(decomposePackSku("ev-cb-3x-xxl")).toBeNull();
+  });
+
+  it("does not apply default 5-pack rules to mens/cb families", () => {
+    // Family-specific rules are exclusive — mens has no 5/10/15 rules,
+    // so an unexpected `ev-mens-10x-l` (which shouldn't exist) returns
+    // null rather than wrongly decomposing to 5-pack base.
+    expect(decomposePackSku("ev-mens-10x-l")).toBeNull();
+    expect(decomposePackSku("ev-cb-10x-l")).toBeNull();
+    expect(decomposePackSku("ev-mens-5x-l")).toBeNull();
+  });
+
+  it("does not apply mens/cb 3-pack rules to other families", () => {
+    // Other families don't have `3` in their default ruleset, so e.g.
+    // `ev-hw-hf-3-l` (which exists in inventory as a dash-form 3-pack)
+    // is left alone — its inventory is tracked at 3-pack but it's not
+    // in the family-rules map, so no decomposition or rename runs.
+    expect(decomposePackSku("ev-hw-hf-3-l")).toBeNull();
+    expect(decomposePackSku("ev-hw-hf-6-s")).toBeNull();
+  });
 });

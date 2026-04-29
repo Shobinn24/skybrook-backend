@@ -160,6 +160,11 @@ export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
       // for the same product, and Postgres `=` is case-sensitive, so
       // mixed-case rows wouldn't match the lowercase skus catalog.
       const skuLower = li.sku.toLowerCase();
+      // Skip non-inventory SKUs. Inventory follows the `ev-*` convention;
+      // anything else is a digital good, gift card, sample, or one-off
+      // (e.g. `7-ways-ebook-1` — Scott 2026-04-29: "Ignore this"). These
+      // would otherwise show up as orphanSalesSkus on every audit.
+      if (!skuLower.startsWith("ev-")) continue;
       // Pack-SKU normalization: 10-pack and 15-pack SKUs come out of
       // 5-pack inventory. Multiply units by the pack factor and key
       // the row under the canonical 5-pack SKU. Net stays at the
@@ -269,14 +274,18 @@ function makeRunner(channel: Channel): SourceRunner {
         }
         // Purge legacy rows for this channel that the current ingest
         // would have eliminated:
-        //   - mixed-case SKUs   (now lowercased at aggregation)
-        //   - 10/15-pack rows   (now decomposed to 5x form)
+        //   - mixed-case SKUs       (now lowercased at aggregation)
+        //   - non-`ev-` SKUs        (now skipped at aggregation — gift
+        //                            cards, ebooks, custom items)
+        //   - 10/15-pack rows       (now decomposed to 5x form)
+        //   - mens/cb 6/9/12-pack   (now decomposed to 3x form)
         // Idempotent — subsequent runs match nothing.
         await db.delete(dailySales).where(
           and(
             eq(dailySales.channel, channel),
             or(
               sql`${dailySales.sku} <> LOWER(${dailySales.sku})`,
+              sql`${dailySales.sku} NOT LIKE 'ev-%'`,
               ...PACK_SKU_DB_PATTERNS.map((p) => like(dailySales.sku, p))
             )!
           )

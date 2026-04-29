@@ -130,7 +130,20 @@ export type UnitCostSyncResult = {
   skippedErrors: number;
   latestColumn: string;
   duplicates: number;
+  // Mirror pass — fc-line SKUs (e.g. ev-bshort-fc-*) inherit cost from
+  // their non-fc sibling. Scott 2026-04-29: "Boyshort 5-color > Same
+  // price as boyshort regular… Color doesn't change cost."
+  mirrored: number;
 };
+
+// Drop the `-fc-` qualifier from the SKU to find its non-fc sibling.
+// `ev-bshort-fc-5x-l`     → `ev-bshort-5x-l`
+// `ev-bshort-fc-hf-5x-l`  → `ev-bshort-hf-5x-l`
+// `ev-suphw-fc-5x-l`      → `ev-suphw-5x-l`
+function fcMirrorBase(sku: string): string | null {
+  if (!/^ev-(bshort|suphw)-fc-/.test(sku)) return null;
+  return sku.replace("-fc-", "-");
+}
 
 export async function syncUnitCosts(opts?: {
   // Tests inject a deterministic provider; production reads the sheet.
@@ -195,6 +208,28 @@ export async function syncUnitCosts(opts?: {
     }
     await db.update(skus).set({ unitCostUsd: newCostStr }).where(eq(skus.sku, sku));
     updated++;
+    currentBySku.set(sku, newCostStr); // keep map in sync for the mirror pass
+  }
+
+  // Mirror pass: any fc-line SKU still without a cost inherits from its
+  // non-fc sibling's cost (this run's fresh cost preferred over the
+  // pre-existing DB value).
+  let mirrored = 0;
+  const isPriced = (raw: unknown): boolean => {
+    if (raw == null) return false;
+    const n = typeof raw === "number" ? raw : Number(raw);
+    return Number.isFinite(n) && n > 0;
+  };
+  for (const fcSku of allSkus) {
+    if (isPriced(currentBySku.get(fcSku))) continue;
+    const baseSku = fcMirrorBase(fcSku);
+    if (!baseSku) continue;
+    const baseCost = seen.get(baseSku) ?? Number(currentBySku.get(baseSku) ?? NaN);
+    if (!Number.isFinite(baseCost) || baseCost <= 0) continue;
+    const baseCostStr = baseCost.toFixed(4);
+    await db.update(skus).set({ unitCostUsd: baseCostStr }).where(eq(skus.sku, fcSku));
+    currentBySku.set(fcSku, baseCostStr);
+    mirrored++;
   }
 
   logger.info("unit-costs.done", {
@@ -203,6 +238,7 @@ export async function syncUnitCosts(opts?: {
     skippedNoSku,
     skippedErrors: errorRows,
     duplicates,
+    mirrored,
     latestColumn: latestColumn.dateLabel,
     sheetSkus: rows.length,
     distinctSkus: seen.size,
@@ -216,5 +252,6 @@ export async function syncUnitCosts(opts?: {
     skippedErrors: errorRows,
     latestColumn: latestColumn.dateLabel,
     duplicates,
+    mirrored,
   };
 }
