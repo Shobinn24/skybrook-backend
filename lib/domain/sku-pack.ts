@@ -72,6 +72,32 @@ const FAMILY_PACK_RULES: Record<string, Record<string, PackTarget>> = {
     "6": { canonicalToken: "3x", multiplier: 2 },
     "12": { canonicalToken: "3x", multiplier: 4 },
   },
+  // HW HF and OG HF: have legitimate 1/3/5-pack inventory plus 6/9-pack
+  // sales that decompose to 3-pack base (mirror of mens 3/6/9 pattern).
+  // Both families therefore need the full default ruleset (1/5/10/15)
+  // PLUS the 3-pack family rules — exclusive family-rule lookup means
+  // we have to spread defaults explicitly. Inventory is dash-form for
+  // 1/3/5 (`ev-hw-hf-3-l`, `ev-og-hf-5-xs`) so the rename rules cover
+  // the canonicalization path. 6/9-pack volume is tiny (3 units / 30d)
+  // but the structure is identical to mens — close the orphans.
+  "hw-hf": {
+    "1": { canonicalToken: "1x", multiplier: 1 },
+    "3": { canonicalToken: "3x", multiplier: 1 },
+    "5": { canonicalToken: "5x", multiplier: 1 },
+    "6": { canonicalToken: "3x", multiplier: 2 },
+    "9": { canonicalToken: "3x", multiplier: 3 },
+    "10": { canonicalToken: "5x", multiplier: 2 },
+    "15": { canonicalToken: "5x", multiplier: 3 },
+  },
+  "og-hf": {
+    "1": { canonicalToken: "1x", multiplier: 1 },
+    "3": { canonicalToken: "3x", multiplier: 1 },
+    "5": { canonicalToken: "5x", multiplier: 1 },
+    "6": { canonicalToken: "3x", multiplier: 2 },
+    "9": { canonicalToken: "3x", multiplier: 3 },
+    "10": { canonicalToken: "5x", multiplier: 2 },
+    "15": { canonicalToken: "5x", multiplier: 3 },
+  },
 };
 
 function rulesForFamily(family: string): Record<string, PackTarget> {
@@ -138,5 +164,15 @@ export const PACK_SKU_DB_PATTERNS: ReadonlyArray<string> = [
   "ev-cb-6-%",
   "ev-cb-12x-%",
   "ev-cb-12-%",
+  "ev-hw-hf-3-%",
+  "ev-hw-hf-6x-%",
+  "ev-hw-hf-6-%",
+  "ev-hw-hf-9x-%",
+  "ev-hw-hf-9-%",
+  "ev-og-hf-3-%",
+  "ev-og-hf-6x-%",
+  "ev-og-hf-6-%",
+  "ev-og-hf-9x-%",
+  "ev-og-hf-9-%",
   "ev-%-2xl",
 ];

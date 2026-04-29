@@ -331,7 +331,9 @@ export const sheetsInventoryRunner: SourceRunner = async (_batchId) => {
       // Size-alias patterns are similarly narrowed to 1/5-pack rows: 10/15
       // packs aren't decomposed here, so wide `-2xl` cleanup would loop.
       const LEGACY_INVENTORY_PATTERNS = [
-        "ev-%-1-%", "ev-%-5-%",        // dash-form pack tokens
+        "ev-%-1-%", "ev-%-5-%",        // dash-form pack tokens (1/5)
+        "ev-mens-3-%", "ev-cb-3-%",    // dash-form 3-pack mens/cb
+        "ev-hw-hf-3-%", "ev-og-hf-3-%", // dash-form 3-pack hw-hf/og-hf
         "ev-%-1x-2xl", "ev-%-5x-2xl",  // 2xl size alias on 1/5-pack SKUs
       ];
       for (const p of LEGACY_INVENTORY_PATTERNS) {

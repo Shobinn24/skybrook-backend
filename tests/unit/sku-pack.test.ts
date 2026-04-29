@@ -190,13 +190,50 @@ describe("decomposePackSku", () => {
     expect(decomposePackSku("ev-mens-5x-l")).toBeNull();
   });
 
-  it("does not apply mens/cb 3-pack rules to other families", () => {
-    // Other families don't have `3` in their default ruleset, so e.g.
-    // `ev-hw-hf-3-l` (which exists in inventory as a dash-form 3-pack)
-    // is left alone — its inventory is tracked at 3-pack but it's not
-    // in the family-rules map, so no decomposition or rename runs.
-    expect(decomposePackSku("ev-hw-hf-3-l")).toBeNull();
-    expect(decomposePackSku("ev-hw-hf-6-s")).toBeNull();
+  it("decomposes hw-hf and og-hf 6/9-pack to 3x base (assumed parallel to mens)", () => {
+    // hw-hf and og-hf inventory mirror mens/cb structure: dash-form
+    // 3-pack rows in the sheet, plus tiny-volume 6/9-pack sales (3 units
+    // total over 30d) that have no inventory match. Volume is too small
+    // to wait for explicit confirmation; the structural symmetry with
+    // Scott-confirmed mens 6/9 → 3 makes the rule safe.
+    expect(decomposePackSku("ev-hw-hf-3-l")).toEqual({
+      canonicalSku: "ev-hw-hf-3x-l",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-hw-hf-6-s")).toEqual({
+      canonicalSku: "ev-hw-hf-3x-s",
+      multiplier: 2,
+    });
+    expect(decomposePackSku("ev-hw-hf-9-s")).toEqual({
+      canonicalSku: "ev-hw-hf-3x-s",
+      multiplier: 3,
+    });
+    expect(decomposePackSku("ev-og-hf-3-l")).toEqual({
+      canonicalSku: "ev-og-hf-3x-l",
+      multiplier: 1,
+    });
+  });
+
+  it("preserves hw-hf and og-hf legit 1/5-pack inventory", () => {
+    // These families have full default-style inventory (1, 5, 10, 15)
+    // PLUS the 3-pack line. Family rules are exclusive, so defaults
+    // had to be re-stated.
+    expect(decomposePackSku("ev-hw-hf-5-l")).toEqual({
+      canonicalSku: "ev-hw-hf-5x-l",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-og-hf-5-xs")).toEqual({
+      canonicalSku: "ev-og-hf-5x-xs",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-og-hf-1-black-l")).toEqual({
+      canonicalSku: "ev-og-hf-1x-black-l",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-hw-hf-10-l")).toEqual({
+      canonicalSku: "ev-hw-hf-5x-l",
+      multiplier: 2,
+    });
   });
 
   it("collapses bare-size hw 5-packs to no-pack form", () => {
