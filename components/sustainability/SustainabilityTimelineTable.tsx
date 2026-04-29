@@ -3,6 +3,8 @@
 import { Fragment, useMemo, useState } from "react";
 import Link from "next/link";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
+import { TracedNumber } from "@/components/trace/TracedNumber";
+import type { NumberTrace } from "@/lib/queries/inventory";
 import type { SustainabilityTimelineResult } from "@/lib/queries/sustainability-timeline";
 
 type SustainSortKey = "sku" | "product" | "sales" | "prorated" | "stock";
@@ -202,10 +204,20 @@ export function SustainabilityTimelineTable({
                     </Link>
                   </td>
                   <td className="px-3 py-1.5 text-neutral-700">{r.productName}</td>
-                  <td className="px-3 py-1.5 text-right tabular-nums">{fmtNum(r.salesInWindow)}</td>
-                  <td className="px-3 py-1.5 text-right tabular-nums">{fmtNum(r.proratedThirtyD)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">
+                    <TracedNumber trace={salesTrace(r, data, location)}>
+                      {fmtNum(r.salesInWindow)}
+                    </TracedNumber>
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">
+                    <TracedNumber trace={proratedTrace(r, data, location)}>
+                      {fmtNum(r.proratedThirtyD)}
+                    </TracedNumber>
+                  </td>
                   <td className="border-r border-neutral-200 px-3 py-1.5 text-right tabular-nums">
-                    {fmtNum(r.currentStock)}
+                    <TracedNumber trace={stockTrace(r, location)}>
+                      {fmtNum(r.currentStock)}
+                    </TracedNumber>
                   </td>
                   {r.projections.map((p, i) => {
                     const colCls =
@@ -262,4 +274,75 @@ export function SustainabilityTimelineTable({
       </div>
     </section>
   );
+}
+
+// Trace builders — synthesize NumberTrace payloads inline from row +
+// data context. Cheap to compute per-row and keeps the JSX terse.
+
+type RowT = SustainabilityTimelineResult["rows"][number];
+
+function salesTrace(
+  r: RowT,
+  data: SustainabilityTimelineResult | undefined,
+  location: "US" | "CN",
+): NumberTrace | null {
+  if (!data) return null;
+  const channel = location === "US" ? "shopify_us" : "shopify_intl";
+  return {
+    label: `Sales in window — ${r.sku} @ ${location}`,
+    formula: `Σ daily_sales.units_sold for ${data.windowStart} → ${data.windowEnd} (${data.windowDays}d)`,
+    inputs: [
+      { label: "Window", value: `${data.windowDays}d` },
+      { label: "From", value: data.windowStart },
+      { label: "To", value: data.windowEnd },
+      { label: "Channel", value: channel },
+      { label: "Units in window", value: r.salesInWindow.toLocaleString() },
+    ],
+    sources: [
+      { label: "Source", ref: `daily_sales (channel='${channel}')` },
+      {
+        label: "Routing",
+        ref: "shopify_us → US warehouse, shopify_intl → CN warehouse",
+      },
+    ],
+  };
+}
+
+function proratedTrace(
+  r: RowT,
+  data: SustainabilityTimelineResult | undefined,
+  location: "US" | "CN",
+): NumberTrace | null {
+  if (!data || data.windowDays <= 0) return null;
+  const factor = 30 / data.windowDays;
+  return {
+    label: `Prorated 30D — ${r.sku} @ ${location}`,
+    formula: "salesInWindow × (30 / windowDays)",
+    inputs: [
+      { label: "Sales in window", value: r.salesInWindow.toLocaleString() },
+      { label: "Window", value: `${data.windowDays}d` },
+      { label: "Multiplier", value: factor.toFixed(3) },
+      { label: "Prorated 30D", value: r.proratedThirtyD.toLocaleString() },
+    ],
+    sources: [
+      { label: "Computed in", ref: "lib/queries/sustainability-timeline.ts" },
+      {
+        label: "Why",
+        ref: "Lets operators compare any window length on a common 30-day basis.",
+      },
+    ],
+  };
+}
+
+function stockTrace(r: RowT, location: "US" | "CN"): NumberTrace | null {
+  return {
+    label: `Current stock — ${r.sku} @ ${location}`,
+    formula: "Latest snapshot from the inventory sheet at this warehouse.",
+    inputs: [
+      { label: "On hand", value: `${r.currentStock.toLocaleString()} units` },
+    ],
+    sources: [
+      { label: "Source", ref: "stock_snapshots (latest per sku, location)" },
+    ],
+  };
 }

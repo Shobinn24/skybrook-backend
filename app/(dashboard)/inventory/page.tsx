@@ -7,12 +7,23 @@ import {
   type WarehouseSelection,
 } from "@/components/inventory/WarehouseToggle";
 import { trpc } from "@/lib/trpc/client";
+import type { NumberTrace } from "@/lib/queries/inventory";
 
 function moneyCompact(n: number): string {
   if (n === 0) return "$0";
   if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
   if (Math.abs(n) >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
   return `$${n.toLocaleString()}`;
+}
+
+// Trace popovers want a precise dollar figure even when the KPI card
+// shows the compact form ($1.2M). Render whole dollars with commas.
+function stockValueDisplay(n: number): string {
+  return n.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  });
 }
 
 export default function InventoryPage() {
@@ -55,8 +66,88 @@ export default function InventoryPage() {
     const watch = rows.filter((x) => x.flag === "watch").length;
     const overstocked = rows.filter((x) => x.flag === "overstocked").length;
     const incoming = rows.reduce((n, x) => n + x.incomingUnits, 0);
-    return { stockValue, atRisk, watch, overstocked, incoming, skuCount: rows.length };
+    const totalUnits = rows.reduce((n, x) => n + x.onHand, 0);
+    const pricedRows = rows.filter((x) => (x.unitCostUsd ?? 0) > 0).length;
+    return {
+      stockValue,
+      atRisk,
+      watch,
+      overstocked,
+      incoming,
+      skuCount: rows.length,
+      totalUnits,
+      pricedRows,
+    };
   }, [rows]);
+
+  const scopeRefLabel = isAll ? "All warehouses (US + CN)" : `${selection} warehouse`;
+
+  // Click-to-inspect traces for the KPI strip. Mirrors the per-row
+  // traces on the inventory table — formula + inputs + sources.
+  // Recomputed off the same `rows` the cards display so the math
+  // displayed in the popover always reconciles.
+  const stockValueTrace: NumberTrace = {
+    label: `Stock value — ${scopeRefLabel}`,
+    formula: "Σ on_hand × unit_cost across the displayed rows",
+    inputs: [
+      { label: "Rows summed", value: kpis.skuCount.toLocaleString() },
+      { label: "Total on-hand units", value: kpis.totalUnits.toLocaleString() },
+      { label: "Rows with a unit cost", value: kpis.pricedRows.toLocaleString() },
+      { label: "Stock value", value: stockValueDisplay(kpis.stockValue) },
+    ],
+    sources: [
+      { label: "Stock", ref: "stock_snapshots (latest per sku, location)" },
+      { label: "Cost", ref: "skus.unit_cost_usd / unit_cost_intl_usd" },
+    ],
+    note:
+      kpis.pricedRows < kpis.skuCount
+        ? `${kpis.skuCount - kpis.pricedRows} row(s) have no unit cost; their stock value contribution is $0.`
+        : undefined,
+  };
+  const atRiskTrace: NumberTrace = {
+    label: `SKUs at risk — ${scopeRefLabel}`,
+    formula: "count of (sku, location) rows where sustainability flag = 'at_risk'",
+    inputs: [
+      { label: "Rows scanned", value: kpis.skuCount.toLocaleString() },
+      { label: "At risk", value: kpis.atRisk.toLocaleString() },
+      { label: "Watch", value: kpis.watch.toLocaleString() },
+    ],
+    sources: [
+      { label: "Source", ref: "sustainability_flags (latest per sku, location)" },
+      {
+        label: "Threshold",
+        ref: "at_risk = projected days of stock < 7d (per spec §4.3)",
+      },
+    ],
+  };
+  const overstockedTrace: NumberTrace = {
+    label: `Overstocked SKUs — ${scopeRefLabel}`,
+    formula:
+      "count of (sku, location) rows where sustainability flag = 'overstocked'",
+    inputs: [
+      { label: "Rows scanned", value: kpis.skuCount.toLocaleString() },
+      { label: "Overstocked", value: kpis.overstocked.toLocaleString() },
+    ],
+    sources: [
+      { label: "Source", ref: "sustainability_flags (latest per sku, location)" },
+      {
+        label: "Threshold",
+        ref: "overstocked = projected days of stock > 90d (per spec §4.3)",
+      },
+    ],
+  };
+  const incomingTrace: NumberTrace = {
+    label: `Incoming units — ${scopeRefLabel}`,
+    formula: "Σ pending PO quantities across the displayed rows",
+    inputs: [
+      { label: "Rows summed", value: kpis.skuCount.toLocaleString() },
+      { label: "Total incoming", value: kpis.incoming.toLocaleString() },
+    ],
+    sources: [
+      { label: "Source", ref: "incoming_shipments where status != 'arrived'" },
+      { label: "Filtered to", ref: scopeRefLabel },
+    ],
+  };
 
   // Header label: "all warehouses" reads better than "All" inline.
   const scopeLabel = isAll ? "all warehouses" : `${selection} warehouse`;
@@ -83,15 +174,25 @@ export default function InventoryPage() {
           label="Stock value"
           value={moneyCompact(kpis.stockValue)}
           hint={skuCountHint}
+          trace={stockValueTrace}
         />
         <KpiCard
           label="SKUs at risk"
           value={kpis.atRisk}
           tone={kpis.atRisk > 0 ? "danger" : "neutral"}
           hint={kpis.watch > 0 ? `+${kpis.watch} on watch` : undefined}
+          trace={atRiskTrace}
         />
-        <KpiCard label="Overstocked SKUs" value={kpis.overstocked} />
-        <KpiCard label="Incoming units" value={kpis.incoming.toLocaleString()} />
+        <KpiCard
+          label="Overstocked SKUs"
+          value={kpis.overstocked}
+          trace={overstockedTrace}
+        />
+        <KpiCard
+          label="Incoming units"
+          value={kpis.incoming.toLocaleString()}
+          trace={incomingTrace}
+        />
       </div>
 
       {error ? (
