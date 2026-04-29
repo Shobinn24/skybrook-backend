@@ -30,6 +30,16 @@
 // its own ruleset, default rules don't fall through, so `ev-mens-10x-l`
 // (which shouldn't exist in practice) won't accidentally decompose to
 // 5-pack base.
+//
+// HW no-pack collapse: HW's no-color inventory is tracked under a bare
+// `ev-hw-{size}` form (no pack token at all) — Scott's velocity sheet
+// labels these "HW 5-Pack". Shopify partly mirrors this (`ev-hw-l`,
+// 1.4k units / 30d) but also writes a parallel `ev-hw-5x-{size}`
+// (~350 units / 30d) that doesn't match any inventory row. Same
+// physical product, two SKU strings. We collapse the 5x form into the
+// no-pack form so both sales paths land on the same SKU. Colored
+// 5-packs (`ev-hw-5x-{color}-{size}`) keep their separate identity —
+// only the bare-size form gets collapsed.
 
 const PACK_TOKEN_RE = /^ev-([a-zA-Z0-9-]+)-(1|3|5|6|9|10|12|15)x?-(.+)$/i;
 
@@ -82,7 +92,17 @@ export function decomposePackSku(sku: string): DecomposedSku | null {
   const target = rulesForFamily(family)[numericPack];
   if (!target) return null;
   const canonicalRest = canonicalizeSizeToken(rest);
-  const canonicalSku = `ev-${family}-${target.canonicalToken}-${canonicalRest}`;
+  let canonicalSku = `ev-${family}-${target.canonicalToken}-${canonicalRest}`;
+  // HW no-pack collapse: bare-size HW 5-packs fold to the no-pack form
+  // that inventory uses. Skipped when rest carries a color or qualifier
+  // (multi-segment, e.g. `black-l`) so colored 5-packs stay distinct.
+  if (
+    family === "hw" &&
+    target.canonicalToken === "5x" &&
+    !canonicalRest.includes("-")
+  ) {
+    canonicalSku = `ev-hw-${canonicalRest}`;
+  }
   // Already canonical and no multiplier needed → caller treats as no-op.
   if (canonicalSku === lower && target.multiplier === 1) return null;
   return { canonicalSku, multiplier: target.multiplier };

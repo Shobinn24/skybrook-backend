@@ -48,8 +48,10 @@ describe("decomposePackSku", () => {
 
   it("accepts the dash-form pack token (Shopify uses both 10x and 10)", () => {
     // Production has rows like `EV-hw-10-l` alongside `ev-9055-10x-l`.
+    // hw bare-size rows additionally collapse to no-pack form per the
+    // HW-specific rule below — `EV-hw-10-l` lands on `ev-hw-l` × 2.
     expect(decomposePackSku("EV-hw-10-l")).toEqual({
-      canonicalSku: "ev-hw-5x-l",
+      canonicalSku: "ev-hw-l",
       multiplier: 2,
     });
     expect(decomposePackSku("EV-OG-15-xxl")).toEqual({
@@ -195,5 +197,55 @@ describe("decomposePackSku", () => {
     // in the family-rules map, so no decomposition or rename runs.
     expect(decomposePackSku("ev-hw-hf-3-l")).toBeNull();
     expect(decomposePackSku("ev-hw-hf-6-s")).toBeNull();
+  });
+
+  it("collapses bare-size hw 5-packs to no-pack form", () => {
+    // HW inventory uses the bare `ev-hw-{size}` form (no pack token).
+    // Shopify partly mirrors but also writes ev-hw-5x-{size} which has
+    // no inventory match. Both paths fold to the same canonical SKU.
+    expect(decomposePackSku("ev-hw-5x-l")).toEqual({
+      canonicalSku: "ev-hw-l",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-hw-5x-xxl")).toEqual({
+      canonicalSku: "ev-hw-xxl",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-hw-5-l")).toEqual({
+      canonicalSku: "ev-hw-l",
+      multiplier: 1,
+    });
+  });
+
+  it("preserves hw colored 5-packs (keeps the 5x token)", () => {
+    // `ev-hw-5x-black-l` is a separate physical product (colored line)
+    // — the collapse only applies when rest is a single size token.
+    expect(decomposePackSku("ev-hw-5x-black-l")).toBeNull();
+    expect(decomposePackSku("ev-hw-5x-beige-3xl")).toBeNull();
+    expect(decomposePackSku("ev-hw-10x-blue-l")).toEqual({
+      canonicalSku: "ev-hw-5x-blue-l",
+      multiplier: 2,
+    });
+  });
+
+  it("collapses hw 10/15-pack to bare no-pack form when size is single segment", () => {
+    expect(decomposePackSku("ev-hw-10x-l")).toEqual({
+      canonicalSku: "ev-hw-l",
+      multiplier: 2,
+    });
+    expect(decomposePackSku("ev-hw-15-xxl")).toEqual({
+      canonicalSku: "ev-hw-xxl",
+      multiplier: 3,
+    });
+  });
+
+  it("collapse does not apply to hw-hf or other hw-prefixed families", () => {
+    // `family === "hw"` is exact match. hw-hf is a different family
+    // and keeps the 5x token (its inventory uses dash-form pack tokens).
+    expect(decomposePackSku("ev-hw-hf-5x-l")).toBeNull();
+    expect(decomposePackSku("ev-hw-hf-5-l")).toEqual({
+      canonicalSku: "ev-hw-hf-5x-l",
+      multiplier: 1,
+    });
   });
 });

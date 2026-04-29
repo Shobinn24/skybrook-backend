@@ -279,6 +279,7 @@ function makeRunner(channel: Channel): SourceRunner {
         //                            cards, ebooks, custom items)
         //   - 10/15-pack rows       (now decomposed to 5x form)
         //   - mens/cb 6/9/12-pack   (now decomposed to 3x form)
+        //   - hw bare-size 5x rows  (now collapsed to ev-hw-{size})
         // Idempotent — subsequent runs match nothing.
         await db.delete(dailySales).where(
           and(
@@ -286,6 +287,10 @@ function makeRunner(channel: Channel): SourceRunner {
             or(
               sql`${dailySales.sku} <> LOWER(${dailySales.sku})`,
               sql`${dailySales.sku} NOT LIKE 'ev-%'`,
+              // Bare-size HW 5x rows: ev-hw-5x-{single-segment-size}.
+              // Excludes ev-hw-5x-black-l etc. (those keep their pack
+              // token because colored 5-packs are separate inventory).
+              sql`${dailySales.sku} ~ '^ev-hw-5x-[^-]+$'`,
               ...PACK_SKU_DB_PATTERNS.map((p) => like(dailySales.sku, p))
             )!
           )

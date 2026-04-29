@@ -171,12 +171,15 @@ describe("aggregateToDailySales", () => {
     ]);
   });
 
-  it("decomposes Shopify's dash-form pack tokens (EV-hw-10-l → ev-hw-5x-l × 2)", () => {
+  it("decomposes Shopify's dash-form pack tokens (EV-hw-10-l → ev-hw-l × 2)", () => {
+    // HW family collapses bare-size 5-pack rows to no-pack form to
+    // match the inventory `ev-hw-{size}` convention. The 10-pack still
+    // decomposes (multiplier 2) but lands on the no-pack canonical SKU.
     const orders = [
       order("2026-04-22T10:00:00Z", [li("EV-hw-10-l", 1, "200.00")]),
     ];
     expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-hw-5x-l", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
+      { sku: "ev-hw-l", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
     ]);
   });
 
