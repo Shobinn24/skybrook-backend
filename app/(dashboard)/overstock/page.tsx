@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { KpiCard } from "@/components/inventory/KpiCard";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
 import { trpc } from "@/lib/trpc/client";
@@ -183,7 +184,12 @@ export default function OverstockPage() {
                 {filteredRows.map((r) => (
                   <tr key={`${r.sku}:${r.location}`} className="hover:bg-neutral-50">
                     <td className="whitespace-nowrap px-4 py-2 font-medium text-neutral-900">
-                      {r.sku}
+                      <Link
+                        href={`/sku/${encodeURIComponent(r.sku)}`}
+                        className="hover:text-neutral-600 hover:underline"
+                      >
+                        {r.sku}
+                      </Link>
                     </td>
                     <td className="px-4 py-2 text-neutral-700">
                       {r.productName}

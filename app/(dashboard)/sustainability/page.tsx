@@ -1,5 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { WarehouseToggle, type Warehouse } from "@/components/inventory/WarehouseToggle";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
 import { trpc } from "@/lib/trpc/client";
@@ -209,7 +210,12 @@ export default function SustainabilityPage() {
               {rows.map((r) => (
                 <tr key={r.sku} className="border-t border-neutral-100 hover:bg-neutral-50/50">
                   <td className="sticky left-0 z-10 border-r border-neutral-200 bg-white px-3 py-1.5 font-mono text-[11px] hover:bg-neutral-50/50">
-                    {r.sku}
+                    <Link
+                      href={`/sku/${encodeURIComponent(r.sku)}`}
+                      className="hover:text-neutral-600 hover:underline"
+                    >
+                      {r.sku}
+                    </Link>
                   </td>
                   <td className="px-3 py-1.5 text-neutral-700">{r.productName}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{fmtNum(r.salesInWindow)}</td>
