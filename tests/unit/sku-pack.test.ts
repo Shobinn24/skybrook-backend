@@ -93,4 +93,37 @@ describe("decomposePackSku", () => {
     expect(decomposePackSku("ev-9055-hf-5x-xl")).toBeNull();
     expect(decomposePackSku("ev-og-1x-beige-l")).toBeNull();
   });
+
+  it("canonicalizes trailing 2xl to xxl on already-canonical pack tokens", () => {
+    // The velocity sheet uses `2xl` for the 9055 line while Shopify uses
+    // `xxl`. Without this alias the same physical garment shows as two
+    // unrelated SKUs and Skybrook double-orphans it.
+    expect(decomposePackSku("ev-9055-5x-2xl")).toEqual({
+      canonicalSku: "ev-9055-5x-xxl",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-suphw-fc-5x-2xl")).toEqual({
+      canonicalSku: "ev-suphw-fc-5x-xxl",
+      multiplier: 1,
+    });
+  });
+
+  it("canonicalizes 2xl when also decomposing pack token", () => {
+    expect(decomposePackSku("ev-9055-10x-2xl")).toEqual({
+      canonicalSku: "ev-9055-5x-xxl",
+      multiplier: 2,
+    });
+    expect(decomposePackSku("ev-9055-15-2xl")).toEqual({
+      canonicalSku: "ev-9055-5x-xxl",
+      multiplier: 3,
+    });
+  });
+
+  it("does not touch xxl SKUs (already canonical for size)", () => {
+    expect(decomposePackSku("ev-9055-5x-xxl")).toBeNull();
+    expect(decomposePackSku("ev-9055-10x-xxl")).toEqual({
+      canonicalSku: "ev-9055-5x-xxl",
+      multiplier: 2,
+    });
+  });
 });

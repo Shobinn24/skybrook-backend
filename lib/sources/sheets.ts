@@ -317,7 +317,8 @@ export const sheetsInventoryRunner: SourceRunner = async (_batchId) => {
       await db.execute(sql`DELETE FROM sustainability_flags WHERE sku ~ '[A-Z]'`);
       await db.execute(sql`DELETE FROM skus WHERE sku ~ '[A-Z]'`);
 
-      // Same shape of idempotent legacy cleanup for dash-form pack tokens.
+      // Same shape of idempotent legacy cleanup for dash-form pack tokens
+      // and the `-2xl` size alias (canonicalized to `-xxl`).
       // The inventory sheet historically wrote `ev-9055-hf-5-3xl` (no `x`);
       // after `9641126` lowered the daily_sales side to canonical
       // `ev-9055-hf-5x-3xl`, the dash-form `skus`/`stock_snapshots` rows
@@ -327,8 +328,13 @@ export const sheetsInventoryRunner: SourceRunner = async (_batchId) => {
       // are intentionally NOT decomposed at the inventory parser, so
       // deleting them would create a re-insert/delete loop. Same idempotent
       // behavior: after one successful run, queries match nothing.
-      const DASH_PATTERNS = ["ev-%-1-%", "ev-%-5-%"];
-      for (const p of DASH_PATTERNS) {
+      // Size-alias patterns are similarly narrowed to 1/5-pack rows: 10/15
+      // packs aren't decomposed here, so wide `-2xl` cleanup would loop.
+      const LEGACY_INVENTORY_PATTERNS = [
+        "ev-%-1-%", "ev-%-5-%",        // dash-form pack tokens
+        "ev-%-1x-2xl", "ev-%-5x-2xl",  // 2xl size alias on 1/5-pack SKUs
+      ];
+      for (const p of LEGACY_INVENTORY_PATTERNS) {
         await db.execute(sql`DELETE FROM stock_snapshots WHERE sku LIKE ${p}`);
         await db.execute(sql`DELETE FROM sales_velocity WHERE sku LIKE ${p}`);
         await db.execute(sql`DELETE FROM days_of_stock WHERE sku LIKE ${p}`);

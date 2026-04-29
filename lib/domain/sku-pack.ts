@@ -14,6 +14,14 @@
 // without the trailing `x` (e.g. `EV-hw-10x-l` and `EV-hw-10-l`).
 // Both get matched. Family also accepts an inner HF qualifier
 // (`EV-9055-HF-10-xl` → `ev-9055-hf-5x-xl`).
+//
+// Size token canonicalization: the velocity sheet uses `2xl` for the
+// 9055 line while Shopify (and most inventory rows) uses `xxl` for
+// the same physical size. Without normalization, the two forms sit
+// as separate SKUs and Skybrook double-orphans them — `ev-9055-5x-2xl`
+// went unmatched against `ev-9055-5x-xxl` (1.7k units / 4 weeks). We
+// canonicalize trailing `-2xl` → `-xxl` since `xxl` is the dominant
+// form across both the inventory sheet and Shopify.
 
 const PACK_TOKEN_RE = /^ev-([a-zA-Z0-9-]+)-(1|5|10|15)x?-(.+)$/i;
 
@@ -41,19 +49,25 @@ export function decomposePackSku(sku: string): DecomposedSku | null {
   const numericPack = packMatch.replace(/x$/, "");
   const target = TARGET[numericPack];
   if (!target) return null;
-  const canonicalSku = `ev-${family}-${target.canonicalToken}-${rest}`;
+  const canonicalRest = canonicalizeSizeToken(rest);
+  const canonicalSku = `ev-${family}-${target.canonicalToken}-${canonicalRest}`;
   // Already canonical and no multiplier needed → caller treats as no-op.
   if (canonicalSku === lower && target.multiplier === 1) return null;
   return { canonicalSku, multiplier: target.multiplier };
 }
 
-// SQL LIKE patterns for legacy pack/dash-form SKUs that may sit in
-// daily_sales from before ingest-side normalization landed. The cron
-// purges these after each Shopify run to keep the orphan list clean.
-// Patterns are case-insensitive when used with ILIKE — but the cleanup
-// also looks for any uppercase-bearing rows separately so case is moot
-// here. Each pattern targets a token that's been replaced by its
-// x-form by `decomposePackSku`.
+// Trailing size token: `-2xl` → `-xxl`. Same physical size, two source
+// conventions in the data.
+function canonicalizeSizeToken(rest: string): string {
+  return rest.replace(/(^|-)2xl$/i, "$1xxl");
+}
+
+// SQL LIKE patterns for legacy SKU forms that may sit in daily_sales
+// from before ingest-side normalization landed. The cron purges these
+// after each Shopify run to keep the orphan list clean. Patterns
+// target tokens that `decomposePackSku` has since replaced with the
+// canonical form: dash-form pack tokens, 10/15-pack rows, and the
+// `-2xl` size alias (now folded into `-xxl`).
 export const PACK_SKU_DB_PATTERNS: ReadonlyArray<string> = [
   "ev-%-1-%",
   "ev-%-5-%",
@@ -61,4 +75,5 @@ export const PACK_SKU_DB_PATTERNS: ReadonlyArray<string> = [
   "ev-%-10-%",
   "ev-%-15x-%",
   "ev-%-15-%",
+  "ev-%-2xl",
 ];
