@@ -4,13 +4,14 @@ import Link from "next/link";
 import { FlagPill } from "./FlagPill";
 import { TracedNumber } from "@/components/trace/TracedNumber";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
-import type { Warehouse } from "./WarehouseToggle";
+import type { WarehouseSelection } from "./WarehouseToggle";
 import type { InventoryRow } from "@/lib/queries/inventory";
 
 type SortKey =
   | "flag"
   | "sku"
   | "productName"
+  | "location"
   | "onHand"
   | "incoming"
   | "velocity"
@@ -47,9 +48,13 @@ export function InventoryTable({
   warehouse,
   rows,
 }: {
-  warehouse: Warehouse;
+  warehouse: WarehouseSelection;
   rows: InventoryRow[];
 }) {
+  // In "All" mode, surface a Location column so operators can tell
+  // which warehouse a row belongs to. Hidden for single-warehouse
+  // views to keep the existing layout untouched.
+  const showLocationColumn = warehouse === "All";
   const [sort, setSort] = useState<SortConfig<SortKey>>({ key: "flag", direction: "asc" });
   const [filter, setFilter] = useState("");
 
@@ -68,6 +73,8 @@ export function InventoryTable({
           return a.sku.localeCompare(b.sku) * dir;
         case "productName":
           return a.productName.localeCompare(b.productName) * dir;
+        case "location":
+          return a.location.localeCompare(b.location) * dir;
         case "onHand":
           return (a.onHand - b.onHand) * dir;
         case "incoming":
@@ -97,6 +104,7 @@ export function InventoryTable({
     const header = [
       "sku",
       "product",
+      "location",
       "on_hand",
       "velocity_per_day_7d",
       "days_of_stock",
@@ -113,6 +121,7 @@ export function InventoryTable({
         [
           r.sku,
           `"${r.productName.replace(/"/g, '""')}"`,
+          r.location,
           r.onHand,
           r.velocityPerDay7d?.toFixed(4) ?? "",
           r.daysOfStock !== null && Number.isFinite(r.daysOfStock)
@@ -164,6 +173,9 @@ export function InventoryTable({
             <tr>
               <SortableHeader label="SKU" sortKey="sku" config={sort} onChange={setSort} />
               <SortableHeader label="Product" sortKey="productName" config={sort} onChange={setSort} />
+              {showLocationColumn && (
+                <SortableHeader label="Warehouse" sortKey="location" config={sort} onChange={setSort} />
+              )}
               <SortableHeader label="Stock" sortKey="onHand" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Incoming" sortKey="incoming" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Velocity/day" sortKey="velocity" config={sort} onChange={setSort} align="right" />
@@ -185,6 +197,11 @@ export function InventoryTable({
                   </Link>
                 </td>
                 <td className="px-4 py-2">{r.productName}</td>
+                {showLocationColumn && (
+                  <td className="whitespace-nowrap px-4 py-2 text-xs uppercase tracking-wide text-neutral-600">
+                    {r.location}
+                  </td>
+                )}
                 <td className="px-4 py-2 text-right tabular-nums">
                   <TracedNumber trace={r.trace.onHand}>{r.onHand.toLocaleString()}</TracedNumber>
                 </td>
@@ -226,7 +243,7 @@ export function InventoryTable({
             ))}
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-6 text-center text-sm text-neutral-500">
+                <td colSpan={showLocationColumn ? 10 : 9} className="px-4 py-6 text-center text-sm text-neutral-500">
                   No stock data for {warehouse} yet. Run the daily ingest to populate.
                 </td>
               </tr>
