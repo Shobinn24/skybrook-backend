@@ -2,7 +2,7 @@
 // of-truth Google sheets. Returns the latest available data per SKU across
 // every layer of interest:
 //
-//   - skus: catalog with product_name, product_line, unit_cost_usd
+//   - skus: catalog with product_name, product_line, unit_cost_usd, unit_cost_intl_usd
 //   - velocity: latest sales_velocity per (sku, channel) at windowDays=7
 //   - stock: latest stock_snapshots per (sku, location)
 //   - incoming: pending PO totals per (sku, destination)
@@ -28,7 +28,7 @@ async function authedHandler(req: Request) {
   }
 
   const skus = (await db.execute(sql`
-    SELECT sku, product_name, product_line, unit_cost_usd, active
+    SELECT sku, product_name, product_line, unit_cost_usd, unit_cost_intl_usd, active
     FROM skus
     WHERE sku LIKE 'ev-%'
     ORDER BY sku

@@ -1,0 +1,1 @@
+ALTER TABLE "skus" ADD COLUMN "unit_cost_intl_usd" numeric(12, 4);

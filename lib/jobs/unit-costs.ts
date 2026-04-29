@@ -1,7 +1,8 @@
-// Latest-cost sync from Scott's `EVSKUmap` cost sheet. Populates the
-// `skus.unit_cost_usd` column from the leftmost (most recent) US cost
-// column on the EVSKUmap tab. Runs as part of the daily cron alongside
-// the existing source ingest + product-name sync.
+// Latest-cost sync from Scott's `EVSKUmap` cost sheet. Populates BOTH
+// `skus.unit_cost_usd` and `skus.unit_cost_intl_usd` from the leftmost
+// (most recent) date pair on the EVSKUmap tab — every date column on
+// the sheet has paired US + INTL cells. Runs as part of the daily cron
+// alongside the existing source ingest + product-name sync.
 //
 // Sheet layout reverse-engineered 2026-04-28 from
 //   docs.google.com/spreadsheets/d/15ycRH-u43kWMGb52PGGpBu_2v6iDH39RJUPUFfkh9YA
@@ -52,7 +53,14 @@ function buildSheetsClient() {
   );
 }
 
-export type ParsedCostRow = { sku: string; costUsd: number };
+export type ParsedCostRow = {
+  sku: string;
+  costUsd: number;
+  // Null when the INTL cell is empty / non-numeric / non-positive — the
+  // cost sheet has legitimate gaps where Scott hasn't priced INTL for a
+  // SKU. Queries fall back to `costUsd` in that case.
+  costIntlUsd: number | null;
+};
 
 export type ParsedCostResult = {
   rows: ParsedCostRow[];
@@ -90,20 +98,28 @@ export function parseCostSheetRows(grid: unknown[][]): ParsedCostResult {
 
   const rows: ParsedCostRow[] = [];
   let errorRows = 0;
+  // Same numeric/positive guard the US column uses, lifted out so it can
+  // run on the INTL cell too. INTL cells legitimately can be empty —
+  // those return null rather than counting as an error row.
+  const readCost = (cell: unknown): number | null => {
+    if (typeof cell !== "number" || !Number.isFinite(cell) || cell <= 0) return null;
+    return cell;
+  };
   for (let r = 2; r < grid.length; r++) {
     const row = grid[r] ?? [];
     const skuRaw = String(row[0] ?? "").trim();
     if (!skuRaw) continue;
     const sku = canonicalizeInventorySku(skuRaw);
-    const cost = row[usCol];
+    const usCost = readCost(row[usCol]);
     // UNFORMATTED_VALUE: numeric cells come back as `number`. Errors
     // surface as strings ("#REF!", "#N/A") or wrapped objects depending
     // on the API version — the typeof check handles both safely.
-    if (typeof cost !== "number" || !Number.isFinite(cost) || cost <= 0) {
+    if (usCost === null) {
       errorRows++;
       continue;
     }
-    rows.push({ sku, costUsd: cost });
+    const intlCost = intlCol >= 0 ? readCost(row[intlCol]) : null;
+    rows.push({ sku, costUsd: usCost, costIntlUsd: intlCost });
   }
 
   return {
@@ -125,6 +141,7 @@ async function fetchCostSheet(spreadsheetId: string): Promise<ParsedCostResult> 
 
 export type UnitCostSyncResult = {
   updated: number;
+  updatedIntl: number;
   unchanged: number;
   skippedNoSku: number;
   skippedErrors: number;
@@ -134,6 +151,7 @@ export type UnitCostSyncResult = {
   // their non-fc sibling. Scott 2026-04-29: "Boyshort 5-color > Same
   // price as boyshort regular… Color doesn't change cost."
   mirrored: number;
+  mirroredIntl: number;
 };
 
 // Drop the `-fc-` qualifier from the SKU to find its non-fc sibling.
@@ -143,6 +161,13 @@ export type UnitCostSyncResult = {
 function fcMirrorBase(sku: string): string | null {
   if (!/^ev-(bshort|suphw)-fc-/.test(sku)) return null;
   return sku.replace("-fc-", "-");
+}
+
+// numeric(12, 4) — Postgres returns a string. Compare textually after
+// normalizing both sides to 4 decimal places.
+function eqCost(currentRaw: unknown, next: number): boolean {
+  if (currentRaw == null) return false;
+  return Number(currentRaw).toFixed(4) === next.toFixed(4);
 }
 
 export async function syncUnitCosts(opts?: {
@@ -173,23 +198,32 @@ export async function syncUnitCosts(opts?: {
   // dash-form 5-pack and an x-form 5-pack both resolve to the same
   // x-form). Last-write-wins isn't deterministic — but with the
   // canonicalization step, all such collisions point at the same physical
-  // garment whose cost should be identical. Keep the first non-zero cost
-  // we see and count the rest.
-  const seen = new Map<string, number>();
+  // garment whose cost should be identical. Keep the first row we see
+  // and count the rest.
+  type SeenCost = { us: number; intl: number | null };
+  const seen = new Map<string, SeenCost>();
   let duplicates = 0;
   for (const r of rows) {
     if (seen.has(r.sku)) {
       duplicates++;
       continue;
     }
-    seen.set(r.sku, r.costUsd);
+    seen.set(r.sku, { us: r.costUsd, intl: r.costIntlUsd });
   }
 
-  const all = await db.select({ sku: skus.sku, unitCostUsd: skus.unitCostUsd }).from(skus);
+  const all = await db
+    .select({
+      sku: skus.sku,
+      unitCostUsd: skus.unitCostUsd,
+      unitCostIntlUsd: skus.unitCostIntlUsd,
+    })
+    .from(skus);
   const allSkus = new Set(all.map((s) => s.sku));
-  const currentBySku = new Map(all.map((s) => [s.sku, s.unitCostUsd]));
+  const currentUsBySku = new Map(all.map((s) => [s.sku, s.unitCostUsd]));
+  const currentIntlBySku = new Map(all.map((s) => [s.sku, s.unitCostIntlUsd]));
 
   let updated = 0;
+  let updatedIntl = 0;
   let unchanged = 0;
   let skippedNoSku = 0;
   for (const [sku, cost] of seen.entries()) {
@@ -197,48 +231,96 @@ export async function syncUnitCosts(opts?: {
       skippedNoSku++;
       continue;
     }
-    // numeric(12, 4) — Postgres returns a string. Compare textually after
-    // normalizing both sides to 4 decimal places.
-    const newCostStr = cost.toFixed(4);
-    const currentRaw = currentBySku.get(sku);
-    const currentStr = currentRaw == null ? null : Number(currentRaw).toFixed(4);
-    if (currentStr === newCostStr) {
+
+    const usChanged = !eqCost(currentUsBySku.get(sku), cost.us);
+    // INTL is only updated when the sheet has a positive value. A null
+    // INTL cell does NOT clear the DB column — Scott's sheet has
+    // legitimate gaps and we don't want a transient empty cell to wipe
+    // out a previously-synced cost.
+    const intlChanged =
+      cost.intl !== null && !eqCost(currentIntlBySku.get(sku), cost.intl);
+
+    if (!usChanged && !intlChanged) {
       unchanged++;
       continue;
     }
-    await db.update(skus).set({ unitCostUsd: newCostStr }).where(eq(skus.sku, sku));
-    updated++;
-    currentBySku.set(sku, newCostStr); // keep map in sync for the mirror pass
+
+    const patch: { unitCostUsd?: string; unitCostIntlUsd?: string } = {};
+    if (usChanged) {
+      const usStr = cost.us.toFixed(4);
+      patch.unitCostUsd = usStr;
+      currentUsBySku.set(sku, usStr);
+      updated++;
+    }
+    if (intlChanged && cost.intl !== null) {
+      const intlStr = cost.intl.toFixed(4);
+      patch.unitCostIntlUsd = intlStr;
+      currentIntlBySku.set(sku, intlStr);
+      updatedIntl++;
+    }
+    await db.update(skus).set(patch).where(eq(skus.sku, sku));
   }
 
   // Mirror pass: any fc-line SKU still without a cost inherits from its
   // non-fc sibling's cost (this run's fresh cost preferred over the
-  // pre-existing DB value).
+  // pre-existing DB value). Runs independently for US and INTL — fc SKU
+  // can have one column inherited and the other left null if the base
+  // SKU only has US priced.
   let mirrored = 0;
+  let mirroredIntl = 0;
   const isPriced = (raw: unknown): boolean => {
     if (raw == null) return false;
     const n = typeof raw === "number" ? raw : Number(raw);
     return Number.isFinite(n) && n > 0;
   };
+  const baseUsCost = (baseSku: string): number | null => {
+    const fresh = seen.get(baseSku)?.us;
+    if (fresh != null && fresh > 0) return fresh;
+    const stored = Number(currentUsBySku.get(baseSku) ?? NaN);
+    return Number.isFinite(stored) && stored > 0 ? stored : null;
+  };
+  const baseIntlCost = (baseSku: string): number | null => {
+    const fresh = seen.get(baseSku)?.intl ?? null;
+    if (fresh != null && fresh > 0) return fresh;
+    const stored = Number(currentIntlBySku.get(baseSku) ?? NaN);
+    return Number.isFinite(stored) && stored > 0 ? stored : null;
+  };
   for (const fcSku of allSkus) {
-    if (isPriced(currentBySku.get(fcSku))) continue;
     const baseSku = fcMirrorBase(fcSku);
     if (!baseSku) continue;
-    const baseCost = seen.get(baseSku) ?? Number(currentBySku.get(baseSku) ?? NaN);
-    if (!Number.isFinite(baseCost) || baseCost <= 0) continue;
-    const baseCostStr = baseCost.toFixed(4);
-    await db.update(skus).set({ unitCostUsd: baseCostStr }).where(eq(skus.sku, fcSku));
-    currentBySku.set(fcSku, baseCostStr);
-    mirrored++;
+    const patch: { unitCostUsd?: string; unitCostIntlUsd?: string } = {};
+    if (!isPriced(currentUsBySku.get(fcSku))) {
+      const inherited = baseUsCost(baseSku);
+      if (inherited !== null) {
+        const s = inherited.toFixed(4);
+        patch.unitCostUsd = s;
+        currentUsBySku.set(fcSku, s);
+        mirrored++;
+      }
+    }
+    if (!isPriced(currentIntlBySku.get(fcSku))) {
+      const inherited = baseIntlCost(baseSku);
+      if (inherited !== null) {
+        const s = inherited.toFixed(4);
+        patch.unitCostIntlUsd = s;
+        currentIntlBySku.set(fcSku, s);
+        mirroredIntl++;
+      }
+    }
+    if (patch.unitCostUsd || patch.unitCostIntlUsd) {
+      await db.update(skus).set(patch).where(eq(skus.sku, fcSku));
+    }
   }
 
   logger.info("unit-costs.done", {
     updated,
+    updatedIntl,
     unchanged,
     skippedNoSku,
     skippedErrors: errorRows,
     duplicates,
     mirrored,
+    mirroredIntl,
     latestColumn: latestColumn.dateLabel,
     sheetSkus: rows.length,
     distinctSkus: seen.size,
@@ -247,11 +329,13 @@ export async function syncUnitCosts(opts?: {
 
   return {
     updated,
+    updatedIntl,
     unchanged,
     skippedNoSku,
     skippedErrors: errorRows,
     latestColumn: latestColumn.dateLabel,
     duplicates,
     mirrored,
+    mirroredIntl,
   };
 }

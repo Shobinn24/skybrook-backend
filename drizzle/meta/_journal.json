@@ -15,6 +15,13 @@
       "when": 1776948846284,
       "tag": "0001_optimal_songbird",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777483781142,
+      "tag": "0002_hard_iron_fist",
+      "breakpoints": true
     }
   ]
 }

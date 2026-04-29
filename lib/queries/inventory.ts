@@ -6,7 +6,7 @@ import {
   salesVelocity,
   sustainabilityFlags,
 } from "@/lib/db/schema";
-import { getStockLevels, type StockLevel } from "./stock";
+import { getStockLevels, unitCostForLocation, type StockLevel } from "./stock";
 import type { Location } from "@/lib/domain/warehouse-routing";
 
 // Each warehouse view reads its own per-channel velocity row. runPhase2
@@ -128,8 +128,19 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
     const velRow = velBySku.get(s.sku);
     const dos = dosRow ? Number(dosRow.daysOfStock) : null;
     const velocityPerDay = velRow ? Number(velRow.unitsPerDay) : null;
-    const unitCost = Number(s.unitCostUsd ?? 0);
+    const unitCost = unitCostForLocation(s);
     const stockValueUsd = s.onHand * unitCost;
+    // Track which DB column the cost actually came from so trace + UI
+    // can show the right source label. CN routes to INTL when present,
+    // falls back to US otherwise.
+    const intlCostNum = s.unitCostIntlUsd != null ? Number(s.unitCostIntlUsd) : null;
+    const usedIntlCost =
+      s.location === "CN" && intlCostNum !== null && intlCostNum > 0;
+    const costColumnRef = usedIntlCost
+      ? "skus.unit_cost_intl_usd"
+      : unitCost > 0
+        ? "skus.unit_cost_usd"
+        : "missing — defaults to $0";
     const pendingPos = incomingBySku.get(s.sku) ?? [];
     const incomingUnits = pendingPos.reduce((acc, r) => acc + r.quantity, 0);
 
@@ -158,7 +169,7 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
           { label: "Stock snapshot", ref: s.snapshotDate },
           {
             label: "Unit cost source",
-            ref: unitCost > 0 ? "skus.unit_cost_usd" : "missing — defaults to $0",
+            ref: costColumnRef,
           },
         ],
         note:
@@ -244,7 +255,11 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
       productName: s.productName,
       productLine: s.productLine,
       onHand: s.onHand,
-      unitCostUsd: s.unitCostUsd ? Number(s.unitCostUsd) : null,
+      // Surface the location-routed cost so the inventory table column
+      // shows the cost actually used for stockValueUsd at this row's
+      // warehouse. Null preserves the "not set" semantic when neither
+      // column has a value.
+      unitCostUsd: unitCost > 0 ? unitCost : null,
       stockValueUsd,
       velocityPerDay7d: velocityPerDay,
       daysOfStock: dos,

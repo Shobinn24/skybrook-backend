@@ -39,6 +39,12 @@ export const skus = pgTable("skus", {
   productName: text("product_name").notNull(),
   productLine: text("product_line"),
   unitCostUsd: numeric("unit_cost_usd", { precision: 12, scale: 4 }),
+  // Per-warehouse cost. Cost sheet `EVSKUmap` tab pairs every date column
+  // with a US/INTL pair; INTL maps to the CN warehouse in our Location
+  // enum. Queries route by stock_snapshot.location and fall back to
+  // unit_cost_usd when this column is null (e.g. SKUs Scott hasn't yet
+  // priced internationally).
+  unitCostIntlUsd: numeric("unit_cost_intl_usd", { precision: 12, scale: 4 }),
   firstSeenAt: date("first_seen_at").notNull(),
   active: boolean("active").notNull().default(true),
 });

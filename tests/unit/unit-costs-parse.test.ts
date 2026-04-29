@@ -81,6 +81,33 @@ describe("parseCostSheetRows", () => {
     expect(og!.costUsd).toBeCloseTo(6.73);
   });
 
+  it("captures the paired INTL cost from the latest column", () => {
+    const out = parseCostSheetRows(makeGrid());
+    const og = out.rows.find((r) => r.sku === "ev-og-5x-l");
+    expect(og!.costIntlUsd).toBeCloseTo(6.04);
+    const hf = out.rows.find((r) => r.sku === "ev-9055-hf-5x-3xl");
+    expect(hf!.costIntlUsd).toBeCloseTo(7.2);
+  });
+
+  it("returns null INTL cost when the INTL cell is empty / non-numeric", () => {
+    // Grid with one row whose US cell is valid but INTL is missing.
+    const blank = (n: number) => Array.from({ length: n }, () => "" as unknown);
+    const grid: unknown[][] = [
+      [...blank(9), "May'25", "May'25"],
+      ["SKUs", "number", "quantity", "", "product", "pack", "5s", "3s", "5 or 3", "US", "INTL"],
+    ];
+    const r = [...blank(11)];
+    r[0] = "EV-A";
+    r[9] = 10; // US present
+    // r[10] left blank → INTL missing
+    grid.push(r);
+    const out = parseCostSheetRows(grid);
+    const ev = out.rows.find((row) => row.sku === "ev-a");
+    expect(ev).toBeDefined();
+    expect(ev!.costUsd).toBe(10);
+    expect(ev!.costIntlUsd).toBeNull();
+  });
+
   it("returns empty result when no (date, US) header pair is present", () => {
     const grid: unknown[][] = [
       ["", "", "", "", "", "", "", "", ""], // no dates

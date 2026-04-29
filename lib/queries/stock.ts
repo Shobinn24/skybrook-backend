@@ -11,7 +11,24 @@ export type StockLevel = {
   productName: string;
   productLine: string | null;
   unitCostUsd: string | null;
+  unitCostIntlUsd: string | null;
 };
+
+// Pick the per-warehouse cost. CN uses the INTL column; US uses the US
+// column. When the location-specific cost is null (Scott hasn't priced
+// that SKU internationally yet, or the migration just landed) we fall
+// back to US so the dashboard stays usable rather than zeroing out CN
+// stock value.
+export function unitCostForLocation(row: {
+  location: Location;
+  unitCostUsd: string | null;
+  unitCostIntlUsd: string | null;
+}): number {
+  if (row.location === "US") {
+    return Number(row.unitCostUsd ?? 0);
+  }
+  return Number(row.unitCostIntlUsd ?? row.unitCostUsd ?? 0);
+}
 
 export async function getStockLevels(filters: { sku?: string; location?: Location } = {}): Promise<StockLevel[]> {
   const rows = await db
@@ -23,6 +40,7 @@ export async function getStockLevels(filters: { sku?: string; location?: Locatio
       productName: skus.productName,
       productLine: skus.productLine,
       unitCostUsd: skus.unitCostUsd,
+      unitCostIntlUsd: skus.unitCostIntlUsd,
     })
     .from(stockSnapshots)
     .leftJoin(skus, eq(skus.sku, stockSnapshots.sku))
@@ -49,6 +67,7 @@ export async function getStockLevels(filters: { sku?: string; location?: Locatio
       productName: r.productName ?? r.sku,
       productLine: r.productLine,
       unitCostUsd: r.unitCostUsd,
+      unitCostIntlUsd: r.unitCostIntlUsd,
     });
   }
   return latest;
@@ -59,7 +78,7 @@ export async function getStockValue(filters: { location?: Location; productLine?
   const filtered = filters.productLine
     ? rows.filter((r) => r.productLine === filters.productLine)
     : rows;
-  const total = filtered.reduce((n, r) => n + r.onHand * Number(r.unitCostUsd ?? 0), 0);
+  const total = filtered.reduce((n, r) => n + r.onHand * unitCostForLocation(r), 0);
   return { totalUsd: total, rowCount: filtered.length };
 }
 
@@ -89,7 +108,7 @@ export async function getStockValueByProductLine(
   const buckets = new Map<string | null, { totalUsd: number; skuCount: number; unitCount: number }>();
   for (const r of rows) {
     const key = r.productLine;
-    const value = r.onHand * Number(r.unitCostUsd ?? 0);
+    const value = r.onHand * unitCostForLocation(r);
     const cur = buckets.get(key) ?? { totalUsd: 0, skuCount: 0, unitCount: 0 };
     cur.totalUsd += value;
     cur.skuCount += 1;
@@ -132,7 +151,7 @@ export async function getStockValueByProduct(
     // productName is non-null (defaulted to sku in getStockLevels), so
     // every row gets a bucket — no "uncategorized" sink to lose capital in.
     const key = r.productName;
-    const value = r.onHand * Number(r.unitCostUsd ?? 0);
+    const value = r.onHand * unitCostForLocation(r);
     const cur = buckets.get(key) ?? { totalUsd: 0, skuCount: 0, unitCount: 0 };
     cur.totalUsd += value;
     cur.skuCount += 1;
