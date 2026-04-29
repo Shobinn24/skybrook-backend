@@ -3,6 +3,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { FlagPill } from "@/components/inventory/FlagPill";
 import { KpiCard } from "@/components/inventory/KpiCard";
+import { DailySalesChart } from "@/components/sku/DailySalesChart";
 import { trpc } from "@/lib/trpc/client";
 
 type SkuRouteParams = { sku: string };
@@ -169,6 +170,18 @@ export default function SkuDetailPage() {
             ))}
           </tbody>
         </table>
+      </section>
+
+      <section className="rounded-md border border-neutral-200 bg-white">
+        <header className="border-b border-neutral-200 px-4 py-3">
+          <h2 className="text-sm font-semibold text-neutral-900">Daily sales (last 30 days)</h2>
+          <p className="text-xs text-neutral-500">
+            Stacked by Shopify channel. Hover a column for the per-day breakdown.
+          </p>
+        </header>
+        <div className="px-4 py-4">
+          <DailySalesChart data={data.daily30d} />
+        </div>
       </section>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

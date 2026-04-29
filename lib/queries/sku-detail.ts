@@ -1,6 +1,7 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
+  dailySales,
   daysOfStock,
   incomingShipments,
   salesVelocity,
@@ -51,7 +52,19 @@ export type SkuDetail = {
     asOfDate: string | null;
     perChannel: Record<(typeof VELOCITY_CHANNELS)[number], number | null>;
   }>;
+  // Daily sales over the last 30 days, split per Shopify channel.
+  // Includes zero-sales days so the chart's x-axis stays continuous.
+  // SPEC §5.7 mentions a 30-day history view; this powers the inline
+  // bar chart on the SKU detail page.
+  daily30d: Array<{
+    date: string; // YYYY-MM-DD
+    us: number;
+    intl: number;
+    total: number;
+  }>;
 };
+
+const DAILY_WINDOW_DAYS = 30;
 
 export async function getSkuDetail(sku: string): Promise<SkuDetail | null> {
   const [skuRow] = await db.select().from(skus).where(eq(skus.sku, sku));
@@ -159,6 +172,47 @@ export async function getSkuDetail(sku: string): Promise<SkuDetail | null> {
     return { windowDays: w, asOfDate, perChannel };
   });
 
+  // Daily sales — fetch raw (date, channel, units) rows for the last
+  // 30 days, then fill in zero-sales days so the chart x-axis stays
+  // continuous. Postgres CURRENT_DATE is server timezone; daily_sales
+  // is keyed on sales_date which is already EST-anchored at ingest.
+  const dailyRows = await db
+    .select({
+      date: dailySales.salesDate,
+      channel: dailySales.channel,
+      units: sql<number>`sum(${dailySales.unitsSold})::int`,
+    })
+    .from(dailySales)
+    .where(
+      and(
+        eq(dailySales.sku, sku),
+        gte(dailySales.salesDate, sql`CURRENT_DATE - INTERVAL '30 days'`),
+      ),
+    )
+    .groupBy(dailySales.salesDate, dailySales.channel)
+    .orderBy(dailySales.salesDate);
+
+  const dailyByDate = new Map<string, { us: number; intl: number }>();
+  for (const r of dailyRows) {
+    const cur = dailyByDate.get(r.date) ?? { us: 0, intl: 0 };
+    if (r.channel === "shopify_us") cur.us = Number(r.units);
+    else if (r.channel === "shopify_intl") cur.intl = Number(r.units);
+    dailyByDate.set(r.date, cur);
+  }
+
+  // Build the contiguous 30-day window ending today (EST). Walking
+  // backward from a synthesized "today" rather than reading from
+  // dailyRows ensures zero-sales days are present so bars don't gap.
+  const today = new Date();
+  const daily30d: SkuDetail["daily30d"] = [];
+  for (let i = DAILY_WINDOW_DAYS - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setUTCDate(d.getUTCDate() - i);
+    const ymd = d.toISOString().slice(0, 10);
+    const entry = dailyByDate.get(ymd) ?? { us: 0, intl: 0 };
+    daily30d.push({ date: ymd, us: entry.us, intl: entry.intl, total: entry.us + entry.intl });
+  }
+
   return {
     sku: skuRow.sku,
     productName: skuRow.productName,
@@ -169,5 +223,6 @@ export async function getSkuDetail(sku: string): Promise<SkuDetail | null> {
     unitCostIntlUsd: skuRow.unitCostIntlUsd != null ? Number(skuRow.unitCostIntlUsd) : null,
     byLocation,
     velocityByWindow,
+    daily30d,
   };
 }
