@@ -1,113 +1,74 @@
 "use client";
-import { useMemo, useState } from "react";
-import { FlagPill } from "@/components/inventory/FlagPill";
-import { KpiCard } from "@/components/inventory/KpiCard";
+import { useState } from "react";
+import { WarehouseToggle, type Warehouse } from "@/components/inventory/WarehouseToggle";
 import { trpc } from "@/lib/trpc/client";
 
-type Filter = "all" | "at_risk" | "watch" | "healthy" | "overstocked";
+const WINDOW_OPTIONS = [7, 14, 30] as const;
+type WindowDays = (typeof WINDOW_OPTIONS)[number];
 
-const FLAG_ORDER: Record<string, number> = {
-  at_risk: 0,
-  watch: 1,
-  healthy: 2,
-  overstocked: 3,
-};
+function formatYmd(ymd: string): string {
+  // "2026-05-03" → "3 May 26" (matches Scott's sheet's tight format)
+  const [y, m, d] = ymd.split("-").map(Number);
+  const monthNames = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ];
+  return `${d} ${monthNames[m - 1]} ${String(y).slice(2)}`;
+}
 
-function weeksDisplay(w: number | null): string {
-  if (w === null) return "—";
-  if (!Number.isFinite(w)) return "∞";
-  return w.toFixed(1);
+function fmtNum(n: number, digits = 0): string {
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
 }
 
 export default function SustainabilityPage() {
-  const us = trpc.inventory.getInventoryRows.useQuery({ location: "US" });
-  const cn = trpc.inventory.getInventoryRows.useQuery({ location: "CN" });
-  const [filter, setFilter] = useState<Filter>("all");
-  const [search, setSearch] = useState("");
+  const [warehouse, setWarehouse] = useState<Warehouse>("US");
+  const [windowDays, setWindowDays] = useState<WindowDays>(14);
+  const { data, isLoading, error } = trpc.inventory.getSustainabilityTimeline.useQuery(
+    { location: warehouse, windowDays },
+    { refetchOnWindowFocus: false }
+  );
 
-  const rows = useMemo(() => {
-    const all = [...(us.data ?? []), ...(cn.data ?? [])];
-    const filtered = all.filter((r) => {
-      if (filter !== "all" && r.flag !== filter) return false;
-      if (
-        search.trim() &&
-        !r.sku.toLowerCase().includes(search.toLowerCase()) &&
-        !r.productName.toLowerCase().includes(search.toLowerCase())
-      ) {
-        return false;
-      }
-      return true;
-    });
-    return filtered.sort((a, b) => {
-      const fa = a.flag ? FLAG_ORDER[a.flag] ?? 99 : 99;
-      const fb = b.flag ? FLAG_ORDER[b.flag] ?? 99 : 99;
-      if (fa !== fb) return fa - fb;
-      const toNum = (x: number | null) => (x === null ? Infinity : x);
-      return toNum(a.weeksOfStock) - toNum(b.weeksOfStock);
-    });
-  }, [us.data, cn.data, filter, search]);
-
-  const counts = useMemo(() => {
-    const all = [...(us.data ?? []), ...(cn.data ?? [])];
-    return {
-      at_risk: all.filter((r) => r.flag === "at_risk").length,
-      watch: all.filter((r) => r.flag === "watch").length,
-      healthy: all.filter((r) => r.flag === "healthy").length,
-      overstocked: all.filter((r) => r.flag === "overstocked").length,
-    };
-  }, [us.data, cn.data]);
-
-  const loading = us.isLoading || cn.isLoading;
-  const error = us.error ?? cn.error;
+  const rows = data?.rows ?? [];
+  const shipmentCols = data?.shipmentColumns ?? [];
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-neutral-900">Sustainability report</h1>
-        <p className="text-sm text-neutral-500">
-          Projected run-out dates walk forward through upcoming POs. At-risk = stocks out before next PO.
-          Watch = stocks out between this PO and the next.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <KpiCard
-          label="At risk"
-          value={counts.at_risk}
-          tone={counts.at_risk > 0 ? "danger" : "neutral"}
-        />
-        <KpiCard
-          label="Watch"
-          value={counts.watch}
-          tone={counts.watch > 0 ? "warn" : "neutral"}
-        />
-        <KpiCard label="Healthy" value={counts.healthy} />
-        <KpiCard label="Overstocked" value={counts.overstocked} />
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex gap-2">
-          {(["all", "at_risk", "watch", "healthy", "overstocked"] as Filter[]).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={
-                "rounded-full border px-3 py-1 text-xs font-medium " +
-                (filter === f
-                  ? "border-neutral-900 bg-neutral-900 text-white"
-                  : "border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-100")
-              }
-            >
-              {f === "all" ? "All" : f.replace("_", " ")}
-            </button>
-          ))}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-neutral-900">
+            Sustainability check {warehouse}
+          </h1>
+          <p className="text-sm text-neutral-500">
+            {data
+              ? `Sales window: ${formatYmd(data.windowStart)} – ${formatYmd(data.windowEnd)} (${data.windowDays}d) · Today: ${formatYmd(data.today)} · ${rows.length} SKUs · ${shipmentCols.length} upcoming shipment${shipmentCols.length === 1 ? "" : "s"}`
+              : isLoading
+              ? "Loading…"
+              : ""}
+          </p>
         </div>
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Filter SKU or product…"
-          className="rounded border border-neutral-300 px-2 py-1 text-sm"
-        />
+        <div className="flex items-center gap-2">
+          <div className="inline-flex overflow-hidden rounded-md border border-neutral-300 bg-white">
+            {WINDOW_OPTIONS.map((opt) => (
+              <button
+                key={opt}
+                onClick={() => setWindowDays(opt)}
+                className={
+                  "px-3 py-1.5 text-sm font-medium " +
+                  (windowDays === opt
+                    ? "bg-neutral-900 text-white"
+                    : "text-neutral-700 hover:bg-neutral-100")
+                }
+              >
+                {opt}d
+              </button>
+            ))}
+          </div>
+          <WarehouseToggle value={warehouse} onChange={setWarehouse} />
+        </div>
       </div>
 
       {error && (
@@ -118,46 +79,138 @@ export default function SustainabilityPage() {
 
       <div className="rounded-md border border-neutral-200 bg-white">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-600">
+          <table className="w-full border-collapse text-xs">
+            {/* HEADER — two-row stacked: shipment column blocks span 5 cols each */}
+            <thead className="bg-neutral-50 text-left text-[11px] uppercase tracking-wide text-neutral-600">
               <tr>
-                <th className="px-4 py-2 font-medium">SKU</th>
-                <th className="px-4 py-2 font-medium">Product</th>
-                <th className="px-4 py-2 font-medium">Location</th>
-                <th className="px-4 py-2 font-medium text-right">Stock</th>
-                <th className="px-4 py-2 font-medium text-right">Velocity/day</th>
-                <th className="px-4 py-2 font-medium text-right">Weeks of stock</th>
-                <th className="px-4 py-2 font-medium">Run-out date</th>
-                <th className="px-4 py-2 font-medium">Status</th>
+                <th
+                  rowSpan={2}
+                  className="sticky left-0 z-10 border-r border-neutral-200 bg-neutral-50 px-3 py-2 font-medium"
+                >
+                  SKU
+                </th>
+                <th rowSpan={2} className="px-3 py-2 font-medium">Product</th>
+                <th rowSpan={2} className="px-3 py-2 text-right font-medium">Sales</th>
+                <th rowSpan={2} className="px-3 py-2 text-right font-medium">Prorated 30D</th>
+                <th
+                  rowSpan={2}
+                  className="border-r border-neutral-200 px-3 py-2 text-right font-medium"
+                >
+                  Stock
+                </th>
+                {shipmentCols.map((col, i) => (
+                  <th
+                    key={`${col.eta}|${col.shipmentName}`}
+                    colSpan={5}
+                    className={
+                      "border-l-2 px-3 py-1 text-center font-medium " +
+                      (i % 2 === 0 ? "bg-neutral-50 border-neutral-300" : "bg-blue-50/40 border-neutral-300")
+                    }
+                  >
+                    <div className="text-neutral-900 normal-case">
+                      {col.shipmentName}
+                    </div>
+                    <div className="font-normal lowercase tracking-normal text-neutral-500">
+                      {formatYmd(col.eta)} · {col.daysFromToday}d
+                    </div>
+                  </th>
+                ))}
+              </tr>
+              <tr>
+                {shipmentCols.map((col, i) => {
+                  const cls =
+                    "border-l px-2 py-1 text-right font-medium " +
+                    (i % 2 === 0 ? "bg-neutral-50 border-neutral-300" : "bg-blue-50/40 border-neutral-300");
+                  return (
+                    <>
+                      <th
+                        key={`${col.eta}|${col.shipmentName}|sales`}
+                        className={"border-l-2 " + cls.replace("border-l ", "")}
+                      >
+                        Sales
+                      </th>
+                      <th key={`${col.eta}|${col.shipmentName}|left`} className={cls}>
+                        Stock Left
+                      </th>
+                      <th key={`${col.eta}|${col.shipmentName}|run`} className={cls + " whitespace-nowrap"}>
+                        Run Out
+                      </th>
+                      <th key={`${col.eta}|${col.shipmentName}|qty`} className={cls}>
+                        Qty
+                      </th>
+                      <th key={`${col.eta}|${col.shipmentName}|after`} className={cls}>
+                        After
+                      </th>
+                    </>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => (
-                <tr key={`${r.sku}-${r.location}`} className="border-t border-neutral-100">
-                  <td className="whitespace-nowrap px-4 py-2 font-mono text-xs">{r.sku}</td>
-                  <td className="px-4 py-2">{r.productName}</td>
-                  <td className="px-4 py-2">{r.location}</td>
-                  <td className="px-4 py-2 text-right tabular-nums">
-                    {r.onHand.toLocaleString()}
+                <tr key={r.sku} className="border-t border-neutral-100 hover:bg-neutral-50/50">
+                  <td className="sticky left-0 z-10 border-r border-neutral-200 bg-white px-3 py-1.5 font-mono text-[11px] hover:bg-neutral-50/50">
+                    {r.sku}
                   </td>
-                  <td className="px-4 py-2 text-right tabular-nums">
-                    {r.velocityPerDay7d !== null ? r.velocityPerDay7d.toFixed(2) : "—"}
+                  <td className="px-3 py-1.5 text-neutral-700">{r.productName}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{fmtNum(r.salesInWindow)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{fmtNum(r.proratedThirtyD)}</td>
+                  <td className="border-r border-neutral-200 px-3 py-1.5 text-right tabular-nums">
+                    {fmtNum(r.currentStock)}
                   </td>
-                  <td className="px-4 py-2 text-right tabular-nums">
-                    {weeksDisplay(r.weeksOfStock)}
-                  </td>
-                  <td className="px-4 py-2 text-neutral-600">{r.runOutDate ?? "—"}</td>
-                  <td className="px-4 py-2">
-                    <FlagPill flag={r.flag} />
-                  </td>
+                  {r.projections.map((p, i) => {
+                    const colCls =
+                      "border-l px-2 py-1.5 text-right tabular-nums " +
+                      (i % 2 === 0 ? "" : "bg-blue-50/30");
+                    const stockNeg = p.stockLeftAtEta < 0;
+                    return (
+                      <>
+                        <td
+                          key={`${r.sku}|${p.eta}|${p.shipmentName}|sales`}
+                          className={"border-l-2 border-neutral-300 " + colCls.replace("border-l ", "")}
+                        >
+                          {fmtNum(p.salesInWindow)}
+                        </td>
+                        <td
+                          key={`${r.sku}|${p.eta}|${p.shipmentName}|left`}
+                          className={colCls + (stockNeg ? " text-red-600 font-medium" : "")}
+                        >
+                          {fmtNum(p.stockLeftAtEta)}
+                        </td>
+                        <td
+                          key={`${r.sku}|${p.eta}|${p.shipmentName}|run`}
+                          className={colCls + " text-neutral-500 whitespace-nowrap"}
+                        >
+                          {p.runOutDate ? formatYmd(p.runOutDate) : "—"}
+                        </td>
+                        <td
+                          key={`${r.sku}|${p.eta}|${p.shipmentName}|qty`}
+                          className={colCls}
+                        >
+                          {p.shipmentQty > 0 ? fmtNum(p.shipmentQty) : "—"}
+                        </td>
+                        <td
+                          key={`${r.sku}|${p.eta}|${p.shipmentName}|after`}
+                          className={colCls + " font-medium"}
+                        >
+                          {fmtNum(p.afterReceiptStock)}
+                        </td>
+                      </>
+                    );
+                  })}
                 </tr>
               ))}
-              {!loading && rows.length === 0 && (
+              {!isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-sm text-neutral-500">
-                    {filter === "all"
-                      ? "No sustainability data yet. Run the daily ingest to populate."
-                      : `No SKUs in ${filter.replace("_", " ")} category.`}
+                  <td colSpan={5 + shipmentCols.length * 5} className="px-4 py-8 text-center text-sm text-neutral-500">
+                    No SKUs with stock or upcoming shipments in {warehouse}.
+                  </td>
+                </tr>
+              )}
+              {isLoading && (
+                <tr>
+                  <td colSpan={5 + shipmentCols.length * 5} className="px-4 py-8 text-center text-sm text-neutral-500">
+                    Loading…
                   </td>
                 </tr>
               )}

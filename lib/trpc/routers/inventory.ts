@@ -11,6 +11,8 @@ import {
   getStockValueByProduct,
   getStockValueByProductLine,
 } from "@/lib/queries/stock";
+import { getSustainabilityTimeline } from "@/lib/queries/sustainability-timeline";
+import { toEstDate } from "@/lib/tz";
 import { publicProcedure, router } from "@/lib/trpc/server";
 
 const locationSchema = z.enum(["US", "CN"]);
@@ -47,6 +49,26 @@ export const inventoryRouter = router({
   getStockValueByProduct: publicProcedure
     .input(z.object({ location: locationSchema.optional() }).optional())
     .query(({ input }) => getStockValueByProduct(input ?? {})),
+
+  // Per-delivery sustainability timeline view powering the redesigned
+  // /sustainability page. Mirrors Scott's "Sustainability Check" sheet
+  // (2026-04-28 punch-list #8). For each SKU at the location: sales
+  // over a configurable window, prorated 30-day equivalent, current
+  // stock, and a projection row per upcoming shipment.
+  getSustainabilityTimeline: publicProcedure
+    .input(
+      z.object({
+        location: locationSchema,
+        windowDays: z.number().int().min(1).max(90).optional(),
+      }),
+    )
+    .query(({ input }) =>
+      getSustainabilityTimeline({
+        location: input.location,
+        today: toEstDate(new Date()),
+        windowDays: input.windowDays,
+      }),
+    ),
 
   getIncomingStock: publicProcedure
     .input(z.object({ sku: z.string().optional(), location: locationSchema.optional() }).optional())
