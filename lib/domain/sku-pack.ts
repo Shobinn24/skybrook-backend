@@ -117,7 +117,7 @@ export function decomposePackSku(sku: string): DecomposedSku | null {
   const numericPack = packMatch.replace(/x$/, "");
   const target = rulesForFamily(family)[numericPack];
   if (!target) return null;
-  const canonicalRest = canonicalizeSizeToken(rest);
+  const canonicalRest = canonicalizeColorToken(canonicalizeSizeToken(rest));
   let canonicalSku = `ev-${family}-${target.canonicalToken}-${canonicalRest}`;
   // HW no-pack collapse: bare-size HW 5-packs fold to the no-pack form
   // that inventory uses. Skipped when rest carries a color or qualifier
@@ -138,6 +138,16 @@ export function decomposePackSku(sku: string): DecomposedSku | null {
 // conventions in the data.
 function canonicalizeSizeToken(rest: string): string {
   return rest.replace(/(^|-)2xl$/i, "$1xxl");
+}
+
+// Color token: UK `grey` → US `gray`. Production tabs (`EV Sec CN`,
+// `EV Sec US`) use `gray`; the `(ss)` checkpoint mirror tab uses
+// `grey`. If Scott ever migrates the main tab to UK spelling or copies
+// rows out of the (ss) tab, defensive normalization here keeps the
+// inventory side aligned with Shopify so we don't silently double-orphan
+// the same physical color.
+function canonicalizeColorToken(rest: string): string {
+  return rest.replace(/(^|-)grey(-|$)/gi, "$1gray$2");
 }
 
 // SQL LIKE patterns for legacy SKU forms that may sit in daily_sales

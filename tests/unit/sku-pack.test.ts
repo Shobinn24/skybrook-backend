@@ -121,6 +121,37 @@ describe("decomposePackSku", () => {
     });
   });
 
+  it("canonicalizes UK grey to US gray on pack-token SKUs", () => {
+    // Production tabs use `gray`; the (ss) checkpoint mirror uses `grey`.
+    // Defensive normalization at decompose so both sheet and Shopify
+    // ingest paths land on the same canonical color token.
+    expect(decomposePackSku("ev-og-5x-grey-xl")).toEqual({
+      canonicalSku: "ev-og-5x-gray-xl",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-og-10x-grey-l")).toEqual({
+      canonicalSku: "ev-og-5x-gray-l",
+      multiplier: 2,
+    });
+  });
+
+  it("normalizes grey case-insensitively", () => {
+    expect(decomposePackSku("ev-og-5x-Grey-xl")).toEqual({
+      canonicalSku: "ev-og-5x-gray-xl",
+      multiplier: 1,
+    });
+  });
+
+  it("does not touch existing gray SKUs", () => {
+    expect(decomposePackSku("ev-og-5x-gray-xl")).toBeNull();
+  });
+
+  it("does not touch substrings that contain grey but aren't the color token", () => {
+    // Imaginary SKU with `greyish` in the rest — must not mangle. The
+    // regex requires `grey` to be a full dash-bounded token.
+    expect(decomposePackSku("ev-og-5x-greyish-xl")).toBeNull();
+  });
+
   it("does not touch xxl SKUs (already canonical for size)", () => {
     expect(decomposePackSku("ev-9055-5x-xxl")).toBeNull();
     expect(decomposePackSku("ev-9055-10x-xxl")).toEqual({
