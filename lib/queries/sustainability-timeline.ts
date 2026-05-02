@@ -146,17 +146,25 @@ export async function getSustainabilityTimeline(opts: {
     )
     .orderBy(asc(incomingShipments.expectedArrival), asc(incomingShipments.shipmentName));
 
-  // Build the GLOBAL shipment-column list across all SKUs. Each
-  // (shipmentName, eta) pair becomes one column block in the UI;
-  // SKUs not present in a given shipment will get a 0-qty projection
-  // row at that column. This matches Scott's sheet, where every row
-  // aligns to the same set of column dates regardless of which SKUs
-  // are actually included in each PO.
-  const globalShipmentKey = (n: string, eta: string) => `${eta}|${n}`;
-  const globalShipmentMap = new Map<string, ShipmentColumn>();
+  // Build the GLOBAL shipment-column list across all SKUs. Keyed by ETA
+  // ONLY — multiple shipments with the same ETA collapse into one
+  // column block (Scott 5/02 ask: "combine orders scheduled to deliver
+  // on same date into the same column, e.g. Kai 24 + KAI SEC Feb 26").
+  // Combined columns show all shipment names joined with " + " in the
+  // header, and per-SKU qtys are summed across the merged shipments.
+  const globalShipmentMap = new Map<string, ShipmentColumn>(); // key = eta
   for (const r of shipmentRows) {
-    const k = globalShipmentKey(r.shipmentName, r.expectedArrival);
-    if (globalShipmentMap.has(k)) continue;
+    const k = r.expectedArrival;
+    const existing = globalShipmentMap.get(k);
+    if (existing) {
+      // Append name only if not already included (defensive against
+      // duplicate rows for the same shipment).
+      const names = existing.shipmentName.split(" + ");
+      if (!names.includes(r.shipmentName)) {
+        existing.shipmentName = `${existing.shipmentName} + ${r.shipmentName}`;
+      }
+      continue;
+    }
     globalShipmentMap.set(k, {
       shipmentName: r.shipmentName,
       eta: r.expectedArrival,
@@ -164,14 +172,14 @@ export async function getSustainabilityTimeline(opts: {
     });
   }
   const shipmentColumns = Array.from(globalShipmentMap.values()).sort((a, b) =>
-    a.eta < b.eta ? -1 : a.eta > b.eta ? 1 : a.shipmentName.localeCompare(b.shipmentName),
+    a.eta < b.eta ? -1 : a.eta > b.eta ? 1 : 0,
   );
 
-  // Per-SKU lookup: for each global column, what's the qty THIS SKU
-  // gets in that shipment (0 if not included).
-  const skuQtyByColumn = new Map<string, Map<string, number>>(); // sku → key → qty
+  // Per-SKU lookup: for each ETA column, what's the total qty THIS SKU
+  // gets across all shipments arriving on that date (0 if not included).
+  const skuQtyByColumn = new Map<string, Map<string, number>>(); // sku → eta → qty (summed across same-date shipments)
   for (const r of shipmentRows) {
-    const k = globalShipmentKey(r.shipmentName, r.expectedArrival);
+    const k = r.expectedArrival;
     const inner = skuQtyByColumn.get(r.sku) ?? new Map<string, number>();
     inner.set(k, (inner.get(k) ?? 0) + r.quantity);
     skuQtyByColumn.set(r.sku, inner);
@@ -212,11 +220,13 @@ export async function getSustainabilityTimeline(opts: {
 
     // Walk through the GLOBAL shipment columns so each SKU's projection
     // aligns to the same column structure across the table. SKUs not
-    // included in a given shipment get a 0-qty projection row.
+    // included in a given shipment get a 0-qty projection row. Same-date
+    // shipments are already collapsed into one column above; the qty
+    // here is the SKU's total across that ETA's merged shipments.
     const perSkuShipments = shipmentColumns.map((col) => ({
       shipmentName: col.shipmentName,
       eta: col.eta,
-      quantity: skuQtys?.get(globalShipmentKey(col.shipmentName, col.eta)) ?? 0,
+      quantity: skuQtys?.get(col.eta) ?? 0,
     }));
     const projections = walkProjection(currentStock, dailyRate, opts.today, perSkuShipments);
 

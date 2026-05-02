@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   WarehouseToggle,
   type WarehouseSelection,
@@ -13,6 +13,8 @@ type WindowDays = (typeof WINDOW_OPTIONS)[number];
 export default function SustainabilityPage() {
   const [selection, setSelection] = useState<WarehouseSelection>("US");
   const [windowDays, setWindowDays] = useState<WindowDays>(14);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [productLineFilter, setProductLineFilter] = useState("");
   const isAll = selection === "All";
 
   // Two parallel queries — `enabled` gates each so single-warehouse
@@ -37,6 +39,18 @@ export default function SustainabilityPage() {
   const headlineError = isAll
     ? usQuery.error ?? cnQuery.error
     : (selection === "US" ? usQuery : cnQuery).error;
+
+  // Build the unique productLine list from whichever queries are
+  // currently enabled. Excludes nulls. Sorted alphabetically.
+  const productLineOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const q of [usQuery, cnQuery]) {
+      for (const r of q.data?.rows ?? []) {
+        if (r.productLine) set.add(r.productLine);
+      }
+    }
+    return Array.from(set).sort();
+  }, [usQuery.data, cnQuery.data]);
 
   return (
     <div className="space-y-6">
@@ -78,6 +92,40 @@ export default function SustainabilityPage() {
         </div>
       )}
 
+      {/* Filter row — applies to both US and CN tables when in All mode. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search SKU or product name…"
+          className="w-72 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm placeholder:text-neutral-400 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500"
+        />
+        <select
+          value={productLineFilter}
+          onChange={(e) => setProductLineFilter(e.target.value)}
+          className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-500"
+        >
+          <option value="">All product lines</option>
+          {productLineOptions.map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+        </select>
+        {(searchQuery || productLineFilter) && (
+          <button
+            onClick={() => {
+              setSearchQuery("");
+              setProductLineFilter("");
+            }}
+            className="text-xs text-neutral-500 hover:text-neutral-800 underline underline-offset-2"
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
+
       {/* Single-warehouse: render only the selected one. All: render
           both stacked, US first then CN. Each table has its own sort
           state so operators can sort the two independently. */}
@@ -86,6 +134,8 @@ export default function SustainabilityPage() {
           data={usQuery.data}
           isLoading={usQuery.isLoading}
           location="US"
+          searchQuery={searchQuery}
+          productLineFilter={productLineFilter}
         />
       )}
       {(isAll || selection === "CN") && (
@@ -93,6 +143,8 @@ export default function SustainabilityPage() {
           data={cnQuery.data}
           isLoading={cnQuery.isLoading}
           location="CN"
+          searchQuery={searchQuery}
+          productLineFilter={productLineFilter}
         />
       )}
     </div>

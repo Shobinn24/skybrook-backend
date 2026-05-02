@@ -37,15 +37,23 @@ function fmtNum(n: number, digits = 0): string {
  * column blocks stay aligned to row order — sorting by per-shipment
  * cells would shuffle rows in 5-cell-wide column blocks and read as
  * noise rather than signal.
+ *
+ * Filters (`searchQuery` + `productLineFilter`) come from the page so
+ * the same filter state applies to both US and CN tables — operators
+ * typically scan the same SKU/family across both warehouses.
  */
 export function SustainabilityTimelineTable({
   data,
   isLoading,
   location,
+  searchQuery = "",
+  productLineFilter = "",
 }: {
   data: SustainabilityTimelineResult | undefined;
   isLoading: boolean;
   location: "US" | "CN";
+  searchQuery?: string;
+  productLineFilter?: string;
 }) {
   const [sort, setSort] = useState<SortConfig<SustainSortKey>>({
     key: "sku",
@@ -71,8 +79,14 @@ export function SustainabilityTimelineTable({
           return (a.currentStock - b.currentStock) * dir;
       }
     };
-    return [...rawRows].sort(cmp);
-  }, [rawRows, sort]);
+    const q = searchQuery.trim().toLowerCase();
+    const filtered = rawRows.filter((r) => {
+      if (productLineFilter && r.productLine !== productLineFilter) return false;
+      if (q && !r.sku.toLowerCase().includes(q) && !r.productName.toLowerCase().includes(q)) return false;
+      return true;
+    });
+    return [...filtered].sort(cmp);
+  }, [rawRows, sort, searchQuery, productLineFilter]);
 
   return (
     <section className="space-y-2">
@@ -92,8 +106,10 @@ export function SustainabilityTimelineTable({
       <div className="rounded-md border border-neutral-200 bg-white">
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-xs">
-            {/* HEADER — two-row stacked: shipment column blocks span 5 cols each */}
-            <thead className="bg-neutral-50 text-left text-[11px] uppercase tracking-wide text-neutral-600">
+            {/* HEADER — two-row stacked: shipment column blocks span 5 cols each.
+                Sticky so the date/shipment labels stay visible while scrolling
+                vertically through long SKU lists. */}
+            <thead className="sticky top-0 z-20 bg-neutral-50 text-left text-[11px] uppercase tracking-wide text-neutral-600 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
               <tr>
                 <SortableHeader<SustainSortKey>
                   label="SKU"
