@@ -54,8 +54,11 @@ describe("decomposePackSku", () => {
       canonicalSku: "ev-hw-l",
       multiplier: 2,
     });
+    // No-color OG: 15-pack decomposes to 3× 5-packs, then the bare-size
+    // 5-pack rename folds the result onto `ev-pp-og-{size}` per Scott
+    // (4/30 + 5/02). 1× 15-pack = 3× ev-pp-og-xxl.
     expect(decomposePackSku("EV-OG-15-xxl")).toEqual({
-      canonicalSku: "ev-og-5x-xxl",
+      canonicalSku: "ev-pp-og-xxl",
       multiplier: 3,
     });
   });
@@ -313,6 +316,40 @@ describe("decomposePackSku", () => {
     expect(decomposePackSku("ev-hw-hf-5x-l")).toBeNull();
     expect(decomposePackSku("ev-hw-hf-5-l")).toEqual({
       canonicalSku: "ev-hw-hf-5x-l",
+      multiplier: 1,
+    });
+  });
+
+  it("remaps bare-size og 5-packs to ev-pp-og inventory rows (Scott 4/30 + 5/02)", () => {
+    // OG no-color sales (`ev-og-5x-{size}`) attribute to `ev-pp-og-{size}`
+    // — same physical product as OG Main "no color" line per Scott.
+    expect(decomposePackSku("ev-og-5x-l")).toEqual({
+      canonicalSku: "ev-pp-og-l",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-og-5x-xxl")).toEqual({
+      canonicalSku: "ev-pp-og-xxl",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-og-5-xs")).toEqual({
+      canonicalSku: "ev-pp-og-xs",
+      multiplier: 1,
+    });
+  });
+
+  it("preserves og colored 5-packs (keeps the 5x token)", () => {
+    // `ev-og-5x-black-l` is a separate physical product — remap only
+    // applies when rest is a single size token (no color segment).
+    expect(decomposePackSku("ev-og-5x-black-l")).toBeNull();
+    expect(decomposePackSku("ev-og-5x-beige-3xl")).toBeNull();
+    // Colored OG 1-packs are also unaffected.
+    expect(decomposePackSku("ev-og-1x-beige-l")).toBeNull();
+  });
+
+  it("remap does not apply to og-hf or other og-prefixed families", () => {
+    // og-hf has its own family ruleset and uses dash-form 5 tokens.
+    expect(decomposePackSku("ev-og-hf-5-l")).toEqual({
+      canonicalSku: "ev-og-hf-5x-l",
       multiplier: 1,
     });
   });

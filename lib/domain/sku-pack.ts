@@ -40,6 +40,17 @@
 // no-pack form so both sales paths land on the same SKU. Colored
 // 5-packs (`ev-hw-5x-{color}-{size}`) keep their separate identity —
 // only the bare-size form gets collapsed.
+//
+// OG no-color → ev-pp-og collapse: Shopify sells `ev-og-5x-{size}`
+// (no color) — 9 SKUs, 748 units / 30d as of 2026-04-30 — that don't
+// match any inventory row. Scott (4/30 morning + 5/02 confirm:
+// "Think that's another sku for the same thing") confirmed they're
+// the same physical product as the OG Main "no color" line, which
+// inventory tracks under `ev-pp-og-{size}` (sometimes also mirrored
+// as `EV-mixed-{size}`). We map sales to `ev-pp-og-{size}` since
+// Scott pointed at that one explicitly ("set up as OG regular too").
+// Colored OG 5-packs (`ev-og-5x-{color}-{size}`) keep their identity
+// — only the bare-size form gets remapped.
 
 const PACK_TOKEN_RE = /^ev-([a-zA-Z0-9-]+)-(1|3|5|6|9|10|12|15)x?-(.+)$/i;
 
@@ -129,6 +140,16 @@ export function decomposePackSku(sku: string): DecomposedSku | null {
   ) {
     canonicalSku = `ev-hw-${canonicalRest}`;
   }
+  // OG no-color → ev-pp-og rename: bare-size OG 5-packs (no color
+  // segment in `rest`) get re-keyed onto the inventory's canonical
+  // `ev-pp-og-{size}` row. Colored OG 5-packs keep their identity.
+  if (
+    family === "og" &&
+    target.canonicalToken === "5x" &&
+    !canonicalRest.includes("-")
+  ) {
+    canonicalSku = `ev-pp-og-${canonicalRest}`;
+  }
   // Already canonical and no multiplier needed → caller treats as no-op.
   if (canonicalSku === lower && target.multiplier === 1) return null;
   return { canonicalSku, multiplier: target.multiplier };
@@ -185,4 +206,19 @@ export const PACK_SKU_DB_PATTERNS: ReadonlyArray<string> = [
   "ev-og-hf-9x-%",
   "ev-og-hf-9-%",
   "ev-%-2xl",
+  // OG no-color 5-packs (`ev-og-5x-{size}`, no color segment) — now
+  // remapped to `ev-pp-og-{size}` per Scott's 4/30 + 5/02 confirms.
+  // Pattern matches sizes only (s/m/l/xl/xxl/3xl/4xl/5xl/xxs/xs) —
+  // `ev-og-5x-{color}-%` rows are unaffected because the % wildcard
+  // requires content where these end at the size token.
+  "ev-og-5x-s",
+  "ev-og-5x-m",
+  "ev-og-5x-l",
+  "ev-og-5x-xl",
+  "ev-og-5x-xxl",
+  "ev-og-5x-3xl",
+  "ev-og-5x-4xl",
+  "ev-og-5x-5xl",
+  "ev-og-5x-xxs",
+  "ev-og-5x-xs",
 ];
