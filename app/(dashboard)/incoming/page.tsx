@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import Link from "next/link";
 import { KpiCard } from "@/components/inventory/KpiCard";
 import { StatusPill } from "@/components/shell/StatusPill";
@@ -9,8 +9,9 @@ import { trpc } from "@/lib/trpc/client";
 
 type LocationFilter = "all" | "US" | "CN";
 
-type SortKey =
-  | "sku"
+// Group-level sort keys. SKU isn't here because groups roll up multiple
+// SKUs and sorting by a single SKU would be ambiguous.
+type GroupSortKey =
   | "productName"
   | "destination"
   | "shipmentName"
@@ -78,47 +79,124 @@ const TONE_CLASS: Record<"neutral" | "warn" | "danger" | "good", string> = {
   good: "text-green-700 font-medium",
 };
 
+type Group = {
+  key: string;
+  destination: string;
+  shipmentName: string;
+  productName: string;
+  productLine: string | null;
+  status: string;
+  expectedArrival: string;
+  totalQuantity: number;
+  // Sub-rows: one per SKU contributing to the group total.
+  skuRows: Array<{
+    id: number | string;
+    sku: string;
+    quantity: number;
+  }>;
+};
+
 export default function IncomingShipmentsPage() {
   const [location, setLocation] = useState<LocationFilter>("all");
   const [includeArrived, setIncludeArrived] = useState(false);
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<SortConfig<SortKey>>({
+  const [sort, setSort] = useState<SortConfig<GroupSortKey>>({
     key: "expectedArrival",
     direction: "asc",
   });
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const { data, isLoading, error } = trpc.inventory.getIncomingShipmentsView.useQuery({
     destination: location === "all" ? undefined : location,
     includeArrived,
   });
 
-  const filteredRows = useMemo(() => {
+  // Pipeline: filter underlying rows → group by (shipment + product +
+  // warehouse + status + ETA) → sort groups. Search auto-expands any
+  // group containing a matched SKU so the SKU is visible by default.
+  const { groups, autoExpandKeys } = useMemo(() => {
     const rows = data?.rows ?? [];
-    const matched = !search.trim()
+    const needle = search.trim().toLowerCase();
+
+    // Each row may match the search via the GROUP fields (product /
+    // shipment) or via the SKU itself. SKU-level matches drive
+    // auto-expansion.
+    const matchedRows = !needle
       ? rows
       : rows.filter((r) => {
-          const needle = search.toLowerCase();
           return (
             r.sku.toLowerCase().includes(needle) ||
             (r.productName ?? "").toLowerCase().includes(needle) ||
             r.shipmentName.toLowerCase().includes(needle)
           );
         });
+
+    const skuMatchKeys = new Set<string>();
+    if (needle) {
+      for (const r of matchedRows) {
+        if (r.sku.toLowerCase().includes(needle)) {
+          skuMatchKeys.add(`${r.shipmentName}|${r.destination}|${r.productName ?? r.sku}|${r.status}|${r.expectedArrival}`);
+        }
+      }
+    }
+
+    const byKey = new Map<string, Group>();
+    for (const r of matchedRows) {
+      const productName = r.productName ?? r.sku;
+      const key = `${r.shipmentName}|${r.destination}|${productName}|${r.status}|${r.expectedArrival}`;
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.totalQuantity += r.quantity;
+        existing.skuRows.push({ id: r.id, sku: r.sku, quantity: r.quantity });
+        continue;
+      }
+      byKey.set(key, {
+        key,
+        destination: r.destination,
+        shipmentName: r.shipmentName,
+        productName,
+        productLine: r.productLine,
+        status: r.status,
+        expectedArrival: r.expectedArrival,
+        totalQuantity: r.quantity,
+        skuRows: [{ id: r.id, sku: r.sku, quantity: r.quantity }],
+      });
+    }
+
+    // Stable SKU order within each group — alphabetical so size lists
+    // (s, m, l, xl) at least cluster by family.
+    for (const g of byKey.values()) {
+      g.skuRows.sort((a, b) => a.sku.localeCompare(b.sku));
+    }
+
     const dir = sort.direction === "asc" ? 1 : -1;
-    return [...matched].sort((a, b) => {
+    const sorted = Array.from(byKey.values()).sort((a, b) => {
       switch (sort.key) {
-        case "sku": return a.sku.localeCompare(b.sku) * dir;
-        case "productName": return (a.productName ?? "").localeCompare(b.productName ?? "") * dir;
+        case "productName": return a.productName.localeCompare(b.productName) * dir;
         case "destination": return a.destination.localeCompare(b.destination) * dir;
         case "shipmentName": return a.shipmentName.localeCompare(b.shipmentName) * dir;
         case "status": return a.status.localeCompare(b.status) * dir;
-        case "quantity": return (a.quantity - b.quantity) * dir;
+        case "quantity": return (a.totalQuantity - b.totalQuantity) * dir;
         case "expectedArrival":
         default:
           return a.expectedArrival.localeCompare(b.expectedArrival) * dir;
       }
     });
+
+    return { groups: sorted, autoExpandKeys: skuMatchKeys };
   }, [data?.rows, search, sort]);
+
+  const isExpanded = (key: string) => expanded.has(key) || autoExpandKeys.has(key);
+  const toggleExpand = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  const allExpanded = groups.length > 0 && groups.every((g) => isExpanded(g.key));
+  const expandAll = () =>
+    setExpanded(allExpanded ? new Set() : new Set(groups.map((g) => g.key)));
 
   if (isLoading) {
     return <div className="text-sm text-neutral-500">Loading incoming shipments…</div>;
@@ -204,7 +282,7 @@ export default function IncomingShipmentsPage() {
       </div>
 
       <div className="rounded border border-neutral-200 bg-white">
-        {filteredRows.length === 0 ? (
+        {groups.length === 0 ? (
           <div className="px-4 py-8 text-center text-sm text-neutral-500">
             {summary.shipmentCount === 0
               ? "No incoming shipments are currently tracked. New POs land in the Incoming Google Sheet and refresh daily at 10am EST."
@@ -215,7 +293,15 @@ export default function IncomingShipmentsPage() {
             <table className="w-full text-sm">
               <thead className="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
                 <tr>
-                  <SortableHeader label="SKU" sortKey="sku" config={sort} onChange={setSort} />
+                  <th className="w-8 px-2 py-2">
+                    <button
+                      onClick={expandAll}
+                      title={allExpanded ? "Collapse all" : "Expand all"}
+                      className="text-neutral-400 hover:text-neutral-700"
+                    >
+                      {allExpanded ? "−" : "+"}
+                    </button>
+                  </th>
                   <SortableHeader label="Product" sortKey="productName" config={sort} onChange={setSort} />
                   <SortableHeader label="Destination" sortKey="destination" config={sort} onChange={setSort} />
                   <SortableHeader label="Shipment" sortKey="shipmentName" config={sort} onChange={setSort} />
@@ -225,44 +311,65 @@ export default function IncomingShipmentsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">
-                {filteredRows.map((r) => {
-                  const rel = relativeArrival(r.expectedArrival);
+                {groups.map((g) => {
+                  const rel = relativeArrival(g.expectedArrival);
+                  const open = isExpanded(g.key);
+                  const skuCount = g.skuRows.length;
                   return (
-                    <tr key={r.id} className="hover:bg-neutral-50">
-                      <td className="whitespace-nowrap px-4 py-2 font-medium text-neutral-900">
-                        <Link
-                          href={`/sku/${encodeURIComponent(r.sku)}`}
-                          className="hover:text-neutral-600 hover:underline"
-                        >
-                          {r.sku}
-                        </Link>
-                      </td>
-                      <td className="px-4 py-2 text-neutral-700">
-                        {r.productName ?? <span className="text-neutral-400">—</span>}
-                        {r.productLine ? (
+                    <Fragment key={g.key}>
+                      <tr className="cursor-pointer hover:bg-neutral-50" onClick={() => toggleExpand(g.key)}>
+                        <td className="px-2 py-2 text-center text-neutral-500">
+                          <span aria-hidden>{open ? "▾" : "▸"}</span>
+                        </td>
+                        <td className="px-4 py-2 text-neutral-700">
+                          <span className="font-medium text-neutral-900">{g.productName}</span>
                           <span className="ml-2 text-xs text-neutral-400">
-                            {r.productLine}
+                            {skuCount} SKU{skuCount === 1 ? "" : "s"}
                           </span>
-                        ) : null}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-neutral-700">
-                        {r.destination}
-                      </td>
-                      <td className="px-4 py-2 text-neutral-700">{r.shipmentName}</td>
-                      <td className="px-4 py-2">
-                        <StatusPill
-                          kind={STATUS_PILL_KIND[r.status] ?? "gray"}
-                          label={STATUS_LABEL[r.status] ?? r.status}
-                        />
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-neutral-700">
-                        {fmtNumber(r.quantity)}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-2">
-                        <div className="text-neutral-700">{fmtDate(r.expectedArrival)}</div>
-                        <div className={"text-xs " + TONE_CLASS[rel.tone]}>{rel.label}</div>
-                      </td>
-                    </tr>
+                          {g.productLine ? (
+                            <span className="ml-2 text-xs text-neutral-400">
+                              {g.productLine}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-2 text-neutral-700">
+                          {g.destination}
+                        </td>
+                        <td className="px-4 py-2 text-neutral-700">{g.shipmentName}</td>
+                        <td className="px-4 py-2">
+                          <StatusPill
+                            kind={STATUS_PILL_KIND[g.status] ?? "gray"}
+                            label={STATUS_LABEL[g.status] ?? g.status}
+                          />
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums font-medium text-neutral-900">
+                          {fmtNumber(g.totalQuantity)}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-2">
+                          <div className="text-neutral-700">{fmtDate(g.expectedArrival)}</div>
+                          <div className={"text-xs " + TONE_CLASS[rel.tone]}>{rel.label}</div>
+                        </td>
+                      </tr>
+                      {open &&
+                        g.skuRows.map((sr) => (
+                          <tr key={`${g.key}|${sr.id}`} className="bg-neutral-50/40">
+                            <td className="px-2 py-1.5"></td>
+                            <td className="px-4 py-1.5 pl-10 font-mono text-[11px] text-neutral-700">
+                              <Link
+                                href={`/sku/${encodeURIComponent(sr.sku)}`}
+                                className="hover:text-neutral-900 hover:underline"
+                              >
+                                {sr.sku}
+                              </Link>
+                            </td>
+                            <td colSpan={3} />
+                            <td className="whitespace-nowrap px-4 py-1.5 text-right tabular-nums text-neutral-600">
+                              {fmtNumber(sr.quantity)}
+                            </td>
+                            <td />
+                          </tr>
+                        ))}
+                    </Fragment>
                   );
                 })}
               </tbody>
