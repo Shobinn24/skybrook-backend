@@ -25,6 +25,10 @@ const FAMILY_LABELS: Record<string, string> = {
   "bshort": "Boyshort",
   "og": "OG",
   "hw": "HW",
+  "sw": "Shapewear",
+  "suphw": "Super High-Waist",
+  "mens": "Mens",
+  "cb": "CB",
 };
 
 const COLOR_LABELS: Record<string, string> = {
@@ -35,8 +39,12 @@ const COLOR_LABELS: Record<string, string> = {
 
 const PACK_LABELS: Record<string, string> = {
   "1x": "1-Pack",
+  "3x": "3-Pack",
   "5x": "5-Pack",
+  "6x": "6-Pack",
+  "9x": "9-Pack",
   "10x": "10-Pack",
+  "12x": "12-Pack",
   "15x": "15-Pack",
 };
 
@@ -79,6 +87,41 @@ export function deriveProductName(sku: string): string | null {
     case "og":
     case "hw": {
       const out = [FAMILY_LABELS[family]];
+      if (color) out.push(color);
+      if (pack) out.push(pack);
+      if (hf) out.push("HF");
+      return out.join(" ");
+    }
+    case "sw": {
+      // Shapewear — 5-pack is implicit (same convention as bshort).
+      const out = ["Shapewear"];
+      if (color) out.push(color);
+      if (hf) out.push("HF");
+      if (pack && pack !== "5-Pack") out.push(pack);
+      return out.join(" ");
+    }
+    case "suphw": {
+      // Super High-Waist — pack is always shown when present (no implicit
+      // default observed in the velocity sheet yet).
+      const out = ["Super High-Waist"];
+      if (color) out.push(color);
+      if (pack) out.push(pack);
+      if (hf) out.push("HF");
+      return out.join(" ");
+    }
+    case "mens": {
+      // Mens — 3-pack is canonical; 6/9-packs are multiples per Scott
+      // (4/29 WhatsApp), so show the pack label always.
+      const out = ["Mens"];
+      if (color) out.push(color);
+      if (pack) out.push(pack);
+      if (hf) out.push("HF");
+      return out.join(" ");
+    }
+    case "cb": {
+      // CB family — exact meaning unconfirmed (Scott noted ev-cb-3x-s
+      // exists). Render as "CB [color] [pack] [hf]" until naming is locked.
+      const out = ["CB"];
       if (color) out.push(color);
       if (pack) out.push(pack);
       if (hf) out.push("HF");

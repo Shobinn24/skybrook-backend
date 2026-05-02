@@ -37,6 +37,31 @@ describe("deriveProductName", () => {
     expect(deriveProductName("ev-hw-15x-black-m")).toBe("HW Black 15-Pack");
   });
 
+  it("matches velocity-sheet style names for sw (Shapewear) family", () => {
+    // 5-pack is implicit (same convention as bshort).
+    expect(deriveProductName("ev-sw-5x-l")).toBe("Shapewear");
+    expect(deriveProductName("ev-sw-black-5x-m")).toBe("Shapewear Black");
+    expect(deriveProductName("ev-sw-beige-5x-xl")).toBe("Shapewear Beige");
+  });
+
+  it("matches velocity-sheet style names for suphw (Super High-Waist) family", () => {
+    expect(deriveProductName("ev-suphw-fc-l")).toBe("Super High-Waist FC");
+    expect(deriveProductName("ev-suphw-beige-5x-m")).toBe("Super High-Waist Beige 5-Pack");
+    expect(deriveProductName("ev-suphw-black-5x-xl")).toBe("Super High-Waist Black 5-Pack");
+  });
+
+  it("matches velocity-sheet style names for mens family", () => {
+    expect(deriveProductName("ev-mens-3x-l")).toBe("Mens 3-Pack");
+    expect(deriveProductName("ev-mens-6x-l")).toBe("Mens 6-Pack");
+    expect(deriveProductName("ev-mens-9x-m")).toBe("Mens 9-Pack");
+  });
+
+  it("matches cb family with new pack tokens", () => {
+    expect(deriveProductName("ev-cb-3x-s")).toBe("CB 3-Pack");
+    expect(deriveProductName("ev-cb-6x-l")).toBe("CB 6-Pack");
+    expect(deriveProductName("ev-cb-12x-xl")).toBe("CB 12-Pack");
+  });
+
   it("returns null for unknown families so the caller can fall back", () => {
     expect(deriveProductName("ev-unknown-5x-l")).toBeNull();
     expect(deriveProductName("not-a-sku")).toBeNull();
