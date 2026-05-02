@@ -10,6 +10,7 @@ Smoke checks and one-off setup that operators are expected to share:
 - `smoke-shopify-orders.ts` — pulls a tiny Shopify orders page to verify auth.
 - `smoke-shopify-intl.ts` — same but for the INTL store.
 - `smoke_incoming_parse.mjs` — parses the Incoming_new tab and dumps a sample.
+- `velocity_recheck.mjs` — reconcile the velocity sheet's 4-week sum against Skybrook's 30d `daily_sales` (US block col D + INTL block col P). Run when Scott asks "is the sales data accurate" or after parser changes. Needs `CRON_SECRET` in env. Expected ratio sky/sheet ≈ 1.07 (30d window vs sheet's 28d). Outliers grouped by SKU at the bottom.
 
 ## Untracked diagnostics
 
@@ -18,7 +19,6 @@ The `*.mjs` peek/check scripts are intentionally untracked — they're investiga
 Reusable across sessions (worth re-running when investigating data drift):
 
 - `check_sec_coverage.mjs` — diff every SKU on the 6 EV inventory tabs against Skybrook's `skus` catalog. Surfaces SKUs the parser silently dropped.
-- `velocity_recheck.mjs` — reconcile the velocity sheet's 4-week sum against Skybrook's 30d `daily_sales`. Reads both US and INTL blocks (col D and col P).
 - `list_inventory_tabs.mjs` — enumerate every tab in the inventory sheet and flag which contain `ev-og-5x-*` rows. Useful when Scott adds/renames tabs.
 - `list_incoming_tabs.mjs` — same for the incoming-PO sheet.
 - `peek_intl_costs.mjs` — sample the EVSKUmap INTL cost columns; useful when the cost cron has gaps.
