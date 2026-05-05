@@ -18,6 +18,7 @@ export async function resetDb() {
       data_pulls,
       daily_sales,
       sales_line_items,
+      incoming_receipts,
       incoming_shipments,
       stock_snapshots,
       skus,

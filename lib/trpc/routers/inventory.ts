@@ -1,7 +1,12 @@
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { daysOfStock, salesVelocity, sustainabilityFlags } from "@/lib/db/schema";
+import {
+  daysOfStock,
+  incomingReceipts,
+  salesVelocity,
+  sustainabilityFlags,
+} from "@/lib/db/schema";
 import { getIncomingShipmentsView, getIncomingStock } from "@/lib/queries/incoming";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getOverstockRows } from "@/lib/queries/overstock";
@@ -188,18 +193,73 @@ export const inventoryRouter = router({
   // Page-feeding endpoint for /incoming (SPEC §5.7 q3). Forward-looking
   // arrivals view: returns the joined SKU + shipment rows sorted by
   // expectedArrival ascending plus a summary block (total units inbound,
-  // shipment count, SKU count, next arrival). Status defaults to the
-  // pending set (po + dispatched + in_transit) — `arrived` is excluded
-  // unless the caller asks for history, since arrived units already
-  // count in stock_snapshots and would just clutter the page.
+  // shipment count, SKU count, next arrival, overdue count). Default view
+  // shows pending + overdue rows (anything without a receipt confirmation);
+  // `includeReceived: true` adds historical received rows for the page-level
+  // "Show past shipments" toggle.
   getIncomingShipmentsView: publicProcedure
     .input(
       z
         .object({
           destination: locationSchema.optional(),
-          includeArrived: z.boolean().optional(),
+          includeReceived: z.boolean().optional(),
         })
         .optional(),
     )
     .query(({ input }) => getIncomingShipmentsView(input ?? {})),
+
+  // Mark a PO received. Idempotent — re-clicking is a no-op (ON CONFLICT DO
+  // NOTHING on the natural-key unique index). Keyed by the same triple the
+  // sheet ingest produces, so receipts survive truncate-replace cron runs.
+  markIncomingReceived: publicProcedure
+    .input(
+      z.object({
+        shipmentName: z.string().min(1),
+        destination: locationSchema,
+        expectedArrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        note: z.string().max(500).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      await db
+        .insert(incomingReceipts)
+        .values({
+          shipmentName: input.shipmentName,
+          destination: input.destination,
+          expectedArrival: input.expectedArrival,
+          note: input.note ?? null,
+        })
+        .onConflictDoNothing({
+          target: [
+            incomingReceipts.shipmentName,
+            incomingReceipts.destination,
+            incomingReceipts.expectedArrival,
+          ],
+        });
+      return { ok: true as const };
+    }),
+
+  // Undo "mark received" — Scott clicked the button by mistake or the PO
+  // turned out not to have actually arrived. Idempotent; deleting a missing
+  // row is a no-op.
+  unmarkIncomingReceived: publicProcedure
+    .input(
+      z.object({
+        shipmentName: z.string().min(1),
+        destination: locationSchema,
+        expectedArrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      await db
+        .delete(incomingReceipts)
+        .where(
+          and(
+            eq(incomingReceipts.shipmentName, input.shipmentName),
+            eq(incomingReceipts.destination, input.destination),
+            eq(incomingReceipts.expectedArrival, input.expectedArrival),
+          ),
+        );
+      return { ok: true as const };
+    }),
 });

@@ -234,7 +234,8 @@ describe("parseIncomingGrid", () => {
     grid[2][5] = "KAI Sec Apr26";
     // row 4 arrival dates
     grid[3][2] = "ESTIMATED ARRIVAL";
-    grid[3][3] = "17 Mar 2026"; // past — should mark as 'arrived'
+    grid[3][3] = "17 Mar 2026"; // past — parser writes status='po' regardless;
+                                 // receipt-based reconciliation determines arrival
     grid[3][5] = "10 May 2026"; // future
     // row 5 totals
     grid[4][2] = "Total";
@@ -290,7 +291,7 @@ describe("parseIncomingGrid", () => {
         shipmentName: "KAI Sec Mar26",
         quantity: 2520,
         expectedArrival: "2026-03-17",
-        status: "arrived",
+        status: "po",
         sourceRowRef: "Incoming_new!D7",
       },
       {
@@ -366,7 +367,7 @@ describe("parseIncomingGrid", () => {
         shipmentName: "KAI Sec Mar26",
         quantity: 2520,
         expectedArrival: "2026-03-17",
-        status: "arrived",
+        status: "po",
         sourceRowRef: "Incoming_new!D6",
       },
       {
@@ -440,6 +441,21 @@ describe("parseIncomingGrid", () => {
     expect(skus).toContain("ev-9055-hf-5x-3xl");
     expect(skus).toContain("ev-foo-1x-l");
     expect(skus.every((s) => !/^ev-.+-(1|5)-/.test(s))).toBe(true);
+  });
+
+  it("never auto-flips status to 'arrived' based on ETA — receipt-driven", () => {
+    // Pre-2026-05-05 the parser flipped status to 'arrived' as soon as ETA
+    // dropped into the past. That hid POs from /incoming the day after their
+    // ETA regardless of whether stock had actually been counted, which is
+    // exactly the case Scott flagged on 2026-05-05 (two INTL POs annotated
+    // "partial delivery" / "not yet reflected in invty but delivered" sat in
+    // the sheet but were invisible). Receipts table now drives display
+    // status; parser only writes 'po'.
+    const grid = makeGrid();
+    grid[3][3] = "1 Jan 2020"; // very past ETA
+    grid[3][5] = "1 Jan 2099"; // very future ETA
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    expect(out.rows.map((r) => r.status)).toEqual(["po", "po", "po"]);
   });
 
   it("does NOT decompose 10/15-pack SKUs at the inventory parser", () => {

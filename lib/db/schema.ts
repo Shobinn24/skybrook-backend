@@ -73,6 +73,31 @@ export const incomingShipments = pgTable("incoming_shipments", {
   sourceRowRef: text("source_row_ref").notNull(),
 });
 
+// Manual receipt confirmations for incoming POs. Lives in its own table so
+// state survives the truncate-replace ingest of `incoming_shipments`. Keyed
+// by the natural shipment identity (name + destination + ETA) — the same
+// triple Scott uses to refer to a PO. Status display on /incoming joins
+// against this table: row exists ⇒ "received", missing + ETA past ⇒
+// "overdue", missing + ETA future ⇒ "pending".
+export const incomingReceipts = pgTable(
+  "incoming_receipts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    shipmentName: text("shipment_name").notNull(),
+    destination: locationEnum("destination").notNull(),
+    expectedArrival: date("expected_arrival").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    note: text("note"),
+  },
+  (t) => ({
+    unq: uniqueIndex("incoming_receipts_natural_uq").on(
+      t.shipmentName,
+      t.destination,
+      t.expectedArrival,
+    ),
+  })
+);
+
 export const salesLineItems = pgTable(
   "sales_line_items",
   {

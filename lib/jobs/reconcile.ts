@@ -18,6 +18,10 @@ import {
 import { computeDaysOfStock } from "@/lib/domain/days-of-stock";
 import { computeSustainabilityFlag, type IncomingPO } from "@/lib/domain/sustainability";
 import { computeVelocity, type SaleEvent } from "@/lib/domain/velocity";
+import {
+  getReceivedShipmentKeys,
+  shipmentReceiptKey,
+} from "@/lib/queries/incoming";
 import type { Location } from "@/lib/domain/warehouse-routing";
 import { logger } from "@/lib/logger";
 
@@ -77,7 +81,11 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
   }));
 
   // Pull every incoming shipment (filtered per SKU × location below).
+  // Also pull the set of POs Scott has manually marked received — those
+  // units are already counted in stock_snapshots, so excluding them from
+  // the forward-looking incoming projection prevents double-counting.
   const allIncoming = await db.select().from(incomingShipments);
+  const receivedKeys = await getReceivedShipmentKeys();
 
   let processed = 0;
   let skipped = 0;
@@ -157,9 +165,21 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
           },
         });
 
-      // Incoming POs for this SKU × location (future arrivals only, not already arrived).
+      // Incoming POs for this SKU × location, excluding any that have been
+      // manually marked received (those units are already in stock_snapshots).
+      // Pre-2026-05-05 we filtered by status !== 'arrived'; that field used
+      // to auto-flip on `today >= ETA` regardless of actual receipt, which
+      // double-excluded delayed-but-not-yet-counted shipments.
       const incoming: IncomingPO[] = allIncoming
-        .filter((i) => i.sku === s.sku && i.destination === location && i.status !== "arrived")
+        .filter((i) => {
+          if (i.sku !== s.sku || i.destination !== location) return false;
+          const key = shipmentReceiptKey({
+            shipmentName: i.shipmentName,
+            destination: i.destination,
+            expectedArrival: i.expectedArrival,
+          });
+          return !receivedKeys.has(key);
+        })
         .map((i) => ({ arrivalDate: i.expectedArrival, quantity: i.quantity }));
 
       const flag = computeSustainabilityFlag({

@@ -22,6 +22,13 @@
       "when": 1777483781142,
       "tag": "0002_hard_iron_fist",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1778009193160,
+      "tag": "0003_greedy_human_cannonball",
+      "breakpoints": true
     }
   ]
 }

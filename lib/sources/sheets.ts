@@ -486,13 +486,16 @@ export type ParseIncomingResult = {
 };
 
 // Pure parser — takes the raw grid and produces incoming-shipment rows.
-// `todayYmd` decides which POs are 'arrived' vs still 'po'.
+// All emitted rows have status='po'; receipt-driven reconciliation determines
+// arrival at read time (see `incoming_receipts` table). `todayYmd` is kept on
+// the signature for callers that may surface "ETA passed Nd ago" diagnostics
+// downstream, but it no longer mutates row status.
 //
 // Layout discovery is header-driven (col C contains stable row labels:
 // "SHIPMENT NAME", "ESTIMATED ARRIVAL", "Total"). This survives Scott
 // inserting/removing rows above the data block — which happened 2026-04-28
 // when the banner row was merged into the Total row.
-export function parseIncomingGrid(grid: unknown[][], todayYmd: string): ParseIncomingResult {
+export function parseIncomingGrid(grid: unknown[][], _todayYmd: string): ParseIncomingResult {
   const labelRowIdx = findHeaderRowByColC(grid, "SHIPMENT NAME");
   const arrivalRowIdx = findHeaderRowByColC(grid, "ESTIMATED ARRIVAL");
   const totalRowIdx = findHeaderRowByColC(grid, "Total");
@@ -557,7 +560,11 @@ export function parseIncomingGrid(grid: unknown[][], todayYmd: string): ParseInc
         shipmentName: po.label,
         quantity: qty,
         expectedArrival: po.date!,
-        status: po.date! < todayYmd ? "arrived" : "po",
+        // Always 'po'. Receipt confirmations live in `incoming_receipts` and
+        // drive display status (pending / overdue / received) at read time.
+        // Pre-2026-05-05 we flipped to 'arrived' once ETA passed, but that
+        // hid POs from /incoming before stock had actually been counted.
+        status: "po",
         sourceRowRef: `${INCOMING_TAB}!${colIndexToA1(po.colIdx)}${r + 1}`,
       });
     }

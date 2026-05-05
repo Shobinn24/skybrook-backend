@@ -8,6 +8,7 @@ import { SortableHeader, type SortConfig } from "@/components/shell/SortableHead
 import { trpc } from "@/lib/trpc/client";
 
 type LocationFilter = "all" | "US" | "CN";
+type DisplayStatus = "pending" | "overdue" | "received";
 
 // Group-level sort keys. SKU isn't here because groups roll up multiple
 // SKUs and sorting by a single SKU would be ambiguous.
@@ -19,18 +20,16 @@ type GroupSortKey =
   | "quantity"
   | "expectedArrival";
 
-const STATUS_LABEL: Record<string, string> = {
-  po: "PO",
-  dispatched: "Dispatched",
-  in_transit: "In transit",
-  arrived: "Arrived",
+const STATUS_LABEL: Record<DisplayStatus, string> = {
+  pending: "Pending",
+  overdue: "Overdue",
+  received: "Received",
 };
 
-const STATUS_PILL_KIND: Record<string, "gray" | "yellow" | "green"> = {
-  po: "gray",
-  dispatched: "yellow",
-  in_transit: "yellow",
-  arrived: "green",
+const STATUS_PILL_KIND: Record<DisplayStatus, "gray" | "yellow" | "green" | "red"> = {
+  pending: "gray",
+  overdue: "red",
+  received: "green",
 };
 
 function fmtNumber(n: number): string {
@@ -81,11 +80,11 @@ const TONE_CLASS: Record<"neutral" | "warn" | "danger" | "good", string> = {
 
 type Group = {
   key: string;
-  destination: string;
+  destination: "US" | "CN";
   shipmentName: string;
   productName: string;
   productLine: string | null;
-  status: string;
+  displayStatus: DisplayStatus;
   expectedArrival: string;
   totalQuantity: number;
   // Sub-rows: one per SKU contributing to the group total.
@@ -98,7 +97,7 @@ type Group = {
 
 export default function IncomingShipmentsPage() {
   const [location, setLocation] = useState<LocationFilter>("all");
-  const [includeArrived, setIncludeArrived] = useState(false);
+  const [includeReceived, setIncludeReceived] = useState(false);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortConfig<GroupSortKey>>({
     key: "expectedArrival",
@@ -106,9 +105,17 @@ export default function IncomingShipmentsPage() {
   });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
+  const utils = trpc.useUtils();
   const { data, isLoading, error } = trpc.inventory.getIncomingShipmentsView.useQuery({
     destination: location === "all" ? undefined : location,
-    includeArrived,
+    includeReceived,
+  });
+
+  const markReceived = trpc.inventory.markIncomingReceived.useMutation({
+    onSuccess: () => utils.inventory.getIncomingShipmentsView.invalidate(),
+  });
+  const unmarkReceived = trpc.inventory.unmarkIncomingReceived.useMutation({
+    onSuccess: () => utils.inventory.getIncomingShipmentsView.invalidate(),
   });
 
   // Pipeline: filter underlying rows → group by (shipment + product +
@@ -135,7 +142,7 @@ export default function IncomingShipmentsPage() {
     if (needle) {
       for (const r of matchedRows) {
         if (r.sku.toLowerCase().includes(needle)) {
-          skuMatchKeys.add(`${r.shipmentName}|${r.destination}|${r.productName ?? r.sku}|${r.status}|${r.expectedArrival}`);
+          skuMatchKeys.add(`${r.shipmentName}|${r.destination}|${r.productName ?? r.sku}|${r.displayStatus}|${r.expectedArrival}`);
         }
       }
     }
@@ -143,7 +150,7 @@ export default function IncomingShipmentsPage() {
     const byKey = new Map<string, Group>();
     for (const r of matchedRows) {
       const productName = r.productName ?? r.sku;
-      const key = `${r.shipmentName}|${r.destination}|${productName}|${r.status}|${r.expectedArrival}`;
+      const key = `${r.shipmentName}|${r.destination}|${productName}|${r.displayStatus}|${r.expectedArrival}`;
       const existing = byKey.get(key);
       if (existing) {
         existing.totalQuantity += r.quantity;
@@ -156,7 +163,7 @@ export default function IncomingShipmentsPage() {
         shipmentName: r.shipmentName,
         productName,
         productLine: r.productLine,
-        status: r.status,
+        displayStatus: r.displayStatus,
         expectedArrival: r.expectedArrival,
         totalQuantity: r.quantity,
         skuRows: [{ id: r.id, sku: r.sku, quantity: r.quantity }],
@@ -175,7 +182,7 @@ export default function IncomingShipmentsPage() {
         case "productName": return a.productName.localeCompare(b.productName) * dir;
         case "destination": return a.destination.localeCompare(b.destination) * dir;
         case "shipmentName": return a.shipmentName.localeCompare(b.shipmentName) * dir;
-        case "status": return a.status.localeCompare(b.status) * dir;
+        case "status": return a.displayStatus.localeCompare(b.displayStatus) * dir;
         case "quantity": return (a.totalQuantity - b.totalQuantity) * dir;
         case "expectedArrival":
         default:
@@ -214,6 +221,7 @@ export default function IncomingShipmentsPage() {
     shipmentCount: 0,
     skuCount: 0,
     nextArrival: null as string | null,
+    overdueCount: 0,
   };
 
   return (
@@ -221,13 +229,14 @@ export default function IncomingShipmentsPage() {
       <div>
         <h1 className="text-2xl font-semibold text-neutral-900">Incoming shipments</h1>
         <p className="mt-1 text-sm text-neutral-600">
-          POs, dispatched, and in-transit shipments arriving at US and CN warehouses.
-          Sorted by expected arrival — soonest first. Already-arrived shipments
-          are hidden by default since those units already count in stock.
+          POs arriving at US and CN warehouses, sorted by expected arrival — soonest first.
+          Shipments past their ETA without a receipt confirmation surface as <span className="font-medium text-red-700">Overdue</span> so
+          delayed or delivered-but-not-counted POs stay visible. Click <span className="font-medium">Mark received</span> once
+          stock is in inventory; received shipments hide unless you toggle past shipments on.
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
         <KpiCard
           label="Units inbound"
           value={fmtNumber(summary.totalUnits)}
@@ -239,6 +248,11 @@ export default function IncomingShipmentsPage() {
         <KpiCard
           label="Distinct SKUs"
           value={summary.skuCount}
+        />
+        <KpiCard
+          label="Overdue"
+          value={summary.overdueCount}
+          hint={summary.overdueCount > 0 ? "Confirm or chase" : undefined}
         />
         <KpiCard
           label="Next arrival"
@@ -266,11 +280,11 @@ export default function IncomingShipmentsPage() {
           <label className="ml-2 inline-flex items-center gap-2 text-xs text-neutral-700">
             <input
               type="checkbox"
-              checked={includeArrived}
-              onChange={(e) => setIncludeArrived(e.target.checked)}
+              checked={includeReceived}
+              onChange={(e) => setIncludeReceived(e.target.checked)}
               className="h-3.5 w-3.5"
             />
-            Show arrived
+            Show past shipments
           </label>
         </div>
         <input
@@ -308,6 +322,7 @@ export default function IncomingShipmentsPage() {
                   <SortableHeader label="Status" sortKey="status" config={sort} onChange={setSort} />
                   <SortableHeader label="Quantity" sortKey="quantity" config={sort} onChange={setSort} align="right" />
                   <SortableHeader label="Expected arrival" sortKey="expectedArrival" config={sort} onChange={setSort} />
+                  <th className="px-4 py-2 text-right text-xs uppercase tracking-wide text-neutral-500">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">
@@ -315,6 +330,18 @@ export default function IncomingShipmentsPage() {
                   const rel = relativeArrival(g.expectedArrival);
                   const open = isExpanded(g.key);
                   const skuCount = g.skuRows.length;
+                  const isReceived = g.displayStatus === "received";
+                  const canMark = g.displayStatus === "overdue" || g.displayStatus === "pending";
+                  const mutationKey = { shipmentName: g.shipmentName, destination: g.destination, expectedArrival: g.expectedArrival };
+                  const isPending =
+                    (markReceived.isPending &&
+                      markReceived.variables?.shipmentName === g.shipmentName &&
+                      markReceived.variables?.destination === g.destination &&
+                      markReceived.variables?.expectedArrival === g.expectedArrival) ||
+                    (unmarkReceived.isPending &&
+                      unmarkReceived.variables?.shipmentName === g.shipmentName &&
+                      unmarkReceived.variables?.destination === g.destination &&
+                      unmarkReceived.variables?.expectedArrival === g.expectedArrival);
                   return (
                     <Fragment key={g.key}>
                       <tr className="cursor-pointer hover:bg-neutral-50" onClick={() => toggleExpand(g.key)}>
@@ -338,8 +365,8 @@ export default function IncomingShipmentsPage() {
                         <td className="px-4 py-2 text-neutral-700">{g.shipmentName}</td>
                         <td className="px-4 py-2">
                           <StatusPill
-                            kind={STATUS_PILL_KIND[g.status] ?? "gray"}
-                            label={STATUS_LABEL[g.status] ?? g.status}
+                            kind={STATUS_PILL_KIND[g.displayStatus]}
+                            label={STATUS_LABEL[g.displayStatus]}
                           />
                         </td>
                         <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums font-medium text-neutral-900">
@@ -348,6 +375,33 @@ export default function IncomingShipmentsPage() {
                         <td className="whitespace-nowrap px-4 py-2">
                           <div className="text-neutral-700">{fmtDate(g.expectedArrival)}</div>
                           <div className={"text-xs " + TONE_CLASS[rel.tone]}>{rel.label}</div>
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-2 text-right">
+                          {isReceived ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                unmarkReceived.mutate(mutationKey);
+                              }}
+                              disabled={isPending}
+                              className="rounded border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-50"
+                            >
+                              {isPending ? "…" : "Undo"}
+                            </button>
+                          ) : canMark ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                markReceived.mutate(mutationKey);
+                              }}
+                              disabled={isPending}
+                              className="rounded border border-green-300 bg-green-50 px-2 py-1 text-xs font-medium text-green-800 hover:bg-green-100 disabled:opacity-50"
+                            >
+                              {isPending ? "…" : "Mark received"}
+                            </button>
+                          ) : null}
                         </td>
                       </tr>
                       {open &&
@@ -366,7 +420,7 @@ export default function IncomingShipmentsPage() {
                             <td className="whitespace-nowrap px-4 py-1.5 text-right tabular-nums text-neutral-600">
                               {fmtNumber(sr.quantity)}
                             </td>
-                            <td />
+                            <td colSpan={2} />
                           </tr>
                         ))}
                     </Fragment>
