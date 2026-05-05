@@ -550,4 +550,17 @@ describe("parseAdSpendTab", () => {
     const { rows } = parseAdSpendTab("Super HW AL", grid);
     expect(rows[0].product).toBe("Super HW AL");
   });
+
+  it("accepts 'Spend' as the value-column header (AppLovin connector)", () => {
+    // Supermetrics FB tabs use "Cost"; AppLovin tabs use "Spend".
+    // Both are valid daily ad-cost feeds.
+    const grid = [
+      ["Date", "Spend"],
+      ["2026-04-28", "88.11"],
+      ["2026-04-29", "105.47"],
+    ];
+    const { rows, skipped } = parseAdSpendTab("Men AL", grid);
+    expect(skipped).toEqual([]);
+    expect(rows.map((r) => r.costUsd)).toEqual([88.11, 105.47]);
+  });
 });

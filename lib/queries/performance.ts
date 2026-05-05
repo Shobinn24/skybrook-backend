@@ -15,12 +15,12 @@ import { adSpendDaily, dailySales, skus } from "@/lib/db/schema";
 const PRODUCT_CONFIG = {
   men: {
     label: "Men's",
-    spendTabs: ["Men"],
+    spendTabs: ["Men", "Men AL"],
     productNamePatterns: ["Mens%"],
   },
   shapewear: {
     label: "Shapewear",
-    spendTabs: ["Shapewear"],
+    spendTabs: ["Shapewear", "Shapewear AL"],
     productNamePatterns: ["Shapewear%"],
   },
   suphw: {

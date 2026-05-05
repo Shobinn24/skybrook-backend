@@ -637,7 +637,14 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
 // loud instead of silently dropping a product. Update here when Scott
 // adds a new tab.
 // ============================================================================
-const AD_SPEND_TABS = ["Men", "Shapewear", "SuperHW", "Super HW AL"] as const;
+const AD_SPEND_TABS = [
+  "Men",
+  "Shapewear",
+  "SuperHW",
+  "Men AL",
+  "Shapewear AL",
+  "Super HW AL",
+] as const;
 
 export type AdSpendRow = {
   product: string;
@@ -646,10 +653,12 @@ export type AdSpendRow = {
   sourceRowRef: string;
 };
 
-// Parse a single (Date, Cost) tab. Skips header + blank rows. Cost
-// strings come back as either plain numbers ("2791.18") or formatted
-// currency ("$2,791.18") depending on cell formatting — strip non-
-// numeric characters before Number().
+// Parse a single (Date, Cost|Spend) tab. Supermetrics' FB connector
+// labels the value column "Cost"; the AppLovin connector labels it
+// "Spend". Both are accepted. Skips header + blank rows. Values
+// come back as either plain numbers ("2791.18") or formatted
+// currency ("$2,791.18") depending on cell formatting — strip
+// non-numeric characters before Number().
 export function parseAdSpendTab(
   tabName: string,
   grid: ReadonlyArray<ReadonlyArray<unknown>>,
@@ -659,7 +668,8 @@ export function parseAdSpendTab(
 
   // Row 0 is header. Bail if header doesn't look right.
   const header = (grid[0] ?? []).map((c) => String(c ?? "").trim().toLowerCase());
-  if (header[0] !== "date" || header[1] !== "cost") {
+  const valueHeaderOk = header[1] === "cost" || header[1] === "spend";
+  if (header[0] !== "date" || !valueHeaderOk) {
     skipped.push({
       rowIdx: 0,
       reason: `unexpected header: ${JSON.stringify(grid[0] ?? [])}`,

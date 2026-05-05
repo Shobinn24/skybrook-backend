@@ -141,12 +141,13 @@ export default function PerformancePage() {
 
           <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
             <strong>Notes:</strong> Spend ingested daily from the
-            Supermetrics FB sheet (refreshes 4am LA, our cron pulls at
-            14:00 UTC). Revenue summed from <code>daily_sales</code>
-            across all Shopify channels. Product mapping: <code>Mens%</code>{" "}
-            → Men&apos;s, <code>Shapewear%</code> → Shapewear,{" "}
-            <code>Super High-Waist%</code> → SupHW (rolls FB + AppLovin spend
-            into one ROAS).
+            Supermetrics sheet (refreshes 4am LA, our cron pulls at
+            14:00 UTC). Each product rolls Facebook + AppLovin spend
+            into one combined ROAS. Revenue summed from{" "}
+            <code>daily_sales</code> across all Shopify channels.
+            Product mapping: <code>Mens%</code> → Men&apos;s,{" "}
+            <code>Shapewear%</code> → Shapewear,{" "}
+            <code>Super High-Waist%</code> → SupHW.
           </div>
         </>
       )}
