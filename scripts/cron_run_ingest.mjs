@@ -19,11 +19,20 @@
 //   APP_URL     — base URL, e.g. https://skybrook-backend-production.up.railway.app
 //                 (Railway sets RAILWAY_PUBLIC_DOMAIN automatically; if APP_URL
 //                  is unset, we'll derive from that.)
+//
+// Optional env:
+//   HEALTHCHECKS_URL — healthchecks.io ping URL (https://hc-ping.com/<uuid>).
+//                      If set, we ping `${URL}/start` at start, base URL on
+//                      success, `${URL}/fail` on failure. Healthchecks.io
+//                      alerts via the configured channel (email/Slack) if no
+//                      success ping arrives within the configured period +
+//                      grace window. Skip silently if unset.
 
 const SECRET = process.env.CRON_SECRET?.trim();
 const APP_URL = (process.env.APP_URL?.trim()
   || (process.env.RAILWAY_PUBLIC_DOMAIN?.trim() ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN.trim()}` : null)
   || "https://skybrook-backend-production.up.railway.app").replace(/\/$/, "");
+const HC_URL = process.env.HEALTHCHECKS_URL?.trim()?.replace(/\/$/, "");
 
 if (!SECRET) {
   console.error("CRON_SECRET is not set");
@@ -33,7 +42,33 @@ if (!SECRET) {
 const ts = () => new Date().toISOString();
 const log = (m) => console.log(`[${ts()}] ${m}`);
 
+// Best-effort healthchecks.io ping. Never throws; failures here must not
+// take down the actual cron run.
+async function hcPing(suffix = "", body = "") {
+  if (!HC_URL) return;
+  const url = suffix ? `${HC_URL}/${suffix}` : HC_URL;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5_000);
+    await fetch(url, { method: body ? "POST" : "GET", body: body || undefined, signal: ctrl.signal });
+    clearTimeout(t);
+    log(`  hc-ping ${suffix || "ok"} → ${url}`);
+  } catch (e) {
+    log(`  hc-ping ${suffix || "ok"} failed: ${e}`);
+  }
+}
+
+// Wrap process.exit to ping /fail before exiting on any non-zero path.
+async function fail(msg) {
+  console.error(msg);
+  await hcPing("fail", msg);
+  process.exit(1);
+}
+
 log(`Cron run target: ${APP_URL}`);
+log(`Healthchecks.io: ${HC_URL ? "enabled" : "disabled (HEALTHCHECKS_URL unset)"}`);
+
+await hcPing("start");
 
 // 1. Fire-and-forget the ingest request. Short timeout because Railway's
 //    edge proxy will close idle connections at ~60s, but the server-side
@@ -56,8 +91,7 @@ try {
   if (name === "AbortError" || /TimeoutError|fetch failed/.test(String(e))) {
     log(`  POST timeout (expected — Railway edge proxy closed idle connection): ${e}`);
   } else {
-    console.error(`  POST failed unexpectedly: ${e}`);
-    process.exit(1);
+    await fail(`  POST failed unexpectedly: ${e}`);
   }
 }
 
@@ -73,8 +107,7 @@ const res = await fetch(`${APP_URL}/api/admin/data-snapshot`, {
 });
 log(`  data-snapshot HTTP ${res.status}`);
 if (!res.ok) {
-  console.error(`  Body: ${(await res.text()).slice(0, 400)}`);
-  process.exit(1);
+  await fail(`  Body: ${(await res.text()).slice(0, 400)}`);
 }
 const body = await res.json();
 
@@ -89,9 +122,9 @@ if (asOfDate !== todayUtc) {
 const counts = body.counts ?? {};
 log(`  Counts: ${JSON.stringify(counts)}`);
 if ((counts.skus ?? 0) === 0) {
-  console.error("  skus count is 0 — ingest definitely failed");
-  process.exit(1);
+  await fail("  skus count is 0 — ingest definitely failed");
 }
 
 log("Ingest verified.");
+await hcPing("", `asOf=${asOfDate} counts=${JSON.stringify(counts)}`);
 process.exit(0);

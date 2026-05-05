@@ -32,6 +32,17 @@ Smoke checks and one-off setup that operators are expected to share:
 
 After setup, manually trigger once to verify; thereafter it runs daily at 14:00 UTC.
 
+**Monitoring: healthchecks.io** (added 2026-05-05). `cron_run_ingest.mjs` pings a healthchecks.io check on start (`/start`), success (base URL), and failure (`/fail`). If healthchecks.io doesn't see a success ping within the configured period + grace window, it sends an alert via the configured channel (email/Slack/etc.). This catches both runner failures (Railway can't acquire compute) AND silent failures (script runs but never pings, e.g., infinite hang).
+
+**Healthchecks.io setup** (one-time):
+1. Sign up at https://healthchecks.io (free tier covers this — 20 checks).
+2. Create a new check: name `skybrook-daily-ingest`, period 1 day, grace time 1 hour. Pick "Cron" schedule type and use `0 14 * * *` if you want exact-time matching.
+3. Copy the ping URL (looks like `https://hc-ping.com/<uuid>`).
+4. Configure an alert channel (email is simplest; Slack/Discord also supported).
+5. In Railway → `skybrook-cron` service → Variables → add `HEALTHCHECKS_URL` = the ping URL from step 3.
+
+The script silently skips ping logic when `HEALTHCHECKS_URL` is unset, so this is fully optional and won't break anything during initial deploy.
+
 ## Untracked diagnostics
 
 The `*.mjs` peek/check scripts are intentionally untracked — they're investigation tools that get rewritten per question, not reusable infrastructure. They're useful enough to keep around locally; not useful enough to commit and maintain.
