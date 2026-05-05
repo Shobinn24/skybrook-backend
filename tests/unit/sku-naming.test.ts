@@ -72,4 +72,15 @@ describe("deriveProductName", () => {
     expect(deriveProductName("EV-9055-5X-L")).toBe("Style 9055");
     expect(deriveProductName("Ev-Bshort-Beige-Hf-5x-L")).toBe("Boyshort Beige HF");
   });
+
+  it("maps ev-mixed-{size} (no-color default OG 5-pack) to 'OG 5-Pack'", () => {
+    // Scott 2026-05-05: "These SKUs should be mapped to product 'OG'."
+    // ev-mixed-{size} is the inventory sheet's default OG SKU sans
+    // colorway. Bucketing under "OG 5-Pack" lets the rollup group
+    // them with ev-og-5x-{color}-{size} variants in /inventory.
+    expect(deriveProductName("ev-mixed-xl")).toBe("OG 5-Pack");
+    expect(deriveProductName("ev-mixed-xxs")).toBe("OG 5-Pack");
+    expect(deriveProductName("ev-mixed-3xl")).toBe("OG 5-Pack");
+    expect(deriveProductName("EV-mixed-l")).toBe("OG 5-Pack");
+  });
 });

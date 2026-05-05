@@ -16,6 +16,9 @@
 //   ev-og-{5x|10x|...}-*   → "OG [Color] {Pack}"
 //   ev-hw-1x-{color}-*     → "HW {Color} 1-Pack"
 //   ev-hw-{5x|10x|...}-*   → "HW [Color] {Pack}"
+//   ev-mixed-{size}        → "OG 5-Pack"  (no-color default OG 5-pack;
+//                            Scott 2026-05-05: "should be mapped to
+//                            product OG")
 //
 // Returns null when the SKU doesn't match a known family — caller should
 // keep whatever name was already set (often the SKU itself as fallback).
@@ -126,6 +129,14 @@ export function deriveProductName(sku: string): string | null {
       if (pack) out.push(pack);
       if (hf) out.push("HF");
       return out.join(" ");
+    }
+    case "mixed": {
+      // ev-mixed-{size} is Scott's no-color OG 5-pack — the inventory
+      // sheet uses these as the default OG SKUs (no colorway suffix).
+      // Map to "OG 5-Pack" so the rollup groups them with the other
+      // OG 5-Pack colorways (Beige, Black, etc.) instead of leaving
+      // each size as its own product row.
+      return "OG 5-Pack";
     }
     default:
       return null;
