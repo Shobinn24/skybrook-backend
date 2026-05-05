@@ -7,7 +7,15 @@ import { TracedNumber } from "@/components/trace/TracedNumber";
 import type { NumberTrace } from "@/lib/queries/inventory";
 import type { SustainabilityTimelineResult } from "@/lib/queries/sustainability-timeline";
 
-type SustainSortKey = "sku" | "product" | "sales" | "prorated" | "stock";
+type SustainSortKey = "sku" | "product" | "sales" | "salesDollars" | "prorated" | "stock";
+
+function fmtMoney(n: number): string {
+  return n.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  });
+}
 
 function formatYmd(ymd: string): string {
   // "2026-05-03" → "3 May 26" — matches Scott's sheet's tight format.
@@ -73,6 +81,8 @@ export function SustainabilityTimelineTable({
           return a.productName.localeCompare(b.productName) * dir;
         case "sales":
           return (a.salesInWindow - b.salesInWindow) * dir;
+        case "salesDollars":
+          return (a.salesDollarsInWindow - b.salesDollarsInWindow) * dir;
         case "prorated":
           return (a.proratedThirtyD - b.proratedThirtyD) * dir;
         case "stock":
@@ -138,6 +148,15 @@ export function SustainabilityTimelineTable({
                   paddingClass="px-3 py-2"
                 />
                 <SortableHeader<SustainSortKey>
+                  label="Sales $"
+                  sortKey="salesDollars"
+                  config={sort}
+                  onChange={setSort}
+                  align="right"
+                  rowSpan={2}
+                  paddingClass="px-3 py-2"
+                />
+                <SortableHeader<SustainSortKey>
                   label="Prorated 30D"
                   sortKey="prorated"
                   config={sort}
@@ -156,31 +175,38 @@ export function SustainabilityTimelineTable({
                   paddingClass="px-3 py-2"
                   className="border-r border-neutral-200"
                 />
-                {shipmentCols.map((col, i) => (
-                  <th
-                    key={`${col.eta}|${col.shipmentName}`}
-                    colSpan={5}
-                    className={
-                      "border-l-2 px-3 py-1 text-center font-medium " +
-                      (i % 2 === 0
-                        ? "bg-neutral-50 border-neutral-300"
-                        : "bg-blue-50/40 border-neutral-300")
-                    }
-                  >
-                    <div className="text-neutral-900 normal-case">{col.shipmentName}</div>
-                    <div className="font-normal lowercase tracking-normal text-neutral-500">
-                      {formatYmd(col.eta)} · {col.daysFromToday}d
-                    </div>
-                  </th>
-                ))}
+                {shipmentCols.map((col, i) => {
+                  const isTerminal = col.kind === "terminal";
+                  const baseBg = isTerminal
+                    ? "bg-amber-50 border-amber-300"
+                    : i % 2 === 0
+                      ? "bg-neutral-50 border-neutral-300"
+                      : "bg-blue-50/40 border-neutral-300";
+                  return (
+                    <th
+                      key={`${col.eta}|${col.shipmentName}`}
+                      colSpan={5}
+                      className={"border-l-2 px-3 py-1 text-center font-medium " + baseBg}
+                    >
+                      <div className="text-neutral-900 normal-case">
+                        {isTerminal ? "+30d outlook" : col.shipmentName}
+                      </div>
+                      <div className="font-normal lowercase tracking-normal text-neutral-500">
+                        {formatYmd(col.eta)} · {col.daysFromToday}d
+                      </div>
+                    </th>
+                  );
+                })}
               </tr>
               <tr>
                 {shipmentCols.map((col, i) => {
-                  const cls =
-                    "border-l px-2 py-1 text-right font-medium " +
-                    (i % 2 === 0
+                  const isTerminal = col.kind === "terminal";
+                  const baseBg = isTerminal
+                    ? "bg-amber-50 border-amber-300"
+                    : i % 2 === 0
                       ? "bg-neutral-50 border-neutral-300"
-                      : "bg-blue-50/40 border-neutral-300");
+                      : "bg-blue-50/40 border-neutral-300";
+                  const cls = "border-l px-2 py-1 text-right font-medium " + baseBg;
                   // Fragment with a key so React can identify each
                   // 5-column block. `<>` shorthand can't take a key,
                   // which is what the original page warned about.
@@ -225,6 +251,9 @@ export function SustainabilityTimelineTable({
                       {fmtNum(r.salesInWindow)}
                     </TracedNumber>
                   </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-neutral-700">
+                    {r.salesDollarsInWindow > 0 ? fmtMoney(r.salesDollarsInWindow) : "—"}
+                  </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">
                     <TracedNumber trace={proratedTrace(r, data, location)}>
                       {fmtNum(r.proratedThirtyD)}
@@ -241,10 +270,15 @@ export function SustainabilityTimelineTable({
                     // Both signal "we'll be out of stock before the next PO
                     // lands" — Scott wants those cells obviously red.
                     const stockOut = p.stockLeftAtEta < 0 || p.runOutDate !== null;
-                    // Striped column background. When the row is in stockout,
-                    // we override with a flat red tint so the alternating
-                    // stripe doesn't fight the warning state.
-                    const stripeBg = i % 2 === 0 ? "" : "bg-blue-50/30";
+                    const isTerminal = shipmentCols[i]?.kind === "terminal";
+                    // Striped column background. Terminal "+30d outlook"
+                    // column gets amber. Stockout overrides with red so
+                    // the warning isn't muted by the stripe / outlook tint.
+                    const stripeBg = isTerminal
+                      ? "bg-amber-50/60"
+                      : i % 2 === 0
+                        ? ""
+                        : "bg-blue-50/30";
                     const stockoutBg = stockOut ? "bg-red-50" : stripeBg;
                     const colCls =
                       "border-l px-2 py-1.5 text-right tabular-nums " + stockoutBg;
@@ -275,7 +309,7 @@ export function SustainabilityTimelineTable({
               {!isLoading && rows.length === 0 && (
                 <tr>
                   <td
-                    colSpan={5 + shipmentCols.length * 5}
+                    colSpan={6 + shipmentCols.length * 5}
                     className="px-4 py-8 text-center text-sm text-neutral-500"
                   >
                     No SKUs with stock or upcoming shipments in {location}.
@@ -285,7 +319,7 @@ export function SustainabilityTimelineTable({
               {isLoading && (
                 <tr>
                   <td
-                    colSpan={5 + shipmentCols.length * 5}
+                    colSpan={6 + shipmentCols.length * 5}
                     className="px-4 py-8 text-center text-sm text-neutral-500"
                   >
                     Loading…

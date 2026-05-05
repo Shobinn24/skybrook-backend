@@ -37,10 +37,14 @@ export type SustainabilityTimelineRow = {
   productLine: string | null;
   // Sales window inputs
   salesInWindow: number;
+  /** Net sales $ over the same date window. From `daily_sales.netSalesUsd`. */
+  salesDollarsInWindow: number;
   proratedThirtyD: number;
   // Current state
   currentStock: number;
-  // Per-shipment projection
+  // Per-shipment projection. The trailing entry is the synthetic
+  // "+30d after last shipment" outlook (kind === "terminal") when at
+  // least one real shipment exists.
   projections: ProjectionRow[];
 };
 
@@ -48,6 +52,11 @@ export type ShipmentColumn = {
   shipmentName: string;
   eta: string; // YYYY-MM-DD
   daysFromToday: number;
+  /** "shipment" for real PO arrivals, "terminal" for the synthetic +30d
+   * outlook column appended after the last real shipment. UI uses this
+   * to render the column header differently (no shipment name, just an
+   * "outlook" label) without re-deriving from the row data. */
+  kind: "shipment" | "terminal";
 };
 
 export type SustainabilityTimelineResult = {
@@ -118,11 +127,15 @@ export async function getSustainabilityTimeline(opts: {
     stockBySku.set(r.sku, r.onHand);
   }
 
-  // 2. Sales for the location's channel over the date window.
+  // 2. Sales for the location's channel over the date window. Pulls both
+  // unit count and net dollar amount; the dollar figure feeds the
+  // per-product Sales $ column (Scott 2026-05-05: "Would be good to see
+  // total sales $$ for each product in the selected period").
   const salesRows = await db
     .select({
       sku: dailySales.sku,
       unitsSold: dailySales.unitsSold,
+      netSalesUsd: dailySales.netSalesUsd,
     })
     .from(dailySales)
     .where(
@@ -133,8 +146,13 @@ export async function getSustainabilityTimeline(opts: {
       ),
     );
   const salesBySku = new Map<string, number>();
+  const salesDollarsBySku = new Map<string, number>();
   for (const r of salesRows) {
     salesBySku.set(r.sku, (salesBySku.get(r.sku) ?? 0) + r.unitsSold);
+    const dollars = Number(r.netSalesUsd);
+    if (Number.isFinite(dollars)) {
+      salesDollarsBySku.set(r.sku, (salesDollarsBySku.get(r.sku) ?? 0) + dollars);
+    }
   }
 
   // 3. Future shipments at the location. Excludes:
@@ -215,11 +233,30 @@ export async function getSustainabilityTimeline(opts: {
       shipmentName: r.shipmentName,
       eta: r.expectedArrival,
       daysFromToday: Math.max(0, daysBetween(opts.today, r.expectedArrival)),
+      kind: "shipment",
     });
   }
   const shipmentColumns = Array.from(globalShipmentMap.values()).sort((a, b) =>
     a.eta < b.eta ? -1 : a.eta > b.eta ? 1 : 0,
   );
+
+  // Append a synthetic "+30d after last shipment" outlook column so
+  // operators can see whether stock holds for a month past the final
+  // PO. Scott 2026-05-05: "there should be extra columns for 30D after
+  // the last incoming shipment. To show whether it is sustainable 30
+  // days after the last incoming shipment basically." Skipped when
+  // there are no real shipments — the page is otherwise empty in that
+  // state and the +30d column would just confuse.
+  if (shipmentColumns.length > 0) {
+    const lastEta = shipmentColumns[shipmentColumns.length - 1].eta;
+    const terminalEta = addDays(lastEta, 30);
+    shipmentColumns.push({
+      shipmentName: "+30d outlook",
+      eta: terminalEta,
+      daysFromToday: Math.max(0, daysBetween(opts.today, terminalEta)),
+      kind: "terminal",
+    });
+  }
 
   // Per-SKU lookup: for each ETA column, what's the total qty THIS SKU
   // gets across all shipments arriving on that date (0 if not included).
@@ -288,6 +325,7 @@ export async function getSustainabilityTimeline(opts: {
       productName: meta?.productName ?? sku,
       productLine: meta?.productLine ?? null,
       salesInWindow,
+      salesDollarsInWindow: Number((salesDollarsBySku.get(sku) ?? 0).toFixed(2)),
       proratedThirtyD: Number(proratedThirtyD.toFixed(2)),
       currentStock,
       projections,

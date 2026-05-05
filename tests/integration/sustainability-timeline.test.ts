@@ -68,6 +68,7 @@ async function seedSale(opts: {
   channel: "shopify_us" | "shopify_intl";
   date: string;
   units: number;
+  netSalesUsd?: string;
 }): Promise<void> {
   const rawId = await insertRawPull();
   await db.insert(dailySales).values({
@@ -75,7 +76,7 @@ async function seedSale(opts: {
     channel: opts.channel,
     salesDate: opts.date,
     unitsSold: opts.units,
-    netSalesUsd: "0",
+    netSalesUsd: opts.netSalesUsd ?? "0",
     sourcePullId: rawId,
   });
 }
@@ -146,13 +147,20 @@ describe("getSustainabilityTimeline (integration)", () => {
       windowDays: 14,
     });
 
-    expect(result.shipmentColumns).toHaveLength(2);
-    expect(result.shipmentColumns.map((c) => c.shipmentName)).toEqual(["PO-1", "PO-2"]);
+    // 2 real shipment columns + 1 synthetic +30d outlook column.
+    expect(result.shipmentColumns).toHaveLength(3);
+    expect(result.shipmentColumns.map((c) => c.shipmentName)).toEqual([
+      "PO-1",
+      "PO-2",
+      "+30d outlook",
+    ]);
+    expect(result.shipmentColumns[2].kind).toBe("terminal");
 
     const a = result.rows.find((r) => r.sku === "ev-a-l");
     const b = result.rows.find((r) => r.sku === "ev-b-l");
-    expect(a?.projections).toHaveLength(2);
-    expect(b?.projections).toHaveLength(2);
+    // 2 real projections + the trailing +30d outlook row.
+    expect(a?.projections).toHaveLength(3);
+    expect(b?.projections).toHaveLength(3);
     // SKU B gets a 0-qty projection at PO-2 (it isn't in that shipment).
     expect(b?.projections[1].shipmentQty).toBe(0);
     expect(b?.projections[1].shipmentName).toBe("PO-2");
@@ -181,7 +189,11 @@ describe("getSustainabilityTimeline (integration)", () => {
       location: "US",
       today: "2026-04-28",
     });
-    expect(result.shipmentColumns.map((c) => c.shipmentName)).toEqual(["Future-PO"]);
+    // Real shipment + +30d outlook terminal column.
+    expect(result.shipmentColumns.map((c) => c.shipmentName)).toEqual([
+      "Future-PO",
+      "+30d outlook",
+    ]);
   });
 
   it("computes prorated 30D and currentStock from sales + stock", async () => {
@@ -243,7 +255,10 @@ describe("getSustainabilityTimeline (integration)", () => {
     });
     expect(us.rows[0].currentStock).toBe(100);
     expect(us.rows[0].salesInWindow).toBe(7);
-    expect(us.shipmentColumns.map((c) => c.shipmentName)).toEqual(["US-PO"]);
+    expect(us.shipmentColumns.map((c) => c.shipmentName)).toEqual([
+      "US-PO",
+      "+30d outlook",
+    ]);
 
     const cn = await getSustainabilityTimeline({
       location: "CN",
@@ -252,7 +267,10 @@ describe("getSustainabilityTimeline (integration)", () => {
     });
     expect(cn.rows[0].currentStock).toBe(50);
     expect(cn.rows[0].salesInWindow).toBe(3);
-    expect(cn.shipmentColumns.map((c) => c.shipmentName)).toEqual(["CN-PO"]);
+    expect(cn.shipmentColumns.map((c) => c.shipmentName)).toEqual([
+      "CN-PO",
+      "+30d outlook",
+    ]);
   });
 
   it("drops SKUs with no stock and no upcoming shipments", async () => {
@@ -280,5 +298,74 @@ describe("getSustainabilityTimeline (integration)", () => {
     expect(result.shipmentColumns).toEqual([]);
     expect(result.windowStart).toBe("2026-04-15");
     expect(result.windowEnd).toBe("2026-04-28");
+  });
+
+  it("aggregates net sales $ per SKU over the same window as units", async () => {
+    await seedSku({ sku: "ev-a-l", productName: "Style A" });
+    await seedStock({ sku: "ev-a-l", location: "US", onHand: 100, date: "2026-04-28" });
+    await seedSale({
+      sku: "ev-a-l",
+      channel: "shopify_us",
+      date: "2026-04-20",
+      units: 5,
+      netSalesUsd: "150.00",
+    });
+    await seedSale({
+      sku: "ev-a-l",
+      channel: "shopify_us",
+      date: "2026-04-22",
+      units: 3,
+      netSalesUsd: "90.00",
+    });
+    // Cross-channel sale is excluded (different warehouse).
+    await seedSale({
+      sku: "ev-a-l",
+      channel: "shopify_intl",
+      date: "2026-04-22",
+      units: 99,
+      netSalesUsd: "9999.00",
+    });
+    await seedShipment({
+      sku: "ev-a-l",
+      destination: "US",
+      shipmentName: "PO-1",
+      eta: "2026-05-15",
+      qty: 50,
+    });
+
+    const result = await getSustainabilityTimeline({
+      location: "US",
+      today: "2026-04-28",
+      windowDays: 14,
+    });
+    expect(result.rows[0].salesInWindow).toBe(8);
+    expect(result.rows[0].salesDollarsInWindow).toBe(240);
+  });
+
+  it("appends a +30d outlook terminal column 30 days after the last shipment", async () => {
+    await seedSku({ sku: "ev-a-l", productName: "Style A" });
+    await seedStock({ sku: "ev-a-l", location: "US", onHand: 100, date: "2026-04-28" });
+    await seedShipment({
+      sku: "ev-a-l",
+      destination: "US",
+      shipmentName: "PO-1",
+      eta: "2026-05-15",
+      qty: 200,
+    });
+
+    const result = await getSustainabilityTimeline({
+      location: "US",
+      today: "2026-04-28",
+    });
+    expect(result.shipmentColumns).toHaveLength(2);
+    const terminal = result.shipmentColumns[1];
+    expect(terminal.kind).toBe("terminal");
+    // 30 days after 2026-05-15 = 2026-06-14.
+    expect(terminal.eta).toBe("2026-06-14");
+    // The synthetic projection row at the terminal column has 0 qty
+    // so afterReceiptStock equals stockLeftAtEta.
+    const proj = result.rows[0].projections[1];
+    expect(proj.shipmentQty).toBe(0);
+    expect(proj.afterReceiptStock).toBe(proj.stockLeftAtEta);
   });
 });
