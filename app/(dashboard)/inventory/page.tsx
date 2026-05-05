@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import { InventoryTable } from "@/components/inventory/InventoryTable";
+import { ProductRollupTable } from "@/components/inventory/ProductRollupTable";
 import { KpiCard } from "@/components/inventory/KpiCard";
 import {
   WarehouseToggle,
@@ -29,6 +30,10 @@ function stockValueDisplay(n: number): string {
 export default function InventoryPage() {
   const [selection, setSelection] = useState<WarehouseSelection>("US");
   const isAll = selection === "All";
+  // Default to grouped — Scott 2026-05-05: "make the default view 1 row per
+  // product (not per sku) with an option to click expand to see all SKUs."
+  // Flat per-SKU view stays one toggle away for engineering / CSV export.
+  const [groupByProduct, setGroupByProduct] = useState(true);
 
   // Two parallel queries — `enabled` gates each so single-warehouse
   // mode only fires the matching one. React Query dedupes + caches both
@@ -195,10 +200,24 @@ export default function InventoryPage() {
         />
       </div>
 
+      <div className="flex items-center justify-end">
+        <label className="inline-flex items-center gap-2 text-xs text-neutral-700">
+          <input
+            type="checkbox"
+            checked={groupByProduct}
+            onChange={(e) => setGroupByProduct(e.target.checked)}
+            className="h-3.5 w-3.5"
+          />
+          Group by product
+        </label>
+      </div>
+
       {error ? (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">
           Failed to load inventory: {error.message}
         </div>
+      ) : groupByProduct ? (
+        <ProductRollupTable warehouse={selection} rows={rows} />
       ) : (
         <InventoryTable warehouse={selection} rows={rows} />
       )}
