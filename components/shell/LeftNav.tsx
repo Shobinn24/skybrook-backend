@@ -46,6 +46,12 @@ export function LeftNav() {
       >
         Performance
       </Link>
+      <Link
+        href="/launches"
+        className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
+      >
+        Launches
+      </Link>
     </aside>
   );
 }

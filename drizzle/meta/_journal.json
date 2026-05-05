@@ -50,6 +50,13 @@
       "when": 1778019315688,
       "tag": "0006_silky_mojo",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1778019925270,
+      "tag": "0007_awesome_rhodey",
+      "breakpoints": true
     }
   ]
 }

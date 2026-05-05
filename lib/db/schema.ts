@@ -134,6 +134,31 @@ export const adSpendDaily = pgTable(
 // matches. Product-scoped overrides win over null/brand-level for the
 // same day, so operators can layer "everyone +10%" with "Mens +30%"
 // for a launch ramp.
+// Product launch metadata. Powers the /launches page (Scott 2026-05-05).
+// Each row pairs a product (productName, e.g. "Boyshort Beige" — a new
+// colorway counts as a launch per Scott) with the inbound shipment that
+// triggers the launch (shipmentName as we ingest it from Incoming_new,
+// e.g. "KAI Mens Apr26"). ETA Ant + ETA PD are derived at read time
+// from `incoming_shipments` so they stay live with the source sheet;
+// only the manual launch dates live in this table.
+export const productLaunches = pgTable(
+  "product_launches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    productName: text("product_name").notNull(),
+    shipmentName: text("shipment_name").notNull(),
+    intlSiteLive: date("intl_site_live"),
+    intlLaunchDate: date("intl_launch_date"),
+    usSiteLive: date("us_site_live"),
+    usLaunchDate: date("us_launch_date"),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    unq: uniqueIndex("product_launches_natural_uq").on(t.productName, t.shipmentName),
+  })
+);
+
 export const velocityOverrides = pgTable("velocity_overrides", {
   id: uuid("id").primaryKey().defaultRandom(),
   location: locationEnum("location").notNull(),

@@ -4,11 +4,17 @@ import { db } from "@/lib/db";
 import {
   daysOfStock,
   incomingReceipts,
+  productLaunches,
   salesVelocity,
   sustainabilityFlags,
   velocityOverrides,
 } from "@/lib/db/schema";
 import { getIncomingShipmentsView, getIncomingStock } from "@/lib/queries/incoming";
+import {
+  getDistinctProductNames,
+  getDistinctShipmentNames,
+  getLaunches,
+} from "@/lib/queries/launches";
 import { getPerformanceRollup } from "@/lib/queries/performance";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getOverstockRows } from "@/lib/queries/overstock";
@@ -326,4 +332,70 @@ export const inventoryRouter = router({
         rangeDays: input.rangeDays,
       }),
     ),
+
+  // /launches page — returns all launch rows with derived ETA Ant/PD.
+  getLaunches: publicProcedure.query(() => getLaunches()),
+
+  // Dropdowns powering the "Add launch" form.
+  getLaunchFormOptions: publicProcedure.query(async () => {
+    const [productNames, shipmentNames] = await Promise.all([
+      getDistinctProductNames(),
+      getDistinctShipmentNames(),
+    ]);
+    return { productNames, shipmentNames };
+  }),
+
+  addLaunch: publicProcedure
+    .input(
+      z.object({
+        productName: z.string().min(1).max(120),
+        shipmentName: z.string().min(1).max(200),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const [row] = await db
+        .insert(productLaunches)
+        .values({
+          productName: input.productName,
+          shipmentName: input.shipmentName,
+        })
+        .onConflictDoNothing({
+          target: [productLaunches.productName, productLaunches.shipmentName],
+        })
+        .returning({ id: productLaunches.id });
+      return { id: row?.id ?? null };
+    }),
+
+  // Patch one or more of the four manual launch dates. Pass null to
+  // clear a previously-set date.
+  updateLaunchDates: publicProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        intlSiteLive: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+        intlLaunchDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+        usSiteLive: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+        usLaunchDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+        note: z.string().max(500).nullable().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const { id, ...rest } = input;
+      // Build a partial object with only fields the caller actually sent
+      // — `undefined` means "leave alone", `null` means "clear".
+      const set: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(rest)) {
+        if (v !== undefined) set[k] = v;
+      }
+      if (Object.keys(set).length === 0) return { ok: true as const };
+      await db.update(productLaunches).set(set).where(eq(productLaunches.id, id));
+      return { ok: true as const };
+    }),
+
+  removeLaunch: publicProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ input }) => {
+      await db.delete(productLaunches).where(eq(productLaunches.id, input.id));
+      return { ok: true as const };
+    }),
 });
