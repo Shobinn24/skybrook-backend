@@ -236,10 +236,18 @@ export function SustainabilityTimelineTable({
                     </TracedNumber>
                   </td>
                   {r.projections.map((p, i) => {
+                    // Stockout = projected on-hand at the next ETA goes negative
+                    // OR a run-out date falls inside this projection window.
+                    // Both signal "we'll be out of stock before the next PO
+                    // lands" — Scott wants those cells obviously red.
+                    const stockOut = p.stockLeftAtEta < 0 || p.runOutDate !== null;
+                    // Striped column background. When the row is in stockout,
+                    // we override with a flat red tint so the alternating
+                    // stripe doesn't fight the warning state.
+                    const stripeBg = i % 2 === 0 ? "" : "bg-blue-50/30";
+                    const stockoutBg = stockOut ? "bg-red-50" : stripeBg;
                     const colCls =
-                      "border-l px-2 py-1.5 text-right tabular-nums " +
-                      (i % 2 === 0 ? "" : "bg-blue-50/30");
-                    const stockNeg = p.stockLeftAtEta < 0;
+                      "border-l px-2 py-1.5 text-right tabular-nums " + stockoutBg;
                     return (
                       <Fragment key={`${r.sku}|${p.eta}|${p.shipmentName}`}>
                         <td
@@ -247,16 +255,16 @@ export function SustainabilityTimelineTable({
                         >
                           {fmtNum(p.salesInWindow)}
                         </td>
-                        <td className={colCls + (stockNeg ? " text-red-600 font-medium" : "")}>
+                        <td className={colCls + (stockOut ? " text-red-700 font-semibold" : "")}>
                           {fmtNum(p.stockLeftAtEta)}
                         </td>
-                        <td className={colCls + " text-neutral-500 whitespace-nowrap"}>
+                        <td className={colCls + " whitespace-nowrap " + (p.runOutDate ? "text-red-700 font-medium" : "text-neutral-500")}>
                           {p.runOutDate ? formatYmd(p.runOutDate) : "—"}
                         </td>
                         <td className={colCls}>
                           {p.shipmentQty > 0 ? fmtNum(p.shipmentQty) : "—"}
                         </td>
-                        <td className={colCls + " font-medium"}>
+                        <td className={colCls + " font-medium" + (stockOut && p.afterReceiptStock < 0 ? " text-red-700" : "")}>
                           {fmtNum(p.afterReceiptStock)}
                         </td>
                       </Fragment>
