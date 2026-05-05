@@ -1,27 +1,36 @@
-name: Daily ingest cron
+name: Daily ingest cron (fallback)
 
-# Triggers the production /api/cron/ingest endpoint once per day so
-# Skybrook's data refreshes overnight without manual curls. Runs at
-# 14:00 UTC daily — 10am EDT (April–Nov) / 9am EST (Nov–April). The
-# 1-hour DST drift is acceptable; what matters is data being fresh
-# by the time Scott + team open the dashboard each morning.
+# FALLBACK trigger for the daily ingest. Primary is Railway native cron
+# running scripts/cron_run_ingest.mjs at 14:00 UTC (see scripts/README.md).
+# This workflow runs 1 hour AFTER Railway's scheduled time at 15:00 UTC
+# and skips work if Railway already succeeded.
+#
+# Why fallback: 2026-05-05 GH Actions failed to acquire a hosted runner
+# for 15 min and gave up, missing that day's ingest. Switching primary to
+# Railway eliminates that failure mode. Keeping GH Actions as fallback
+# gives us belt-and-suspenders coverage in case Railway itself has an
+# outage.
 #
 # Manual trigger via the Actions UI ("workflow_dispatch") is also
 # supported for ad-hoc backfills.
 #
-# Secrets required (set via `gh secret set CRON_SECRET`):
-#   CRON_SECRET — same value as Railway's CRON_SECRET env var.
+# Secrets required:
+#   CRON_SECRET      — same value as Railway's CRON_SECRET env var.
+# Secrets optional:
+#   HEALTHCHECKS_URL — healthchecks.io ping URL. If set, we ping on
+#                       success; same check the Railway script pings.
 
 on:
   schedule:
-    - cron: "0 14 * * *"
+    - cron: "0 15 * * *"
   workflow_dispatch:
 
 jobs:
   ingest:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger /api/cron/ingest
+      - name: Check if Railway cron already succeeded today
+        id: check_railway
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
@@ -30,17 +39,47 @@ jobs:
             echo "::error::CRON_SECRET secret is not set on this repo"
             exit 1
           fi
-          # The endpoint can take ~5 minutes (full Shopify backfill +
-          # Phase 2 derive). Allow generous timeout; Railway maxDuration
-          # is 300s server-side so we cap the client at 360s.
-          # Railway's edge proxy idle-times-out long-poll connections from
-          # the GH Actions runner at ~60s, returning 502 even though the
-          # server-side handler (maxDuration=300) keeps running. We can't
-          # tell from the response whether work actually happened.
-          # Strategy: kick off the request with a short timeout, then
-          # verify success by reading /api/admin/data-snapshot afterwards
-          # — that endpoint is fast and reflects the latest cron's
-          # writes.
+          response=$(mktemp)
+          status=$(curl -sS -o "$response" -w "%{http_code}" \
+            "https://skybrook-backend-production.up.railway.app/api/admin/data-snapshot" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            --max-time 60 || echo "000")
+          echo "data-snapshot HTTP status: $status"
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "::warning::data-snapshot returned $status — falling back to running ingest"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # velocity[].as_of_date is set by Phase 2 derive inside the cron.
+          # If it equals today UTC, the cron successfully completed today.
+          # Phase 2 uses ET timezone for as_of_date; at 15:00 UTC, today ET
+          # equals today UTC, so the comparison is straightforward.
+          today_utc=$(date -u +%Y-%m-%d)
+          max_velocity_date=$(jq -r '[.velocity[].as_of_date] | max // ""' "$response" 2>/dev/null || echo "")
+          echo "Max velocity as_of_date: '$max_velocity_date' | today UTC: $today_utc"
+          if [ "$max_velocity_date" = "$today_utc" ]; then
+            echo "::notice::Velocity data is fresh — Railway cron already succeeded today. Skipping fallback."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Velocity data is stale — Railway cron did not succeed today. Running fallback ingest."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger /api/cron/ingest
+        if: steps.check_railway.outputs.skip != 'true'
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          # The endpoint can take ~5 minutes (full Shopify backfill + Phase
+          # 2 derive). Railway's edge proxy idle-times-out long-poll
+          # connections from the GH Actions runner at ~60s, returning 502
+          # even though the server-side handler (maxDuration=300) keeps
+          # running. We can't tell from the response whether work actually
+          # happened. Strategy: kick off the request with a short timeout,
+          # then verify success by reading /api/admin/data-snapshot
+          # afterwards — that endpoint is fast and reflects the latest
+          # cron's writes.
           set +e
           curl -sS -X POST \
             "https://skybrook-backend-production.up.railway.app/api/cron/ingest" \
@@ -69,16 +108,12 @@ jobs:
             cat "$response"
             exit 1
           fi
-          # Confirm asOf is today UTC (basic freshness check). If
-          # ingest didn't run, asOf would be yesterday or older.
+          # Confirm asOf is today UTC (basic freshness check).
           today_utc=$(date -u +%Y-%m-%d)
           as_of=$(grep -oE '"asOf":"[^"]+"' "$response" | head -1 | cut -d'"' -f4 | cut -dT -f1)
           echo "Snapshot asOf: $as_of (today UTC: $today_utc)"
           if [ "$as_of" != "$today_utc" ]; then
             echo "::warning::Snapshot asOf ($as_of) is not today ($today_utc) — ingest may have failed"
-            # Don't hard-fail: the timezone offset can put asOf 1 day off,
-            # and Phase 2 derive uses ET which differs from UTC. Surface
-            # as warning only.
           fi
           # Sanity-check counts are non-zero.
           counts=$(grep -oE '"counts":\{[^}]*\}' "$response" | head -1)
@@ -88,3 +123,30 @@ jobs:
             exit 1
           fi
           echo "✓ Ingest verified."
+
+      - name: Ping healthchecks.io on success
+        # Ping when fallback actually ran AND succeeded. If Railway
+        # already succeeded (skip=true), Railway's script pinged
+        # healthchecks.io itself, so we don't need to.
+        if: steps.check_railway.outputs.skip != 'true' && success()
+        env:
+          HEALTHCHECKS_URL: ${{ secrets.HEALTHCHECKS_URL }}
+        run: |
+          if [ -n "${HEALTHCHECKS_URL:-}" ]; then
+            curl -sS -m 10 "${HEALTHCHECKS_URL}" > /dev/null && \
+              echo "✓ healthchecks.io pinged" || \
+              echo "::warning::healthchecks.io ping failed (non-fatal)"
+          else
+            echo "HEALTHCHECKS_URL not set — skipping ping"
+          fi
+
+      - name: Ping healthchecks.io on failure
+        if: steps.check_railway.outputs.skip != 'true' && failure()
+        env:
+          HEALTHCHECKS_URL: ${{ secrets.HEALTHCHECKS_URL }}
+        run: |
+          if [ -n "${HEALTHCHECKS_URL:-}" ]; then
+            curl -sS -m 10 "${HEALTHCHECKS_URL}/fail" > /dev/null && \
+              echo "✓ healthchecks.io fail pinged" || \
+              echo "::warning::healthchecks.io fail-ping failed"
+          fi
