@@ -1,11 +1,20 @@
 "use client";
 import { useMemo, useState } from "react";
 import { KpiCard } from "@/components/inventory/KpiCard";
-import { WarehouseToggle, type Warehouse } from "@/components/inventory/WarehouseToggle";
+import {
+  WarehouseToggle,
+  type WarehouseSelection,
+} from "@/components/inventory/WarehouseToggle";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
 import { trpc } from "@/lib/trpc/client";
 
-type StockValueSortKey = "productName" | "skuCount" | "unitCount" | "totalUsd";
+type StockValueSortKey =
+  | "productName"
+  | "skuCount"
+  | "unitCount"
+  | "totalUsd"
+  | "futureUnitCount"
+  | "futureValueUsd";
 
 function moneyCompact(n: number): string {
   if (n === 0) return "$0";
@@ -23,7 +32,8 @@ function moneyExact(n: number): string {
 }
 
 export default function StockValuePage() {
-  const [warehouse, setWarehouse] = useState<Warehouse>("US");
+  const [warehouse, setWarehouse] = useState<WarehouseSelection>("US");
+  const isAll = warehouse === "All";
   // Default to value-desc — Scott's primary lens for "which bucket is
   // tying up the most capital". Operators can flip to other columns.
   const [sort, setSort] = useState<SortConfig<StockValueSortKey>>({
@@ -31,7 +41,7 @@ export default function StockValuePage() {
     direction: "desc",
   });
   const { data: rows, isLoading, error } = trpc.inventory.getStockValueByProduct.useQuery(
-    { location: warehouse },
+    { location: isAll ? undefined : warehouse },
     { refetchOnWindowFocus: false }
   );
 
@@ -40,7 +50,16 @@ export default function StockValuePage() {
     const totalUsd = productRows.reduce((n, r) => n + r.totalUsd, 0);
     const unitCount = productRows.reduce((n, r) => n + r.unitCount, 0);
     const skuCount = productRows.reduce((n, r) => n + r.skuCount, 0);
-    return { totalUsd, unitCount, skuCount, productCount: productRows.length };
+    const futureUnitCount = productRows.reduce((n, r) => n + r.futureUnitCount, 0);
+    const futureValueUsd = productRows.reduce((n, r) => n + r.futureValueUsd, 0);
+    return {
+      totalUsd,
+      unitCount,
+      skuCount,
+      productCount: productRows.length,
+      futureUnitCount,
+      futureValueUsd,
+    };
   }, [productRows]);
 
   // The bar denominator is always the max value, NOT the max of the
@@ -63,10 +82,16 @@ export default function StockValuePage() {
           return (a.unitCount - b.unitCount) * dir;
         case "totalUsd":
           return (a.totalUsd - b.totalUsd) * dir;
+        case "futureUnitCount":
+          return (a.futureUnitCount - b.futureUnitCount) * dir;
+        case "futureValueUsd":
+          return (a.futureValueUsd - b.futureValueUsd) * dir;
       }
     };
     return [...productRows].sort(cmp);
   }, [productRows, sort]);
+
+  const scopeLabel = isAll ? "all warehouses" : `${warehouse} warehouse`;
 
   return (
     <div className="space-y-6">
@@ -76,19 +101,32 @@ export default function StockValuePage() {
           <p className="text-sm text-neutral-500">
             {isLoading
               ? "Loading…"
-              : `${totals.productCount} products · ${totals.skuCount} SKUs in ${warehouse} warehouse`}
+              : `${totals.productCount} products · ${totals.skuCount} SKUs in ${scopeLabel}`}
           </p>
         </div>
-        <WarehouseToggle value={warehouse} onChange={setWarehouse} />
+        <WarehouseToggle value={warehouse} onChange={setWarehouse} showAll />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
-          label="Total value"
+          label="Current value"
           value={moneyCompact(totals.totalUsd)}
-          hint={`${warehouse} warehouse`}
+          hint={`${totals.unitCount.toLocaleString()} units on hand`}
         />
-        <KpiCard label="Total units" value={totals.unitCount.toLocaleString()} />
+        <KpiCard
+          label="Future value"
+          value={moneyCompact(totals.futureValueUsd)}
+          hint={
+            totals.futureUnitCount > 0
+              ? `${totals.futureUnitCount.toLocaleString()} units inbound`
+              : "No incoming"
+          }
+        />
+        <KpiCard
+          label="Combined (current + future)"
+          value={moneyCompact(totals.totalUsd + totals.futureValueUsd)}
+          hint={scopeLabel}
+        />
         <KpiCard
           label="Products"
           value={totals.productCount}
@@ -99,7 +137,7 @@ export default function StockValuePage() {
       <section className="rounded-md border border-neutral-200 bg-white">
         <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-neutral-200 px-4 py-3">
           <h2 className="text-sm font-semibold text-neutral-900">By product</h2>
-          <div className="text-xs text-neutral-500">{warehouse} warehouse</div>
+          <div className="text-xs text-neutral-500">{scopeLabel}</div>
         </header>
         {error ? (
           <div className="px-4 py-6 text-sm text-red-700">
@@ -109,7 +147,7 @@ export default function StockValuePage() {
           <div className="px-4 py-6 text-sm text-neutral-500">Loading…</div>
         ) : sortedRows.length === 0 ? (
           <div className="px-4 py-6 text-sm text-neutral-500">
-            No SKUs with stock in {warehouse}.
+            No SKUs with stock in {scopeLabel}.
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -143,6 +181,20 @@ export default function StockValuePage() {
                     onChange={setSort}
                     align="right"
                   />
+                  <SortableHeader<StockValueSortKey>
+                    label="Future units"
+                    sortKey="futureUnitCount"
+                    config={sort}
+                    onChange={setSort}
+                    align="right"
+                  />
+                  <SortableHeader<StockValueSortKey>
+                    label="Future value"
+                    sortKey="futureValueUsd"
+                    config={sort}
+                    onChange={setSort}
+                    align="right"
+                  />
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">
@@ -169,6 +221,12 @@ export default function StockValuePage() {
                             style={{ width: `${Math.max(pct, 1)}%` }}
                           />
                         </div>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-neutral-600">
+                        {row.futureUnitCount > 0 ? row.futureUnitCount.toLocaleString() : "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-neutral-700">
+                        {row.futureValueUsd > 0 ? moneyExact(row.futureValueUsd) : "—"}
                       </td>
                     </tr>
                   );

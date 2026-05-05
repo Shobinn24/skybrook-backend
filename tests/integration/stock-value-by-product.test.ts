@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import { db } from "@/lib/db";
-import { rawPulls, skus, stockSnapshots } from "@/lib/db/schema";
+import {
+  incomingReceipts,
+  incomingShipments,
+  rawPulls,
+  skus,
+  stockSnapshots,
+} from "@/lib/db/schema";
 import { getStockValueByProduct } from "@/lib/queries/stock";
 import { resetDb } from "@/tests/fixtures/seed";
 
@@ -92,12 +98,16 @@ describe("getStockValueByProduct", () => {
       totalUsd: 1009.5,
       skuCount: 2,
       unitCount: 150,
+      futureUnitCount: 0,
+      futureValueUsd: 0,
     });
     expect(rows[1]).toEqual({
       productName: "HW",
       totalUsd: 400,
       skuCount: 1,
       unitCount: 80,
+      futureUnitCount: 0,
+      futureValueUsd: 0,
     });
   });
 
@@ -151,6 +161,8 @@ describe("getStockValueByProduct", () => {
       totalUsd: 500,
       skuCount: 1,
       unitCount: 100,
+      futureUnitCount: 0,
+      futureValueUsd: 0,
     });
 
     const cn = await getStockValueByProduct({ location: "CN" });
@@ -188,5 +200,106 @@ describe("getStockValueByProduct", () => {
   it("returns an empty array when nothing has stock at the location", async () => {
     const rows = await getStockValueByProduct({ location: "US" });
     expect(rows).toEqual([]);
+  });
+
+  it("computes futureUnitCount + futureValueUsd from pending incoming POs", async () => {
+    // 100 on-hand at $5 + 200 inbound at $5 = current $500, future $1000.
+    await seedSkuWithStock({
+      sku: "ev-a-l",
+      productName: "Alpha",
+      unitCostUsd: "5",
+      location: "US",
+      onHand: 100,
+    });
+    const rawId = await insertRawPull();
+    await db.insert(incomingShipments).values({
+      sku: "ev-a-l",
+      destination: "US",
+      shipmentName: "PO-pending",
+      quantity: 200,
+      expectedArrival: "2026-06-01",
+      status: "po",
+      sourcePullId: rawId,
+      sourceRowRef: "Incoming_new!D7",
+    });
+
+    const rows = await getStockValueByProduct({ location: "US" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({
+      productName: "Alpha",
+      totalUsd: 500,
+      skuCount: 1,
+      unitCount: 100,
+      futureUnitCount: 200,
+      futureValueUsd: 1000,
+    });
+  });
+
+  it("excludes received POs from the future-value rollup", async () => {
+    // Once Scott marks a PO received, those units are already counted in
+    // stock_snapshots — the future column must not double-count them.
+    await seedSkuWithStock({
+      sku: "ev-a-l",
+      productName: "Alpha",
+      unitCostUsd: "5",
+      location: "US",
+      onHand: 100,
+    });
+    const rawId = await insertRawPull();
+    await db.insert(incomingShipments).values([
+      {
+        sku: "ev-a-l",
+        destination: "US",
+        shipmentName: "PO-received",
+        quantity: 100,
+        expectedArrival: "2026-04-01",
+        status: "po",
+        sourcePullId: rawId,
+        sourceRowRef: "Incoming_new!D7",
+      },
+      {
+        sku: "ev-a-l",
+        destination: "US",
+        shipmentName: "PO-still-inbound",
+        quantity: 50,
+        expectedArrival: "2026-06-01",
+        status: "po",
+        sourcePullId: rawId,
+        sourceRowRef: "Incoming_new!E7",
+      },
+    ]);
+    await db.insert(incomingReceipts).values({
+      shipmentName: "PO-received",
+      destination: "US",
+      expectedArrival: "2026-04-01",
+    });
+
+    const rows = await getStockValueByProduct({ location: "US" });
+    expect(rows[0].futureUnitCount).toBe(50);
+    expect(rows[0].futureValueUsd).toBe(250);
+  });
+
+  it("combines US + CN when location is omitted (All-warehouses view)", async () => {
+    await seedSkuWithStock({
+      sku: "ev-a-us",
+      productName: "Alpha",
+      unitCostUsd: "5",
+      location: "US",
+      onHand: 100,
+    });
+    await seedSkuWithStock({
+      sku: "ev-a-cn",
+      productName: "Alpha",
+      unitCostUsd: "4",
+      location: "CN",
+      onHand: 200,
+    });
+
+    const all = await getStockValueByProduct(); // no location
+    expect(all).toHaveLength(1);
+    // US value (100×5 = 500) + CN value (200×4 = 800) = 1300
+    expect(all[0].totalUsd).toBe(1300);
+    expect(all[0].unitCount).toBe(300);
+    expect(all[0].skuCount).toBe(2);
   });
 });

@@ -1,6 +1,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { skus, stockSnapshots } from "@/lib/db/schema";
+import { incomingShipments, skus, stockSnapshots } from "@/lib/db/schema";
+import { getReceivedShipmentKeys, shipmentReceiptKey } from "./incoming";
 import type { Location } from "@/lib/domain/warehouse-routing";
 
 export type StockLevel = {
@@ -125,6 +126,14 @@ export type StockValueByProductRow = {
   totalUsd: number;
   skuCount: number;
   unitCount: number;
+  /** Units inbound that haven't been received yet — sum of pending PO
+   * quantities across the SKUs in this product, minus anything Scott
+   * has marked received via /incoming. */
+  futureUnitCount: number;
+  /** Future stock value: incoming units × per-warehouse unit cost. Listed
+   * separately from `totalUsd` (current stock value) so Scott can see
+   * tied-up capital that's still in transit. */
+  futureValueUsd: number;
 };
 
 /** Stock value rolled up by `skus.productName` for the given warehouse
@@ -141,24 +150,117 @@ export type StockValueByProductRow = {
  *
  * Sorted by totalUsd descending — biggest dollar buckets surface
  * first.
+ *
+ * `futureUnitCount` + `futureValueUsd` are computed against
+ * `incoming_shipments` joined with `incoming_receipts` (received POs
+ * are excluded — those units are already in stock_snapshots and
+ * already counted in `totalUsd`).
  */
 export async function getStockValueByProduct(
   filters: { location?: Location } = {},
 ): Promise<StockValueByProductRow[]> {
   const rows = await getStockLevels({ location: filters.location });
-  const buckets = new Map<string, { totalUsd: number; skuCount: number; unitCount: number }>();
+
+  // Per-SKU lookup of (US cost, INTL cost) so we can value future stock at
+  // its destination warehouse's cost. Built from the same row set so the
+  // costs match what `totalUsd` uses below.
+  const costBySku = new Map<string, { us: number; intl: number }>();
+  for (const r of rows) {
+    if (!costBySku.has(r.sku)) {
+      const us = Number(r.unitCostUsd ?? 0);
+      const intl = Number(r.unitCostIntlUsd ?? r.unitCostUsd ?? 0);
+      costBySku.set(r.sku, { us, intl });
+    }
+  }
+  // productName lookup so future-stock SKUs not currently in stock
+  // (e.g. brand new product launching soon) still bucket correctly.
+  const productNameBySku = new Map<string, string>();
+  for (const r of rows) productNameBySku.set(r.sku, r.productName);
+
+  // Pull pending incoming, filtered to the same warehouse(s) as `rows`.
+  const incomingFilter = filters.location
+    ? eq(incomingShipments.destination, filters.location)
+    : sql`true`;
+  const incomingRows = await db
+    .select()
+    .from(incomingShipments)
+    .where(incomingFilter);
+  const receivedKeys = await getReceivedShipmentKeys();
+  const skuName = await db.select({ sku: skus.sku, productName: skus.productName }).from(skus);
+  for (const k of skuName) {
+    if (!productNameBySku.has(k.sku)) productNameBySku.set(k.sku, k.productName);
+  }
+
+  const buckets = new Map<
+    string,
+    {
+      totalUsd: number;
+      skuCount: number;
+      unitCount: number;
+      futureUnitCount: number;
+      futureValueUsd: number;
+      seenSkus: Set<string>;
+    }
+  >();
   for (const r of rows) {
     // productName is non-null (defaulted to sku in getStockLevels), so
     // every row gets a bucket — no "uncategorized" sink to lose capital in.
     const key = r.productName;
     const value = r.onHand * unitCostForLocation(r);
-    const cur = buckets.get(key) ?? { totalUsd: 0, skuCount: 0, unitCount: 0 };
+    const cur =
+      buckets.get(key) ?? {
+        totalUsd: 0,
+        skuCount: 0,
+        unitCount: 0,
+        futureUnitCount: 0,
+        futureValueUsd: 0,
+        seenSkus: new Set<string>(),
+      };
     cur.totalUsd += value;
-    cur.skuCount += 1;
     cur.unitCount += r.onHand;
+    if (!cur.seenSkus.has(r.sku)) {
+      cur.seenSkus.add(r.sku);
+      cur.skuCount += 1;
+    }
     buckets.set(key, cur);
   }
+
+  for (const i of incomingRows) {
+    const receiptKey = shipmentReceiptKey({
+      shipmentName: i.shipmentName,
+      destination: i.destination,
+      expectedArrival: i.expectedArrival,
+    });
+    if (receivedKeys.has(receiptKey)) continue;
+    const productName = productNameBySku.get(i.sku) ?? i.sku;
+    const cost = costBySku.get(i.sku);
+    const unitCost = i.destination === "US" ? cost?.us ?? 0 : cost?.intl ?? 0;
+    const cur =
+      buckets.get(productName) ?? {
+        totalUsd: 0,
+        skuCount: 0,
+        unitCount: 0,
+        futureUnitCount: 0,
+        futureValueUsd: 0,
+        seenSkus: new Set<string>(),
+      };
+    cur.futureUnitCount += i.quantity;
+    cur.futureValueUsd += i.quantity * unitCost;
+    if (!cur.seenSkus.has(i.sku)) {
+      cur.seenSkus.add(i.sku);
+      cur.skuCount += 1;
+    }
+    buckets.set(productName, cur);
+  }
+
   return Array.from(buckets.entries())
-    .map(([productName, agg]) => ({ productName, ...agg }))
+    .map(([productName, agg]) => ({
+      productName,
+      totalUsd: agg.totalUsd,
+      skuCount: agg.skuCount,
+      unitCount: agg.unitCount,
+      futureUnitCount: agg.futureUnitCount,
+      futureValueUsd: agg.futureValueUsd,
+    }))
     .sort((a, b) => b.totalUsd - a.totalUsd);
 }
