@@ -268,11 +268,15 @@ export const inventoryRouter = router({
   // Add a velocity override (scaling factor) for a date range at a
   // location. Multiplier is a positive number; 1.0 = no change, 1.2 =
   // +20%, 0.8 = -20%. Range is [startDate, endDate] inclusive.
+  // `productName` is optional; null/omitted = brand-level (applies to
+  // every SKU at the location). Set to a productName for product-scoped
+  // overrides — those take precedence over brand-level for the same day.
   addVelocityOverride: publicProcedure
     .input(
       z
         .object({
           location: locationSchema,
+          productName: z.string().min(1).max(120).optional(),
           startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
           endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
           multiplier: z.number().positive().lte(10),
@@ -287,6 +291,7 @@ export const inventoryRouter = router({
         .insert(velocityOverrides)
         .values({
           location: input.location,
+          productName: input.productName ?? null,
           startDate: input.startDate,
           endDate: input.endDate,
           multiplier: input.multiplier.toString(),

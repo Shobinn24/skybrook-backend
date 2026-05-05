@@ -150,23 +150,52 @@ export function walkProjection(
   return out;
 }
 
-/** Resolve the multiplier that applies to a given calendar day given a
- * list of (startDate, endDate, multiplier) overrides. First match wins —
- * callers should sort overrides by precedence if overlap is possible.
- * Default (no match) is 1.0.
+/** Resolve the multiplier that applies to a given calendar day for a
+ * given product. Override scope:
+ *   - `productName: null` → applies to every product at the location
+ *     (brand-level)
+ *   - `productName: "Mens 3-Pack"` → applies only to that product
+ *
+ * Resolution rule for a (ymd, productName) pair:
+ *   1. Product-scoped overrides whose product matches and date range
+ *      covers `ymd` win first (operator-most-specific).
+ *   2. Brand-level (null product) overrides come next.
+ *   3. Default (no match) is 1.0.
+ *
+ * First-match wins inside each tier; callers control tier-internal
+ * ordering. Layering "+10% all products" with "+30% Mens" gives Mens
+ * +30% on overlapping days, every other product +10%.
  */
 export type VelocityOverride = {
   startDate: string; // YYYY-MM-DD inclusive
   endDate: string; // YYYY-MM-DD inclusive
   multiplier: number;
+  /** null = brand-level (applies to all products). Otherwise must
+   * match `skus.product_name` for the override to apply. */
+  productName: string | null;
 };
 
 export function resolveMultiplier(
   ymd: string,
+  productName: string,
   overrides: ReadonlyArray<VelocityOverride>,
 ): number {
+  // Tier 1: product-specific overrides.
   for (const o of overrides) {
-    if (ymd >= o.startDate && ymd <= o.endDate) return o.multiplier;
+    if (
+      o.productName !== null &&
+      o.productName === productName &&
+      ymd >= o.startDate &&
+      ymd <= o.endDate
+    ) {
+      return o.multiplier;
+    }
+  }
+  // Tier 2: brand-level (null product) overrides.
+  for (const o of overrides) {
+    if (o.productName === null && ymd >= o.startDate && ymd <= o.endDate) {
+      return o.multiplier;
+    }
   }
   return 1.0;
 }

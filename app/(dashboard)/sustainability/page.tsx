@@ -53,6 +53,19 @@ export default function SustainabilityPage() {
     return Array.from(set).sort();
   }, [usQuery.data, cnQuery.data]);
 
+  // Distinct productNames at each warehouse — drives the per-product
+  // dropdown on the velocity-overrides editor. Pulled from the same
+  // timeline rows so we only offer products that actually exist at
+  // the location (not every product is stocked at both warehouses).
+  const productNamesByLoc = useMemo(() => {
+    const collect = (rows: Array<{ productName: string }> | undefined) =>
+      Array.from(new Set((rows ?? []).map((r) => r.productName))).sort();
+    return {
+      US: collect(usQuery.data?.rows),
+      CN: collect(cnQuery.data?.rows),
+    };
+  }, [usQuery.data, cnQuery.data]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -135,6 +148,7 @@ export default function SustainabilityPage() {
           <VelocityOverridesEditor
             location="US"
             overrides={usQuery.data?.overrides ?? []}
+            productOptions={productNamesByLoc.US}
           />
           <SustainabilityTimelineTable
             data={usQuery.data}
@@ -150,6 +164,7 @@ export default function SustainabilityPage() {
           <VelocityOverridesEditor
             location="CN"
             overrides={cnQuery.data?.overrides ?? []}
+            productOptions={productNamesByLoc.CN}
           />
           <SustainabilityTimelineTable
             data={cnQuery.data}

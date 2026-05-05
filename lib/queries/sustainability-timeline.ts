@@ -195,20 +195,20 @@ export async function getSustainabilityTimeline(opts: {
     .where(eq(velocityOverridesTable.location, opts.location))
     .orderBy(asc(velocityOverridesTable.startDate));
   const overrides: VelocityOverride[] = overrideRows.map((r) => ({
+    productName: r.productName,
     startDate: r.startDate,
     endDate: r.endDate,
     multiplier: Number(r.multiplier),
   }));
   const overridesWithMeta = overrideRows.map((r) => ({
     id: r.id,
+    productName: r.productName,
     startDate: r.startDate,
     endDate: r.endDate,
     multiplier: Number(r.multiplier),
     note: r.note,
   }));
-  const multiplierAt = overrides.length > 0
-    ? (ymd: string) => resolveMultiplier(ymd, overrides)
-    : undefined;
+  const haveOverrides = overrides.length > 0;
 
   // Build the GLOBAL shipment-column list across all SKUs. Keyed by ETA
   // ONLY — multiple shipments with the same ETA collapse into one
@@ -311,6 +311,15 @@ export async function getSustainabilityTimeline(opts: {
       eta: col.eta,
       quantity: skuQtys?.get(col.eta) ?? 0,
     }));
+    const meta = skuLookup.get(sku);
+    const productName = meta?.productName ?? sku;
+    // Per-product multiplier resolution: an override on (location,
+    // productName, ymd) wins over a brand-level (productName=null)
+    // override for the same day. resolveMultiplier handles the tier
+    // ordering — caller just binds productName.
+    const multiplierAt = haveOverrides
+      ? (ymd: string) => resolveMultiplier(ymd, productName, overrides)
+      : undefined;
     const projections = walkProjection(
       currentStock,
       dailyRate,
@@ -319,10 +328,9 @@ export async function getSustainabilityTimeline(opts: {
       multiplierAt ? { multiplierAt } : undefined,
     );
 
-    const meta = skuLookup.get(sku);
     rows.push({
       sku,
-      productName: meta?.productName ?? sku,
+      productName,
       productLine: meta?.productLine ?? null,
       salesInWindow,
       salesDollarsInWindow: Number((salesDollarsBySku.get(sku) ?? 0).toFixed(2)),

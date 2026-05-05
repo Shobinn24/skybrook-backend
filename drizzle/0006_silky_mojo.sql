@@ -1,0 +1,1 @@
+ALTER TABLE "velocity_overrides" ADD COLUMN "product_name" text;

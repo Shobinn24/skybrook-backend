@@ -183,38 +183,59 @@ describe("walkProjection", () => {
 
 describe("resolveMultiplier", () => {
   it("returns 1.0 when no overrides match the day", () => {
-    expect(resolveMultiplier("2026-05-05", [])).toBe(1.0);
+    expect(resolveMultiplier("2026-05-05", "Mens", [])).toBe(1.0);
     expect(
-      resolveMultiplier("2026-05-05", [
-        { startDate: "2026-06-01", endDate: "2026-06-30", multiplier: 1.2 },
+      resolveMultiplier("2026-05-05", "Mens", [
+        { productName: null, startDate: "2026-06-01", endDate: "2026-06-30", multiplier: 1.2 },
       ]),
     ).toBe(1.0);
   });
 
-  it("returns the matching multiplier when day falls inside an override range", () => {
+  it("returns the matching multiplier when day falls inside a brand-level override range", () => {
     expect(
-      resolveMultiplier("2026-05-15", [
-        { startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.2 },
+      resolveMultiplier("2026-05-15", "Mens", [
+        { productName: null, startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.2 },
       ]),
     ).toBe(1.2);
   });
 
   it("includes both endpoints (inclusive range)", () => {
     const overrides = [
-      { startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.5 },
+      { productName: null, startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.5 },
     ];
-    expect(resolveMultiplier("2026-05-01", overrides)).toBe(1.5);
-    expect(resolveMultiplier("2026-05-31", overrides)).toBe(1.5);
-    expect(resolveMultiplier("2026-04-30", overrides)).toBe(1.0);
-    expect(resolveMultiplier("2026-06-01", overrides)).toBe(1.0);
+    expect(resolveMultiplier("2026-05-01", "Mens", overrides)).toBe(1.5);
+    expect(resolveMultiplier("2026-05-31", "Mens", overrides)).toBe(1.5);
+    expect(resolveMultiplier("2026-04-30", "Mens", overrides)).toBe(1.0);
+    expect(resolveMultiplier("2026-06-01", "Mens", overrides)).toBe(1.0);
   });
 
-  it("first-match wins when ranges overlap (caller controls precedence via ordering)", () => {
+  it("first-match wins when brand-level ranges overlap (caller controls ordering)", () => {
     const overrides = [
-      { startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.2 },
-      { startDate: "2026-05-15", endDate: "2026-05-20", multiplier: 2.0 },
+      { productName: null, startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.2 },
+      { productName: null, startDate: "2026-05-15", endDate: "2026-05-20", multiplier: 2.0 },
     ];
     // 2026-05-17 falls inside both — first wins.
-    expect(resolveMultiplier("2026-05-17", overrides)).toBe(1.2);
+    expect(resolveMultiplier("2026-05-17", "Mens", overrides)).toBe(1.2);
+  });
+
+  it("product-specific overrides win over brand-level for the same day", () => {
+    // Brand-level "+10%" layered with "+30% Mens". Mens gets 1.3 inside
+    // the overlap; other products fall back to brand-level 1.1.
+    const overrides = [
+      { productName: null, startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.1 },
+      { productName: "Mens 3-Pack", startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.3 },
+    ];
+    expect(resolveMultiplier("2026-05-15", "Mens 3-Pack", overrides)).toBe(1.3);
+    expect(resolveMultiplier("2026-05-15", "Shapewear", overrides)).toBe(1.1);
+  });
+
+  it("product-specific override only applies when productName matches exactly", () => {
+    const overrides = [
+      { productName: "Mens 3-Pack", startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.5 },
+    ];
+    expect(resolveMultiplier("2026-05-15", "Mens 3-Pack", overrides)).toBe(1.5);
+    // Different product → no match → default 1.0 since there's no
+    // brand-level fallback.
+    expect(resolveMultiplier("2026-05-15", "Boyshort", overrides)).toBe(1.0);
   });
 });

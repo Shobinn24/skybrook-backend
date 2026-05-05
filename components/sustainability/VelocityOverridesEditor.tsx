@@ -4,6 +4,7 @@ import { trpc } from "@/lib/trpc/client";
 
 type Override = {
   id: string;
+  productName: string | null;
   startDate: string;
   endDate: string;
   multiplier: number;
@@ -19,15 +20,20 @@ function fmtPct(multiplier: number): string {
   return `${sign}${pct.toFixed(0)}%`;
 }
 
+const ALL_PRODUCTS_VALUE = "__all__";
+
 export function VelocityOverridesEditor({
   location,
   overrides,
+  productOptions,
 }: {
   location: Location;
   overrides: Override[];
+  productOptions: string[];
 }) {
   const [open, setOpen] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [productSelection, setProductSelection] = useState<string>(ALL_PRODUCTS_VALUE);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   // Stored as percent change (0 = no change, 20 = +20%) for ergonomics.
@@ -39,6 +45,7 @@ export function VelocityOverridesEditor({
     onSuccess: () => {
       void utils.inventory.getSustainabilityTimeline.invalidate();
       setAdding(false);
+      setProductSelection(ALL_PRODUCTS_VALUE);
       setStartDate("");
       setEndDate("");
       setPctChange("0");
@@ -64,6 +71,8 @@ export function VelocityOverridesEditor({
     if (!startDate || !endDate) return;
     addMutation.mutate({
       location,
+      productName:
+        productSelection === ALL_PRODUCTS_VALUE ? undefined : productSelection,
       startDate,
       endDate,
       multiplier,
@@ -98,7 +107,10 @@ export function VelocityOverridesEditor({
           <p className="text-xs text-neutral-600">
             Scale projected sales velocity inside a date range. <span className="font-medium">+20%</span> means
             sales are expected to be 20% higher than the trailing window suggests; <span className="font-medium">−20%</span> means
-            20% lower. Overrides apply to all SKUs in the {location} warehouse.
+            20% lower. Pick a specific product to scope an override, or
+            leave it on <span className="font-medium">All products</span> for a brand-level lever in the{" "}
+            {location} warehouse. Product-specific overrides win over
+            brand-level for the same day.
           </p>
 
           {overrides.length > 0 && (
@@ -106,6 +118,7 @@ export function VelocityOverridesEditor({
               <table className="w-full text-sm">
                 <thead className="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
                   <tr>
+                    <th className="px-3 py-1.5">Product</th>
                     <th className="px-3 py-1.5">From</th>
                     <th className="px-3 py-1.5">To</th>
                     <th className="px-3 py-1.5 text-right">Scaling</th>
@@ -116,6 +129,9 @@ export function VelocityOverridesEditor({
                 <tbody className="divide-y divide-neutral-100">
                   {overrides.map((o) => (
                     <tr key={o.id}>
+                      <td className="whitespace-nowrap px-3 py-1.5 text-neutral-700">
+                        {o.productName ?? <span className="italic text-neutral-500">All products</span>}
+                      </td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-neutral-700">{o.startDate}</td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-neutral-700">{o.endDate}</td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums font-medium text-neutral-900">
@@ -142,6 +158,21 @@ export function VelocityOverridesEditor({
 
           {adding ? (
             <div className="space-y-2 rounded border border-neutral-200 bg-neutral-50 p-3">
+              <label className="block text-xs text-neutral-700">
+                Product scope
+                <select
+                  value={productSelection}
+                  onChange={(e) => setProductSelection(e.target.value)}
+                  className="mt-0.5 block w-full rounded border border-neutral-300 bg-white px-2 py-1 text-sm"
+                >
+                  <option value={ALL_PRODUCTS_VALUE}>All products (brand-level)</option>
+                  {productOptions.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
                 <label className="text-xs text-neutral-700">
                   From

@@ -124,15 +124,20 @@ export const adSpendDaily = pgTable(
 );
 
 // Per-location scaling factors that adjust sales velocity inside a date
-// range — Scott 2026-05-05: "we use what we call a 'scaling factor' to
-// say essentially 'in the future period between shipment 2 and shipment 3
-// we want to scale up 20%'". Multipliers apply to all SKUs at the
-// location (a brand-level lever, not per-SKU). Resolution: for any
-// projection day, the first override whose [startDate, endDate] covers
-// that day wins; with no match, the implicit multiplier is 1.0.
+// range. Scott 2026-05-05: "we use what we call a 'scaling factor' to
+// say essentially 'in the future period between shipment 2 and shipment
+// 3 we want to scale up 20%'". A follow-up clarified scope:
+// "Scaling factor should be adjustable at product level".
+//
+// `productName` is nullable. Null = brand-level (applies to every SKU
+// at the location); set = applies only to SKUs whose `skus.product_name`
+// matches. Product-scoped overrides win over null/brand-level for the
+// same day, so operators can layer "everyone +10%" with "Mens +30%"
+// for a launch ramp.
 export const velocityOverrides = pgTable("velocity_overrides", {
   id: uuid("id").primaryKey().defaultRandom(),
   location: locationEnum("location").notNull(),
+  productName: text("product_name"),
   startDate: date("start_date").notNull(),
   endDate: date("end_date").notNull(),
   multiplier: numeric("multiplier", { precision: 10, scale: 4 }).notNull(),
