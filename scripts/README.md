@@ -11,6 +11,26 @@ Smoke checks and one-off setup that operators are expected to share:
 - `smoke-shopify-intl.ts` — same but for the INTL store.
 - `smoke_incoming_parse.mjs` — parses the Incoming_new tab and dumps a sample.
 - `velocity_recheck.mjs` — reconcile the velocity sheet's 4-week sum against Skybrook's 30d `daily_sales` (US block col D + INTL block col P). Run when Scott asks "is the sales data accurate" or after parser changes. Needs `CRON_SECRET` in env. Expected ratio sky/sheet ≈ 1.07 (30d window vs sheet's 28d). Outliers grouped by SKU at the bottom.
+- `cron_run_ingest.mjs` — primary daily-ingest scheduler entrypoint, run by **Railway native cron**. Calls `/api/cron/ingest` then verifies via `/api/admin/data-snapshot`. Replaces the `.github/workflows/cron-ingest.yml` workflow as the primary trigger after the 2026-05-05 GH Actions runner-allocation failure. Needs `CRON_SECRET`; reads `APP_URL` or falls back to `RAILWAY_PUBLIC_DOMAIN`. See "Daily ingest cron architecture" below for setup.
+
+## Daily ingest cron architecture
+
+**Primary trigger: Railway native cron** (added 2026-05-05). A separate Railway service named `skybrook-cron` is linked to this same repo, with cron schedule `0 14 * * *` and start command `node scripts/cron_run_ingest.mjs`. The cron service deploys, runs the script, exits. Doesn't affect the main `skybrook-backend` web service.
+
+**Why this over GH Actions:** Railway native cron eliminates the runner-allocation failure mode. On 2026-05-05 GH Actions failed to acquire a hosted runner for 15 min and gave up, missing that day's ingest. Railway runs in our service container — no external runner needed.
+
+**Fallback: GH Actions workflow** (`.github/workflows/cron-ingest.yml`) still exists, scheduled 1 hour AFTER Railway's run, as belt-and-suspenders. Skips work if Railway already succeeded today.
+
+**Setup steps** (Railway dashboard, one-time):
+1. In Railway project "Skybrook Backend", click `+ Create` → `Empty Service`. Name it `skybrook-cron`.
+2. Settings → Source → connect to the same GitHub repo (`skybrook-backend`).
+3. Settings → Deploy → Cron Schedule → `0 14 * * *`
+4. Settings → Deploy → Start Command → `node scripts/cron_run_ingest.mjs`
+5. Settings → Networking → disable public networking (cron has no inbound traffic).
+6. Variables → reference shared `CRON_SECRET` from the main service.
+7. Variables → set `APP_URL=https://skybrook-backend-production.up.railway.app` (or the canonical URL).
+
+After setup, manually trigger once to verify; thereafter it runs daily at 14:00 UTC.
 
 ## Untracked diagnostics
 
