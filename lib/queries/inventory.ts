@@ -7,6 +7,7 @@ import {
   sustainabilityFlags,
 } from "@/lib/db/schema";
 import { getStockLevels, unitCostForLocation, type StockLevel } from "./stock";
+import { getReceivedShipmentKeys, shipmentReceiptKey } from "./incoming";
 import type { Location } from "@/lib/domain/warehouse-routing";
 
 // Each warehouse view reads its own per-channel velocity row. runPhase2
@@ -38,6 +39,7 @@ export type InventoryRowTrace = {
   velocity: NumberTrace | null;
   weeksOfStock: NumberTrace | null;
   incoming: NumberTrace;
+  futureStock: NumberTrace;
 };
 
 export type InventoryRow = {
@@ -56,6 +58,10 @@ export type InventoryRow = {
   reasoning: string | null;
   snapshotDate: string;
   incomingUnits: number;
+  /** Projected stock once every still-incoming PO lands. on_hand + incomingUnits.
+   * Receipts-confirmed POs are excluded from incomingUnits so they don't
+   * double-count against current stock. */
+  futureStock: number;
   trace: InventoryRowTrace;
 };
 
@@ -110,13 +116,21 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
   const latestDosDate = dosRows[0]?.asOfDate ?? null;
 
   // Group pending incoming shipments per SKU so the trace can list each PO.
+  // Excludes shipments Scott has marked received (those units are already in
+  // stock_snapshots; counting them here would double-count).
   const incomingRows = await db
     .select()
     .from(incomingShipments)
     .where(eq(incomingShipments.destination, location));
+  const receivedKeys = await getReceivedShipmentKeys();
   const incomingBySku = new Map<string, typeof incomingRows>();
   for (const r of incomingRows) {
-    if (r.status === "arrived") continue;
+    const key = shipmentReceiptKey({
+      shipmentName: r.shipmentName,
+      destination: r.destination,
+      expectedArrival: r.expectedArrival,
+    });
+    if (receivedKeys.has(key)) continue;
     const bucket = incomingBySku.get(r.sku) ?? [];
     bucket.push(r);
     incomingBySku.set(r.sku, bucket);
@@ -245,10 +259,25 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
         sources: [
           { label: "Source", ref: "Incoming PO Google Sheet (incoming_shipments table)" },
           { label: "Total pending", ref: `${incomingUnits.toLocaleString()} units` },
+          { label: "Excludes", ref: "POs marked received via /incoming" },
+        ],
+      },
+      futureStock: {
+        label: `Future stock — ${s.sku} @ ${s.location}`,
+        formula: "On-hand + incoming (units once every still-incoming PO lands).",
+        inputs: [
+          { label: "On hand today", value: `${s.onHand.toLocaleString()} units` },
+          { label: "Incoming", value: `${incomingUnits.toLocaleString()} units` },
+          { label: "Future stock", value: `${(s.onHand + incomingUnits).toLocaleString()} units` },
+        ],
+        sources: [
+          { label: "Stock snapshot", ref: s.snapshotDate },
+          { label: "Incoming", ref: "incoming_shipments minus incoming_receipts" },
         ],
       },
     };
 
+    const futureStock = s.onHand + incomingUnits;
     return {
       sku: s.sku,
       location: s.location,
@@ -269,6 +298,7 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
       reasoning: flagRow?.reasoning ?? null,
       snapshotDate: s.snapshotDate,
       incomingUnits,
+      futureStock,
       trace,
     };
   });

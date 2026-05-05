@@ -14,6 +14,7 @@ type SortKey =
   | "location"
   | "onHand"
   | "incoming"
+  | "futureStock"
   | "velocity"
   | "weeksOfStock"
   | "unitCost"
@@ -79,6 +80,8 @@ export function InventoryTable({
           return (a.onHand - b.onHand) * dir;
         case "incoming":
           return (a.incomingUnits - b.incomingUnits) * dir;
+        case "futureStock":
+          return (a.futureStock - b.futureStock) * dir;
         case "velocity":
           return (nullish(a.velocityPerDay7d) - nullish(b.velocityPerDay7d)) * dir;
         case "weeksOfStock":
@@ -112,6 +115,7 @@ export function InventoryTable({
       "flag",
       "run_out_date",
       "incoming_units",
+      "future_stock",
       "unit_cost_usd",
       "stock_value_usd",
       "snapshot_date",
@@ -133,6 +137,7 @@ export function InventoryTable({
           r.flag ?? "",
           r.runOutDate ?? "",
           r.incomingUnits,
+          r.futureStock,
           r.unitCostUsd?.toFixed(4) ?? "",
           r.stockValueUsd.toFixed(2),
           r.snapshotDate,
@@ -178,6 +183,7 @@ export function InventoryTable({
               )}
               <SortableHeader label="Stock" sortKey="onHand" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Incoming" sortKey="incoming" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="Future stock" sortKey="futureStock" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Velocity/day" sortKey="velocity" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Weeks of stock" sortKey="weeksOfStock" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Status" sortKey="flag" config={sort} onChange={setSort} />
@@ -208,6 +214,11 @@ export function InventoryTable({
                 <td className="px-4 py-2 text-right tabular-nums text-neutral-600">
                   <TracedNumber trace={r.trace.incoming}>
                     {r.incomingUnits.toLocaleString()}
+                  </TracedNumber>
+                </td>
+                <td className="px-4 py-2 text-right tabular-nums font-medium text-neutral-900">
+                  <TracedNumber trace={r.trace.futureStock}>
+                    {r.futureStock.toLocaleString()}
                   </TracedNumber>
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums">
@@ -243,7 +254,7 @@ export function InventoryTable({
             ))}
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={showLocationColumn ? 10 : 9} className="px-4 py-6 text-center text-sm text-neutral-500">
+                <td colSpan={showLocationColumn ? 11 : 10} className="px-4 py-6 text-center text-sm text-neutral-500">
                   No stock data for {warehouse} yet. Run the daily ingest to populate.
                 </td>
               </tr>
