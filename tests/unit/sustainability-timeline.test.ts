@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { walkProjection } from "@/lib/domain/sustainability-timeline";
+import {
+  resolveMultiplier,
+  walkProjection,
+} from "@/lib/domain/sustainability-timeline";
 
 describe("walkProjection", () => {
   it("matches Scott's screenshot for ev-bshort-5x-xxs row", () => {
@@ -117,5 +120,101 @@ describe("walkProjection", () => {
       runOutDate: "2026-05-20",
       afterReceiptStock: 120,
     });
+  });
+
+  it("scales sales when a per-day multiplier function is provided", () => {
+    // Baseline 1 unit/day × 10 days = 10 units sold. With multiplier 1.5
+    // throughout, 15 units sold. Stock 100 → 85 left.
+    const multiplierAt = () => 1.5;
+    const out = walkProjection(100, 1, "2026-05-01", [
+      { shipmentName: "Ship", eta: "2026-05-11", quantity: 50 },
+    ], { multiplierAt });
+    expect(out[0].salesInWindow).toBe(15);
+    expect(out[0].stockLeftAtEta).toBe(85);
+    expect(out[0].afterReceiptStock).toBe(135);
+  });
+
+  it("multiplier function reduces sales when scaling factor < 1", () => {
+    // 0.5x = 50% of baseline.
+    const multiplierAt = () => 0.5;
+    const out = walkProjection(100, 1, "2026-05-01", [
+      { shipmentName: "Ship", eta: "2026-05-11", quantity: 50 },
+    ], { multiplierAt });
+    expect(out[0].salesInWindow).toBe(5);
+    expect(out[0].stockLeftAtEta).toBe(95);
+  });
+
+  it("respects per-day multiplier when it varies across the window", () => {
+    // 5 days at 1.0 + 5 days at 2.0 = 5 + 10 = 15 units sold.
+    const multiplierAt = (ymd: string) =>
+      ymd >= "2026-05-06" ? 2 : 1;
+    const out = walkProjection(100, 1, "2026-05-01", [
+      { shipmentName: "Ship", eta: "2026-05-11", quantity: 0 },
+    ], { multiplierAt });
+    expect(out[0].salesInWindow).toBe(15);
+    expect(out[0].stockLeftAtEta).toBe(85);
+  });
+
+  it("constant-rate path is preserved when no multiplier provided (regression)", () => {
+    // The pre-2026-05-05 walker had no options arg. New constant-rate
+    // path must produce identical results — locks the contract.
+    const out = walkProjection(100, 2, "2026-05-01", [
+      { shipmentName: "Ship", eta: "2026-05-11", quantity: 30 },
+    ]);
+    expect(out[0].salesInWindow).toBe(20);
+    expect(out[0].stockLeftAtEta).toBe(80);
+    expect(out[0].afterReceiptStock).toBe(110);
+    // 100/2 = 50 days from 2026-05-01 = 2026-06-20.
+    expect(out[0].runOutDate).toBe("2026-06-20");
+  });
+
+  it("computes runOutDate from variable rate when stock crosses 0 mid-window", () => {
+    // Stock 10, baseline 1 unit/day, but multiplier is 5x starting day 5.
+    // Days 0-4: 1 unit/day → 5 sold. Day 5: 5 sold (cumulative 10).
+    // Stock crosses 0 on day 5 → runOutDate = 2026-05-06.
+    const multiplierAt = (ymd: string) =>
+      ymd >= "2026-05-06" ? 5 : 1;
+    const out = walkProjection(10, 1, "2026-05-01", [
+      { shipmentName: "Ship", eta: "2026-05-30", quantity: 0 },
+    ], { multiplierAt });
+    expect(out[0].runOutDate).toBe("2026-05-06");
+  });
+});
+
+describe("resolveMultiplier", () => {
+  it("returns 1.0 when no overrides match the day", () => {
+    expect(resolveMultiplier("2026-05-05", [])).toBe(1.0);
+    expect(
+      resolveMultiplier("2026-05-05", [
+        { startDate: "2026-06-01", endDate: "2026-06-30", multiplier: 1.2 },
+      ]),
+    ).toBe(1.0);
+  });
+
+  it("returns the matching multiplier when day falls inside an override range", () => {
+    expect(
+      resolveMultiplier("2026-05-15", [
+        { startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.2 },
+      ]),
+    ).toBe(1.2);
+  });
+
+  it("includes both endpoints (inclusive range)", () => {
+    const overrides = [
+      { startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.5 },
+    ];
+    expect(resolveMultiplier("2026-05-01", overrides)).toBe(1.5);
+    expect(resolveMultiplier("2026-05-31", overrides)).toBe(1.5);
+    expect(resolveMultiplier("2026-04-30", overrides)).toBe(1.0);
+    expect(resolveMultiplier("2026-06-01", overrides)).toBe(1.0);
+  });
+
+  it("first-match wins when ranges overlap (caller controls precedence via ordering)", () => {
+    const overrides = [
+      { startDate: "2026-05-01", endDate: "2026-05-31", multiplier: 1.2 },
+      { startDate: "2026-05-15", endDate: "2026-05-20", multiplier: 2.0 },
+    ];
+    // 2026-05-17 falls inside both — first wins.
+    expect(resolveMultiplier("2026-05-17", overrides)).toBe(1.2);
   });
 });

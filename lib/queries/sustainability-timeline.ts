@@ -20,8 +20,15 @@ import {
   incomingShipments,
   skus,
   stockSnapshots,
+  velocityOverrides as velocityOverridesTable,
 } from "@/lib/db/schema";
-import { walkProjection, type ProjectionRow } from "@/lib/domain/sustainability-timeline";
+import {
+  resolveMultiplier,
+  walkProjection,
+  type ProjectionRow,
+  type VelocityOverride,
+} from "@/lib/domain/sustainability-timeline";
+import { getReceivedShipmentKeys, shipmentReceiptKey } from "./incoming";
 import type { Location } from "@/lib/domain/warehouse-routing";
 
 export type SustainabilityTimelineRow = {
@@ -54,6 +61,10 @@ export type SustainabilityTimelineResult = {
   // shipment have a 0-qty projection row at that ETA.
   shipmentColumns: ShipmentColumn[];
   rows: SustainabilityTimelineRow[];
+  // Velocity overrides currently in effect for this location. Returned
+  // so the UI can display + edit them in the same payload that powers
+  // the projection table.
+  overrides: Array<VelocityOverride & { id: string; note: string | null }>;
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -126,13 +137,15 @@ export async function getSustainabilityTimeline(opts: {
     salesBySku.set(r.sku, (salesBySku.get(r.sku) ?? 0) + r.unitsSold);
   }
 
-  // 3. Future shipments at the location (status != 'arrived').
-  // Sort by ETA ascending so the projection walker can consume them
-  // directly without re-sorting.
-  const shipmentRows = await db
+  // 3. Future shipments at the location. Excludes:
+  //    - Shipments already received (those units are in stock_snapshots).
+  //    - Past-ETA shipments (the timeline projects forward from today;
+  //      overdue POs are surfaced on /incoming for confirmation, not here).
+  const shipmentRowsRaw = await db
     .select({
       sku: incomingShipments.sku,
       shipmentName: incomingShipments.shipmentName,
+      destination: incomingShipments.destination,
       expectedArrival: incomingShipments.expectedArrival,
       quantity: incomingShipments.quantity,
     })
@@ -140,11 +153,44 @@ export async function getSustainabilityTimeline(opts: {
     .where(
       and(
         eq(incomingShipments.destination, opts.location),
-        ne(incomingShipments.status, "arrived"),
         gte(incomingShipments.expectedArrival, opts.today),
       ),
     )
     .orderBy(asc(incomingShipments.expectedArrival), asc(incomingShipments.shipmentName));
+  const receivedKeys = await getReceivedShipmentKeys();
+  const shipmentRows = shipmentRowsRaw.filter((r) => {
+    const k = shipmentReceiptKey({
+      shipmentName: r.shipmentName,
+      destination: r.destination,
+      expectedArrival: r.expectedArrival,
+    });
+    return !receivedKeys.has(k);
+  });
+
+  // Velocity overrides for this location. Sorted by startDate ASC so
+  // resolution prefers earlier-starting windows when multiple overrides
+  // overlap a given day. Operators define non-overlapping ranges in
+  // practice; tie-break is documented behavior, not a relied-on contract.
+  const overrideRows = await db
+    .select()
+    .from(velocityOverridesTable)
+    .where(eq(velocityOverridesTable.location, opts.location))
+    .orderBy(asc(velocityOverridesTable.startDate));
+  const overrides: VelocityOverride[] = overrideRows.map((r) => ({
+    startDate: r.startDate,
+    endDate: r.endDate,
+    multiplier: Number(r.multiplier),
+  }));
+  const overridesWithMeta = overrideRows.map((r) => ({
+    id: r.id,
+    startDate: r.startDate,
+    endDate: r.endDate,
+    multiplier: Number(r.multiplier),
+    note: r.note,
+  }));
+  const multiplierAt = overrides.length > 0
+    ? (ymd: string) => resolveMultiplier(ymd, overrides)
+    : undefined;
 
   // Build the GLOBAL shipment-column list across all SKUs. Keyed by ETA
   // ONLY — multiple shipments with the same ETA collapse into one
@@ -228,7 +274,13 @@ export async function getSustainabilityTimeline(opts: {
       eta: col.eta,
       quantity: skuQtys?.get(col.eta) ?? 0,
     }));
-    const projections = walkProjection(currentStock, dailyRate, opts.today, perSkuShipments);
+    const projections = walkProjection(
+      currentStock,
+      dailyRate,
+      opts.today,
+      perSkuShipments,
+      multiplierAt ? { multiplierAt } : undefined,
+    );
 
     const meta = skuLookup.get(sku);
     rows.push({
@@ -254,5 +306,6 @@ export async function getSustainabilityTimeline(opts: {
     today: opts.today,
     shipmentColumns,
     rows,
+    overrides: overridesWithMeta,
   };
 }

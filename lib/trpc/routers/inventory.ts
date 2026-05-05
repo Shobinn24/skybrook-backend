@@ -6,6 +6,7 @@ import {
   incomingReceipts,
   salesVelocity,
   sustainabilityFlags,
+  velocityOverrides,
 } from "@/lib/db/schema";
 import { getIncomingShipmentsView, getIncomingStock } from "@/lib/queries/incoming";
 import { getInventoryRows } from "@/lib/queries/inventory";
@@ -260,6 +261,44 @@ export const inventoryRouter = router({
             eq(incomingReceipts.expectedArrival, input.expectedArrival),
           ),
         );
+      return { ok: true as const };
+    }),
+
+  // Add a velocity override (scaling factor) for a date range at a
+  // location. Multiplier is a positive number; 1.0 = no change, 1.2 =
+  // +20%, 0.8 = -20%. Range is [startDate, endDate] inclusive.
+  addVelocityOverride: publicProcedure
+    .input(
+      z
+        .object({
+          location: locationSchema,
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          multiplier: z.number().positive().lte(10),
+          note: z.string().max(200).optional(),
+        })
+        .refine((d) => d.startDate <= d.endDate, {
+          message: "startDate must be on or before endDate",
+        }),
+    )
+    .mutation(async ({ input }) => {
+      const [row] = await db
+        .insert(velocityOverrides)
+        .values({
+          location: input.location,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          multiplier: input.multiplier.toString(),
+          note: input.note ?? null,
+        })
+        .returning({ id: velocityOverrides.id });
+      return { id: row.id };
+    }),
+
+  removeVelocityOverride: publicProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ input }) => {
+      await db.delete(velocityOverrides).where(eq(velocityOverrides.id, input.id));
       return { ok: true as const };
     }),
 });

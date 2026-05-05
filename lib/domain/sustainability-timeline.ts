@@ -53,30 +53,52 @@ function daysToYmd(days: number): string {
  *
  * @param currentStock on-hand at `today` (in 5-pack-equivalent units,
  *   matching the inventory pipeline's canonicalization).
- * @param dailyRate units sold per day. Pass 0 to model "no demand"; the
- *   walker treats every stockLeft as currentStock and every runOutDate
- *   as null.
+ * @param dailyRate units sold per day at baseline. Pass 0 to model "no
+ *   demand"; the walker treats every stockLeft as currentStock and every
+ *   runOutDate as null.
  * @param today YYYY-MM-DD anchor for the first shipment's window.
  * @param shipments must be sorted ASCENDING by `eta`. The walker does
  *   NOT sort — sorting belongs to the caller so it can apply any
  *   secondary ordering (e.g. tie-break by shipmentName) that test
  *   fixtures may rely on.
+ * @param options.multiplierAt optional per-day multiplier on `dailyRate`.
+ *   Returns 1.0 by default if not provided. When provided, the walker
+ *   sums sales day-by-day inside each window and finds runOutDate by
+ *   the same per-day walk — slower but exact under non-uniform rates.
+ *   This is how velocity scaling factors (Scott 2026-05-05) feed in.
  */
 export function walkProjection(
   currentStock: number,
   dailyRate: number,
   today: string,
   shipments: ReadonlyArray<ShipmentInput>,
+  options?: { multiplierAt?: (ymd: string) => number },
 ): ProjectionRow[] {
   const out: ProjectionRow[] = [];
   let pivotDays = ymdToDays(today);
   let stock = currentStock;
+  const useMultiplier = !!options?.multiplierAt;
+  const multiplierAt = options?.multiplierAt;
 
   for (const ship of shipments) {
     const etaDays = ymdToDays(ship.eta);
     const daysFromPrevious = Math.max(0, etaDays - pivotDays);
-    const salesInWindow = dailyRate > 0 ? dailyRate * daysFromPrevious : 0;
+
+    // Sum sales across the window. Constant-rate path stays the simple
+    // multiplication; multiplier-aware path iterates per-day.
+    let salesInWindow = 0;
+    if (dailyRate > 0) {
+      if (useMultiplier && multiplierAt) {
+        for (let d = 0; d < daysFromPrevious; d++) {
+          const m = Math.max(0, multiplierAt(daysToYmd(pivotDays + d)));
+          salesInWindow += dailyRate * m;
+        }
+      } else {
+        salesInWindow = dailyRate * daysFromPrevious;
+      }
+    }
     const stockLeftAtEta = stock - salesInWindow;
+
     // Run-out date is always projected forward from the pivot at the
     // current rate, even if the upcoming shipment would intervene —
     // Scott's sheet uses this as a "without further intervention"
@@ -89,8 +111,24 @@ export function walkProjection(
     // out, no future date is meaningful).
     let runOutDate: string | null = null;
     if (dailyRate > 0 && stock > 0) {
-      const daysToZero = Math.ceil(stock / dailyRate);
-      runOutDate = daysToYmd(pivotDays + daysToZero);
+      if (useMultiplier && multiplierAt) {
+        // Walk day-by-day until stock crosses 0. Bound the search to
+        // 365 days past the window to avoid an infinite loop if every
+        // future day carries a 0-multiplier (no demand).
+        const maxDaysAhead = daysFromPrevious + 365;
+        let runningStock = stock;
+        for (let d = 0; d < maxDaysAhead; d++) {
+          const m = Math.max(0, multiplierAt(daysToYmd(pivotDays + d)));
+          runningStock -= dailyRate * m;
+          if (runningStock <= 0) {
+            runOutDate = daysToYmd(pivotDays + d);
+            break;
+          }
+        }
+      } else {
+        const daysToZero = Math.ceil(stock / dailyRate);
+        runOutDate = daysToYmd(pivotDays + daysToZero);
+      }
     }
     const afterReceiptStock = stockLeftAtEta + ship.quantity;
 
@@ -110,4 +148,25 @@ export function walkProjection(
   }
 
   return out;
+}
+
+/** Resolve the multiplier that applies to a given calendar day given a
+ * list of (startDate, endDate, multiplier) overrides. First match wins —
+ * callers should sort overrides by precedence if overlap is possible.
+ * Default (no match) is 1.0.
+ */
+export type VelocityOverride = {
+  startDate: string; // YYYY-MM-DD inclusive
+  endDate: string; // YYYY-MM-DD inclusive
+  multiplier: number;
+};
+
+export function resolveMultiplier(
+  ymd: string,
+  overrides: ReadonlyArray<VelocityOverride>,
+): number {
+  for (const o of overrides) {
+    if (ymd >= o.startDate && ymd <= o.endDate) return o.multiplier;
+  }
+  return 1.0;
 }

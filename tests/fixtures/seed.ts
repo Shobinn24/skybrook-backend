@@ -21,6 +21,7 @@ export async function resetDb() {
       incoming_receipts,
       incoming_shipments,
       stock_snapshots,
+      velocity_overrides,
       skus,
       raw_pulls
     CASCADE

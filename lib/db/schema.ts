@@ -98,6 +98,23 @@ export const incomingReceipts = pgTable(
   })
 );
 
+// Per-location scaling factors that adjust sales velocity inside a date
+// range — Scott 2026-05-05: "we use what we call a 'scaling factor' to
+// say essentially 'in the future period between shipment 2 and shipment 3
+// we want to scale up 20%'". Multipliers apply to all SKUs at the
+// location (a brand-level lever, not per-SKU). Resolution: for any
+// projection day, the first override whose [startDate, endDate] covers
+// that day wins; with no match, the implicit multiplier is 1.0.
+export const velocityOverrides = pgTable("velocity_overrides", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  location: locationEnum("location").notNull(),
+  startDate: date("start_date").notNull(),
+  endDate: date("end_date").notNull(),
+  multiplier: numeric("multiplier", { precision: 10, scale: 4 }).notNull(),
+  note: text("note"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const salesLineItems = pgTable(
   "sales_line_items",
   {

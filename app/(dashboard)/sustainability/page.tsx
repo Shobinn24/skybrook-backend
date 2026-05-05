@@ -5,6 +5,7 @@ import {
   type WarehouseSelection,
 } from "@/components/inventory/WarehouseToggle";
 import { SustainabilityTimelineTable } from "@/components/sustainability/SustainabilityTimelineTable";
+import { VelocityOverridesEditor } from "@/components/sustainability/VelocityOverridesEditor";
 import { trpc } from "@/lib/trpc/client";
 
 const WINDOW_OPTIONS = [7, 14, 30] as const;
@@ -130,22 +131,34 @@ export default function SustainabilityPage() {
           both stacked, US first then CN. Each table has its own sort
           state so operators can sort the two independently. */}
       {(isAll || selection === "US") && (
-        <SustainabilityTimelineTable
-          data={usQuery.data}
-          isLoading={usQuery.isLoading}
-          location="US"
-          searchQuery={searchQuery}
-          productLineFilter={productLineFilter}
-        />
+        <div className="space-y-3">
+          <VelocityOverridesEditor
+            location="US"
+            overrides={usQuery.data?.overrides ?? []}
+          />
+          <SustainabilityTimelineTable
+            data={usQuery.data}
+            isLoading={usQuery.isLoading}
+            location="US"
+            searchQuery={searchQuery}
+            productLineFilter={productLineFilter}
+          />
+        </div>
       )}
       {(isAll || selection === "CN") && (
-        <SustainabilityTimelineTable
-          data={cnQuery.data}
-          isLoading={cnQuery.isLoading}
-          location="CN"
-          searchQuery={searchQuery}
-          productLineFilter={productLineFilter}
-        />
+        <div className="space-y-3">
+          <VelocityOverridesEditor
+            location="CN"
+            overrides={cnQuery.data?.overrides ?? []}
+          />
+          <SustainabilityTimelineTable
+            data={cnQuery.data}
+            isLoading={cnQuery.isLoading}
+            location="CN"
+            searchQuery={searchQuery}
+            productLineFilter={productLineFilter}
+          />
+        </div>
       )}
     </div>
   );
