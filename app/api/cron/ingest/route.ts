@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { runAutoReceiptDetection } from "@/lib/jobs/auto-receipt";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { syncProductNames } from "@/lib/jobs/product-names";
 import { runPhase2 } from "@/lib/jobs/reconcile";
@@ -38,15 +39,27 @@ export async function POST(req: Request) {
   const batchId = await runIngest({ sources: SOURCES });
   const productNames = await syncProductNames();
   const unitCosts = await syncUnitCosts();
+  // Auto-receipt detection runs after ingest (today's stock snapshot
+  // is fresh) and before phase2 (so derived metrics see the updated
+  // receipt state, e.g. incoming projections drop the auto-marked POs).
+  const autoReceipts = await runAutoReceiptDetection({ asOfDate });
   const phase2 = await runPhase2({ asOfDate, pullBatchId: batchId });
 
-  logger.info("cron.ingest.done", { batchId, asOfDate, productNames, unitCosts, ...phase2 });
+  logger.info("cron.ingest.done", {
+    batchId,
+    asOfDate,
+    productNames,
+    unitCosts,
+    autoReceipts,
+    ...phase2,
+  });
   return NextResponse.json({
     ok: true,
     batchId,
     asOfDate,
     productNames,
     unitCosts,
+    autoReceipts,
     phase2,
   });
 }
