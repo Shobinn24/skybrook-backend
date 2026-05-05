@@ -3,6 +3,7 @@ import {
   colIndexToA1,
   extractArrivalDates,
   findIntlBoundary,
+  parseAdSpendTab,
   parseDayMonth,
   parseIncomingGrid,
   parseQty,
@@ -471,5 +472,82 @@ describe("parseIncomingGrid", () => {
     expect(skus).toContain("ev-foo-10-l");
     expect(skus).toContain("ev-foo-15x-l");
     expect(skus).not.toContain("ev-foo-5x-l");
+  });
+});
+
+describe("parseAdSpendTab", () => {
+  it("parses ISO date + plain numeric cost rows", () => {
+    const grid = [
+      ["Date", "Cost"],
+      ["2026-04-28", "2791.18"],
+      ["2026-04-29", "3122.25"],
+    ];
+    const { rows, skipped } = parseAdSpendTab("Men", grid);
+    expect(skipped).toEqual([]);
+    expect(rows).toEqual([
+      { product: "Men", spendDate: "2026-04-28", costUsd: 2791.18, sourceRowRef: "Men!A2" },
+      { product: "Men", spendDate: "2026-04-29", costUsd: 3122.25, sourceRowRef: "Men!A3" },
+    ]);
+  });
+
+  it("strips $ and commas from formatted currency", () => {
+    const grid = [
+      ["Date", "Cost"],
+      ["2026-04-28", "$2,791.18"],
+    ];
+    const { rows } = parseAdSpendTab("Men", grid);
+    expect(rows[0].costUsd).toBe(2791.18);
+  });
+
+  it("flags an unexpected header instead of silently emitting bad rows", () => {
+    const grid = [
+      ["When", "Amount"],
+      ["2026-04-28", "100"],
+    ];
+    const { rows, skipped } = parseAdSpendTab("Men", grid);
+    expect(rows).toEqual([]);
+    expect(skipped[0].rowIdx).toBe(0);
+    expect(skipped[0].reason).toContain("unexpected header");
+  });
+
+  it("skips fully-blank rows in the middle of the data", () => {
+    const grid = [
+      ["Date", "Cost"],
+      ["2026-04-28", "100"],
+      ["", ""],
+      ["2026-04-30", "150"],
+    ];
+    const { rows, skipped } = parseAdSpendTab("Men", grid);
+    expect(rows.map((r) => r.spendDate)).toEqual(["2026-04-28", "2026-04-30"]);
+    expect(skipped).toEqual([]);
+  });
+
+  it("flags a non-ISO date so a Supermetrics format change fails loud", () => {
+    const grid = [
+      ["Date", "Cost"],
+      ["4/28/2026", "100"],
+    ];
+    const { rows, skipped } = parseAdSpendTab("Men", grid);
+    expect(rows).toEqual([]);
+    expect(skipped[0].reason).toContain("unparseable date");
+  });
+
+  it("flags a non-numeric cost", () => {
+    const grid = [
+      ["Date", "Cost"],
+      ["2026-04-28", "n/a"],
+    ];
+    const { rows, skipped } = parseAdSpendTab("Men", grid);
+    expect(rows).toEqual([]);
+    expect(skipped[0].reason).toContain("unparseable cost");
+  });
+
+  it("preserves the tab name in product field (caller maps platform suffix at query time)", () => {
+    const grid = [
+      ["Date", "Cost"],
+      ["2026-04-28", "500"],
+    ];
+    const { rows } = parseAdSpendTab("Super HW AL", grid);
+    expect(rows[0].product).toBe("Super HW AL");
   });
 });

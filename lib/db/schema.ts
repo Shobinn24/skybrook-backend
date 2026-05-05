@@ -14,7 +14,13 @@ import {
 } from "drizzle-orm/pg-core";
 
 // Enums
-export const sourceEnum = pgEnum("source", ["sheets_inventory", "sheets_incoming", "shopify_us", "shopify_intl"]);
+export const sourceEnum = pgEnum("source", [
+  "sheets_inventory",
+  "sheets_incoming",
+  "sheets_ad_spend",
+  "shopify_us",
+  "shopify_intl",
+]);
 export const locationEnum = pgEnum("location", ["US", "CN"]);
 export const channelEnum = pgEnum("channel", ["shopify_us", "shopify_intl"]);
 export const orderStatusEnum = pgEnum("order_status", ["open", "fulfilled", "cancelled", "refunded"]);
@@ -96,6 +102,25 @@ export const incomingReceipts = pgTable(
       t.expectedArrival,
     ),
   })
+);
+
+// Daily Facebook ad spend per product, sourced from the Supermetrics FB
+// Google Sheet that Scott maintains (one tab per product). Powers the
+// /performance page (Scott 2026-05-05). `product` is the tab name —
+// "Men", "Shapewear", "SuperHW", "Super HW AL" — kept verbatim so the
+// page can show the same labels Scott already uses; mapping to Shopify
+// product families happens at query time. Truncate-replace per ingest
+// to match the rest of the sheet pipeline; a same-day re-pull of the
+// sheet just refreshes the table.
+export const adSpendDaily = pgTable(
+  "ad_spend_daily",
+  {
+    product: text("product").notNull(),
+    spendDate: date("spend_date").notNull(),
+    costUsd: numeric("cost_usd", { precision: 14, scale: 4 }).notNull(),
+    sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.product, t.spendDate] }) })
 );
 
 // Per-location scaling factors that adjust sales velocity inside a date

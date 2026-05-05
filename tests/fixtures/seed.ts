@@ -20,6 +20,7 @@ export async function resetDb() {
       sales_line_items,
       incoming_receipts,
       incoming_shipments,
+      ad_spend_daily,
       stock_snapshots,
       velocity_overrides,
       skus,

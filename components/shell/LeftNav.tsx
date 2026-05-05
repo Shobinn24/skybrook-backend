@@ -40,12 +40,12 @@ export function LeftNav() {
       >
         Pipeline
       </Link>
-      <span
-        className="block cursor-not-allowed rounded px-2 py-1.5 text-neutral-400"
-        title="Deferred until Meta ingestion is decided"
+      <Link
+        href="/performance"
+        className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
       >
         Performance
-      </span>
+      </Link>
     </aside>
   );
 }

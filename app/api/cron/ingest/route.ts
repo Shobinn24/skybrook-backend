@@ -3,7 +3,11 @@ import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest"
 import { syncProductNames } from "@/lib/jobs/product-names";
 import { runPhase2 } from "@/lib/jobs/reconcile";
 import { syncUnitCosts } from "@/lib/jobs/unit-costs";
-import { sheetsIncomingRunner, sheetsInventoryRunner } from "@/lib/sources/sheets";
+import {
+  sheetsAdSpendRunner,
+  sheetsIncomingRunner,
+  sheetsInventoryRunner,
+} from "@/lib/sources/sheets";
 import { shopifyIntlRunner, shopifyUsRunner } from "@/lib/sources/shopify";
 import { toEstDate } from "@/lib/tz";
 import { logger } from "@/lib/logger";
@@ -15,6 +19,7 @@ export const dynamic = "force-dynamic";
 const SOURCES: Partial<Record<SourceKey, SourceRunner>> = {
   sheets_inventory: sheetsInventoryRunner,
   sheets_incoming: sheetsIncomingRunner,
+  sheets_ad_spend: sheetsAdSpendRunner,
   shopify_us: shopifyUsRunner,
   shopify_intl: shopifyIntlRunner,
 };

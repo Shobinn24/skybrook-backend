@@ -3,7 +3,12 @@ import { db } from "@/lib/db";
 import { dataPulls, rawPulls } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
 
-export type SourceKey = "sheets_inventory" | "sheets_incoming" | "shopify_us" | "shopify_intl";
+export type SourceKey =
+  | "sheets_inventory"
+  | "sheets_incoming"
+  | "sheets_ad_spend"
+  | "shopify_us"
+  | "shopify_intl";
 
 export type SourceRunResult = {
   ok: true;

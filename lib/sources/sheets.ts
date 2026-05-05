@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { google, type sheets_v4 } from "googleapis";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { incomingShipments, skus, stockSnapshots } from "@/lib/db/schema";
+import { adSpendDaily, incomingShipments, skus, stockSnapshots } from "@/lib/db/schema";
 import { decomposePackSku } from "@/lib/domain/sku-pack";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { toEstDate } from "@/lib/tz";
@@ -621,6 +621,141 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
             status: row.status,
             sourcePullId: rawId,
             sourceRowRef: row.sourceRowRef,
+          });
+        }
+      });
+    },
+  };
+};
+
+// ============================================================================
+// Ad spend (Supermetrics FB sheet) — one tab per product, two columns
+// (Date, Cost). Refreshed by Supermetrics at 4am LA time daily; we
+// re-pull at the regular 14:00 UTC cron run.
+//
+// Tab list is intentionally hardcoded so a typo / renamed tab fails
+// loud instead of silently dropping a product. Update here when Scott
+// adds a new tab.
+// ============================================================================
+const AD_SPEND_TABS = ["Men", "Shapewear", "SuperHW", "Super HW AL"] as const;
+
+export type AdSpendRow = {
+  product: string;
+  spendDate: string; // YYYY-MM-DD
+  costUsd: number;
+  sourceRowRef: string;
+};
+
+// Parse a single (Date, Cost) tab. Skips header + blank rows. Cost
+// strings come back as either plain numbers ("2791.18") or formatted
+// currency ("$2,791.18") depending on cell formatting — strip non-
+// numeric characters before Number().
+export function parseAdSpendTab(
+  tabName: string,
+  grid: ReadonlyArray<ReadonlyArray<unknown>>,
+): { rows: AdSpendRow[]; skipped: Array<{ rowIdx: number; reason: string }> } {
+  const rows: AdSpendRow[] = [];
+  const skipped: Array<{ rowIdx: number; reason: string }> = [];
+
+  // Row 0 is header. Bail if header doesn't look right.
+  const header = (grid[0] ?? []).map((c) => String(c ?? "").trim().toLowerCase());
+  if (header[0] !== "date" || header[1] !== "cost") {
+    skipped.push({
+      rowIdx: 0,
+      reason: `unexpected header: ${JSON.stringify(grid[0] ?? [])}`,
+    });
+    return { rows, skipped };
+  }
+
+  for (let r = 1; r < grid.length; r++) {
+    const row = grid[r] ?? [];
+    const rawDate = String(row[0] ?? "").trim();
+    const rawCost = String(row[1] ?? "").trim();
+    if (!rawDate && !rawCost) continue; // blank row
+
+    // Date: accept ISO YYYY-MM-DD verbatim; if it's a different format
+    // we flag it (Supermetrics outputs ISO, but defensive in case
+    // someone changes the cell format).
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+      skipped.push({ rowIdx: r, reason: `unparseable date "${rawDate}"` });
+      continue;
+    }
+
+    const cleaned = rawCost.replace(/[$,]/g, "");
+    const cost = Number(cleaned);
+    if (!Number.isFinite(cost)) {
+      skipped.push({ rowIdx: r, reason: `unparseable cost "${rawCost}"` });
+      continue;
+    }
+
+    rows.push({
+      product: tabName,
+      spendDate: rawDate,
+      costUsd: cost,
+      sourceRowRef: `${tabName}!A${r + 1}`,
+    });
+  }
+
+  return { rows, skipped };
+}
+
+export const sheetsAdSpendRunner: SourceRunner = async (_batchId) => {
+  const sheetId = process.env.AD_SPEND_SHEET_ID;
+  if (!sheetId) throw new Error("sheets_ad_spend: missing AD_SPEND_SHEET_ID");
+
+  const sheets = buildSheetsClient();
+
+  // One batchGet round-trip across all tabs — cheaper than per-tab gets
+  // when there are 4 tabs.
+  const ranges = AD_SPEND_TABS.map((t) => `'${t}'!A1:B400`);
+  const resp = await sheets.spreadsheets.values.batchGet({
+    spreadsheetId: sheetId,
+    ranges,
+  });
+
+  const allRows: AdSpendRow[] = [];
+  const allSkipped: Array<{ tab: string; rowIdx: number; reason: string }> = [];
+
+  for (let i = 0; i < AD_SPEND_TABS.length; i++) {
+    const tab = AD_SPEND_TABS[i];
+    const grid = (resp.data.valueRanges?.[i]?.values ?? []) as unknown[][];
+    const { rows, skipped } = parseAdSpendTab(tab, grid);
+    allRows.push(...rows);
+    for (const s of skipped) allSkipped.push({ tab, ...s });
+  }
+
+  const fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify({
+        tabs: AD_SPEND_TABS,
+        rowCount: allRows.length,
+      }),
+    )
+    .digest("hex")
+    .slice(0, 16);
+
+  return {
+    ok: true,
+    rowCount: allRows.length,
+    rawPayload: {
+      tabs: AD_SPEND_TABS,
+      sample: allRows.slice(0, 5),
+      skipped: allSkipped,
+    },
+    schemaFingerprint: fingerprint,
+    async normalize(rawId) {
+      // Truncate-replace per pull. Supermetrics history is ~30-90 days
+      // depending on Scott's query config; refreshing the whole table
+      // keeps us aligned without needing change-detection.
+      await db.transaction(async (tx) => {
+        await tx.delete(adSpendDaily);
+        if (allRows.length === 0) return;
+        for (const r of allRows) {
+          await tx.insert(adSpendDaily).values({
+            product: r.product,
+            spendDate: r.spendDate,
+            costUsd: r.costUsd.toString(),
+            sourcePullId: rawId,
           });
         }
       });

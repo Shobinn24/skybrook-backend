@@ -9,6 +9,7 @@ import {
   velocityOverrides,
 } from "@/lib/db/schema";
 import { getIncomingShipmentsView, getIncomingStock } from "@/lib/queries/incoming";
+import { getPerformanceRollup } from "@/lib/queries/performance";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getOverstockRows } from "@/lib/queries/overstock";
 import {
@@ -301,4 +302,23 @@ export const inventoryRouter = router({
       await db.delete(velocityOverrides).where(eq(velocityOverrides.id, input.id));
       return { ok: true as const };
     }),
+
+  // /performance page rollup. Returns per-canonical-product revenue +
+  // spend + ROAS for the trailing rangeDays ending yesterday. Yesterday
+  // is rangeDays=1; multi-day windows go 7/14/30.
+  getPerformance: publicProcedure
+    .input(
+      z.object({
+        rangeDays: z
+          .number()
+          .int()
+          .refine((n) => [1, 7, 14, 30].includes(n), "rangeDays must be 1, 7, 14, or 30"),
+      }),
+    )
+    .query(({ input }) =>
+      getPerformanceRollup({
+        today: toEstDate(new Date()),
+        rangeDays: input.rangeDays,
+      }),
+    ),
 });
