@@ -17,6 +17,7 @@ type SortKey =
   | "futureStock"
   | "velocity"
   | "weeksOfStock"
+  | "futureWeeksOfStock"
   | "unitCost"
   | "stockValue";
 
@@ -56,7 +57,7 @@ export function InventoryTable({
   // which warehouse a row belongs to. Hidden for single-warehouse
   // views to keep the existing layout untouched.
   const showLocationColumn = warehouse === "All";
-  const [sort, setSort] = useState<SortConfig<SortKey>>({ key: "flag", direction: "asc" });
+  const [sort, setSort] = useState<SortConfig<SortKey>>({ key: "velocity", direction: "desc" });
   const [filter, setFilter] = useState("");
 
   const sorted = useMemo(() => {
@@ -86,6 +87,8 @@ export function InventoryTable({
           return (nullish(a.velocityPerDay7d) - nullish(b.velocityPerDay7d)) * dir;
         case "weeksOfStock":
           return (nullish(a.weeksOfStock) - nullish(b.weeksOfStock)) * dir;
+        case "futureWeeksOfStock":
+          return (nullish(a.futureWeeksOfStock) - nullish(b.futureWeeksOfStock)) * dir;
         case "unitCost":
           return (nullish(a.unitCostUsd) - nullish(b.unitCostUsd)) * dir;
         case "stockValue":
@@ -112,6 +115,7 @@ export function InventoryTable({
       "velocity_per_day_7d",
       "days_of_stock",
       "weeks_of_stock",
+      "future_weeks_of_stock",
       "flag",
       "run_out_date",
       "incoming_units",
@@ -133,6 +137,9 @@ export function InventoryTable({
             : "",
           r.weeksOfStock !== null && Number.isFinite(r.weeksOfStock)
             ? r.weeksOfStock.toFixed(2)
+            : "",
+          r.futureWeeksOfStock !== null && Number.isFinite(r.futureWeeksOfStock)
+            ? r.futureWeeksOfStock.toFixed(2)
             : "",
           r.flag ?? "",
           r.runOutDate ?? "",
@@ -185,7 +192,8 @@ export function InventoryTable({
               <SortableHeader label="Incoming" sortKey="incoming" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Future stock" sortKey="futureStock" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Velocity/day" sortKey="velocity" config={sort} onChange={setSort} align="right" />
-              <SortableHeader label="Weeks of stock" sortKey="weeksOfStock" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="WOS" sortKey="weeksOfStock" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="FUT WOS" sortKey="futureWeeksOfStock" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Status" sortKey="flag" config={sort} onChange={setSort} />
               <SortableHeader label="Unit cost" sortKey="unitCost" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Stock value" sortKey="stockValue" config={sort} onChange={setSort} align="right" />
@@ -239,6 +247,9 @@ export function InventoryTable({
                     weeksDisplay(r.weeksOfStock)
                   )}
                 </td>
+                <td className="px-4 py-2 text-right tabular-nums text-neutral-700">
+                  {weeksDisplay(r.futureWeeksOfStock)}
+                </td>
                 <td className="px-4 py-2">
                   <FlagPill flag={r.flag} />
                 </td>
@@ -254,7 +265,7 @@ export function InventoryTable({
             ))}
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={showLocationColumn ? 11 : 10} className="px-4 py-6 text-center text-sm text-neutral-500">
+                <td colSpan={showLocationColumn ? 12 : 11} className="px-4 py-6 text-center text-sm text-neutral-500">
                   No stock data for {warehouse} yet. Run the daily ingest to populate.
                 </td>
               </tr>

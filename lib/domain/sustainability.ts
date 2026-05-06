@@ -45,7 +45,13 @@ export function computeSustainabilityFlag(input: {
   if (input.velocityPerDay <= 0) {
     return { flag: "overstocked", reasoning, daysOfStock: Number.MAX_SAFE_INTEGER, runOutDate: null };
   }
-  if (dos > thresholds.overstockDays) {
+  // Overstocked is gated on FUT WOS (future weeks of stock) per Scott's 2026-05-06
+  // ask: includes still-incoming POs so a SKU isn't ruled overstocked by current
+  // stock alone when a delivery is about to land, and isn't ruled out when current
+  // stock looks healthy but a huge PO is en route.
+  const futureStock = input.onHand + totalIncoming;
+  const futureWeeks = futureStock / input.velocityPerDay / 7;
+  if (futureWeeks > thresholds.overstockFutureWeeks) {
     return { flag: "overstocked", reasoning, daysOfStock: dos, runOutDate: null };
   }
 

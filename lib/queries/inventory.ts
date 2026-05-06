@@ -62,6 +62,8 @@ export type InventoryRow = {
    * Receipts-confirmed POs are excluded from incomingUnits so they don't
    * double-count against current stock. */
   futureStock: number;
+  /** futureStock / (velocity * 7). null when velocity is unknown or zero. */
+  futureWeeksOfStock: number | null;
   trace: InventoryRowTrace;
 };
 
@@ -278,6 +280,12 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
     };
 
     const futureStock = s.onHand + incomingUnits;
+    const futureWeeksOfStock =
+      velocityPerDay !== null && velocityPerDay > 0
+        ? futureStock / velocityPerDay / 7
+        : velocityPerDay !== null && velocityPerDay === 0 && futureStock > 0
+          ? Infinity
+          : null;
     return {
       sku: s.sku,
       location: s.location,
@@ -299,6 +307,7 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
       snapshotDate: s.snapshotDate,
       incomingUnits,
       futureStock,
+      futureWeeksOfStock,
       trace,
     };
   });

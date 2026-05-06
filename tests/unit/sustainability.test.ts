@@ -4,12 +4,32 @@ import { computeSustainabilityFlag, type IncomingPO } from "@/lib/domain/sustain
 const po = (arrivalDate: string, quantity: number): IncomingPO => ({ arrivalDate, quantity });
 
 describe("computeSustainabilityFlag — projection-based", () => {
-  it("overstocked when DOS > 90 with no incoming", () => {
+  it("overstocked when FUT WOS > 40 with no incoming", () => {
     const r = computeSustainabilityFlag({
       onHand: 1000, velocityPerDay: 1, incoming: [], today: "2026-04-23",
     });
-    // DOS = 1000 > 90
+    // futureStock = 1000, futureWeeks = 1000 / 1 / 7 ≈ 142.9 > 40
     expect(r.flag).toBe("overstocked");
+  });
+
+  it("overstocked when on-hand alone is fine but a huge PO pushes FUT WOS over 40", () => {
+    // 50 onHand at 1/day = 50 days = ~7 weeks (healthy by current stock).
+    // PO of 2000 lands tomorrow → futureStock = 2050, futureWeeks ≈ 293 → overstocked.
+    const r = computeSustainabilityFlag({
+      onHand: 50, velocityPerDay: 1,
+      incoming: [po("2026-04-24", 2000)],
+      today: "2026-04-23",
+    });
+    expect(r.flag).toBe("overstocked");
+  });
+
+  it("NOT overstocked when on-hand DOS would have triggered the old 90-day rule but FUT WOS ≤ 40", () => {
+    // 200 onHand at 1/day = 200 days. Old rule (DOS > 90) → overstocked.
+    // New rule: futureStock=200, futureWeeks ≈ 28.6 → NOT overstocked, falls through to projection.
+    const r = computeSustainabilityFlag({
+      onHand: 200, velocityPerDay: 1, incoming: [], today: "2026-04-23",
+    });
+    expect(r.flag).not.toBe("overstocked");
   });
 
   it("overstocked when velocity is 0 and stock is positive", () => {

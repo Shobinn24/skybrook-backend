@@ -14,6 +14,7 @@ type SortKey =
   | "futureStock"
   | "velocity"
   | "weeksOfStock"
+  | "futureWeeksOfStock"
   | "stockValue"
   | "skuCount";
 
@@ -35,6 +36,7 @@ type Group = {
   stockValueUsd: number;
   velocityPerDay7d: number; // sum across SKUs
   weeksOfStock: number | null; // computed: onHand / (sum velocity × 7); null if velocity = 0
+  futureWeeksOfStock: number | null; // computed: futureStock / (sum velocity × 7); null if velocity = 0
   worstFlag: "healthy" | "watch" | "at_risk" | "overstocked" | null;
   earliestRunOutDate: string | null;
 };
@@ -60,7 +62,7 @@ export function ProductRollupTable({
   warehouse: WarehouseSelection;
   rows: InventoryRow[];
 }) {
-  const [sort, setSort] = useState<SortConfig<SortKey>>({ key: "flag", direction: "asc" });
+  const [sort, setSort] = useState<SortConfig<SortKey>>({ key: "velocity", direction: "desc" });
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -114,6 +116,7 @@ export function ProductRollupTable({
         stockValueUsd: r.stockValueUsd,
         velocityPerDay7d: r.velocityPerDay7d ?? 0,
         weeksOfStock: null, // computed below
+        futureWeeksOfStock: null, // computed below
         worstFlag: r.flag,
         earliestRunOutDate: r.runOutDate,
       });
@@ -124,6 +127,9 @@ export function ProductRollupTable({
     for (const g of byProduct.values()) {
       g.weeksOfStock = g.velocityPerDay7d > 0
         ? g.onHand / g.velocityPerDay7d / 7
+        : null;
+      g.futureWeeksOfStock = g.velocityPerDay7d > 0
+        ? g.futureStock / g.velocityPerDay7d / 7
         : null;
       // Stable SKU order in the expanded view — alphabetical so size
       // lists at least cluster by family.
@@ -149,6 +155,8 @@ export function ProductRollupTable({
           return (a.velocityPerDay7d - b.velocityPerDay7d) * dir;
         case "weeksOfStock":
           return (nullish(a.weeksOfStock) - nullish(b.weeksOfStock)) * dir;
+        case "futureWeeksOfStock":
+          return (nullish(a.futureWeeksOfStock) - nullish(b.futureWeeksOfStock)) * dir;
         case "stockValue":
           return (a.stockValueUsd - b.stockValueUsd) * dir;
         case "flag":
@@ -205,7 +213,8 @@ export function ProductRollupTable({
               <SortableHeader label="Incoming" sortKey="incoming" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Future stock" sortKey="futureStock" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Velocity/day" sortKey="velocity" config={sort} onChange={setSort} align="right" />
-              <SortableHeader label="Weeks of stock" sortKey="weeksOfStock" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="WOS" sortKey="weeksOfStock" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="FUT WOS" sortKey="futureWeeksOfStock" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Status" sortKey="flag" config={sort} onChange={setSort} />
               <SortableHeader label="Stock value" sortKey="stockValue" config={sort} onChange={setSort} align="right" />
             </tr>
@@ -245,6 +254,9 @@ export function ProductRollupTable({
                     </td>
                     <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums">
                       {weeksDisplay(g.weeksOfStock)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-neutral-700">
+                      {weeksDisplay(g.futureWeeksOfStock)}
                     </td>
                     <td className="px-4 py-2">
                       <FlagPill flag={g.worstFlag} />
@@ -287,6 +299,9 @@ export function ProductRollupTable({
                         <td className="whitespace-nowrap px-4 py-1.5 text-right tabular-nums text-neutral-500">
                           {weeksDisplay(s.weeksOfStock)}
                         </td>
+                        <td className="whitespace-nowrap px-4 py-1.5 text-right tabular-nums text-neutral-500">
+                          {weeksDisplay(s.futureWeeksOfStock)}
+                        </td>
                         <td className="px-4 py-1.5">
                           <FlagPill flag={s.flag} />
                         </td>
@@ -300,7 +315,7 @@ export function ProductRollupTable({
             })}
             {groups.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-4 py-6 text-center text-sm text-neutral-500">
+                <td colSpan={11} className="px-4 py-6 text-center text-sm text-neutral-500">
                   No stock data for {warehouse} yet. Run the daily ingest to populate.
                 </td>
               </tr>
