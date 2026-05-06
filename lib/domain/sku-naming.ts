@@ -39,11 +39,21 @@ const FAMILY_LABELS: Record<string, string> = {
 // Multi-segment family prefixes — checked before single-segment lookup.
 // Example: ev-sl-bik-pink-5x-l → family = "sl-bik".
 const MULTI_FAMILY_LABELS: Record<string, string> = {
-  "new-og": "New OG",
-  "new-9055": "New Style 9055",
-  "sl-bik": "Super Light Bikini",
-  "sl-hw": "Super Light HW",
-  "bp-9055": "BP Style 9055",
+  // Scott 2026-05-06: SL = Seamless. Bikini and High Waisted are 2
+  // separate Seamless products.
+  "sl-bik": "Seamless Bikini",
+  "sl-hw": "Seamless High Waisted",
+};
+
+// Aliases that route a multi-segment prefix to a single-segment family
+// rather than creating a new parent product. Scott 2026-05-06:
+//  - "new-og" / "new-9055" → color variants of OG / Style 9055
+//  - "bp-9055" → Beige Pink colorway of Style 9055
+// Treat them as if they were ev-og-5x-* / ev-9055-5x-* respectively.
+const FAMILY_ALIAS: Record<string, string> = {
+  "new-og": "og",
+  "new-9055": "9055",
+  "bp-9055": "9055",
 };
 
 // Colorways are parsed (so they don't get mistaken for size/pack/hf
@@ -82,9 +92,6 @@ const IMPLICIT_5PACK_FAMILIES = new Set([
   "jac",
   "sl-bik",
   "sl-hw",
-  "new-og",
-  "new-9055",
-  "bp-9055",
 ]);
 
 export function deriveProductName(sku: string): string | null {
@@ -92,12 +99,17 @@ export function deriveProductName(sku: string): string | null {
   const parts = lower.split("-");
   if (parts[0] !== "ev" || parts.length < 3) return null;
 
-  // Try multi-segment family first (sl-bik, new-og, etc.) before
-  // falling back to single-segment family.
+  // Resolve family. Multi-segment prefixes (sl-bik, new-og, bp-9055,
+  // etc.) are checked first. FAMILY_ALIAS rewrites colorway-only
+  // multi-segments (new-*, bp-*) to their parent single-segment family
+  // so they collapse under the parent product.
   let family: string;
   let middleStart: number;
   const twoSeg = parts.length >= 3 ? `${parts[1]}-${parts[2]}` : "";
-  if (MULTI_FAMILY_LABELS[twoSeg]) {
+  if (FAMILY_ALIAS[twoSeg]) {
+    family = FAMILY_ALIAS[twoSeg];
+    middleStart = 3;
+  } else if (MULTI_FAMILY_LABELS[twoSeg]) {
     family = twoSeg;
     middleStart = 3;
   } else {

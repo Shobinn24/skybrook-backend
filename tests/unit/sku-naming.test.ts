@@ -83,14 +83,19 @@ describe("deriveProductName — color-consolidated rollup names", () => {
     expect(deriveProductName("ev-french-hf-5x-l")).toBe("French HF");
   });
 
-  it("handles multi-segment families (best-guess names pending Scott confirmation)", () => {
-    expect(deriveProductName("ev-new-og-5x-l")).toBe("New OG");
-    expect(deriveProductName("ev-new-9055-5x-l")).toBe("New Style 9055");
-    expect(deriveProductName("ev-sl-bik-pink-5x-l")).toBe("Super Light Bikini");
-    expect(deriveProductName("ev-sl-bik-beige-5x-l")).toBe("Super Light Bikini");
-    expect(deriveProductName("ev-sl-hw-pink-5x-l")).toBe("Super Light HW");
-    expect(deriveProductName("ev-sl-hw-beige-5x-l")).toBe("Super Light HW");
-    expect(deriveProductName("ev-bp-9055-5x-l")).toBe("BP Style 9055");
+  it("aliases new-* and bp-* into the parent product (Scott 2026-05-06)", () => {
+    // new-og + new-9055 = newer colorways of OG / Style 9055
+    expect(deriveProductName("ev-new-og-5x-l")).toBe("OG 5-Pack");
+    expect(deriveProductName("ev-new-9055-5x-l")).toBe("Style 9055");
+    // bp-9055 = Beige Pink colorway of 9055
+    expect(deriveProductName("ev-bp-9055-5x-l")).toBe("Style 9055");
+  });
+
+  it("Seamless families: sl-bik and sl-hw are 2 separate products", () => {
+    expect(deriveProductName("ev-sl-bik-pink-5x-l")).toBe("Seamless Bikini");
+    expect(deriveProductName("ev-sl-bik-beige-5x-l")).toBe("Seamless Bikini");
+    expect(deriveProductName("ev-sl-hw-pink-5x-l")).toBe("Seamless High Waisted");
+    expect(deriveProductName("ev-sl-hw-beige-5x-l")).toBe("Seamless High Waisted");
   });
 
   it("handles jac (Jacquard) and mlb single-segment families", () => {
