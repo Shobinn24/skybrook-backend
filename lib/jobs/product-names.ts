@@ -120,21 +120,22 @@ export async function syncProductNames(opts?: {
   let unchanged = 0;
 
   for (const row of all) {
-    // Sheet wins over everything else.
     const fromSheetName = sheetMap.get(row.sku);
-    // Pattern fallback only when current name is the SKU itself (never
-    // overwrite a sheet-supplied or human-edited name).
-    const isDefaultName = row.productName === row.sku;
-    const patternName = isDefaultName ? deriveProductName(row.sku) : null;
+    const patternName = deriveProductName(row.sku);
 
+    // Scott 2026-05-06: parser is canonical for known families because
+    // it produces color-consolidated rollup names ("Boyshort", not
+    // "Boyshort Beige"). Sheet is the override for unknown families
+    // (jac/mlb/new/etc.) and any human-supplied label the parser
+    // can't reproduce.
     let target: string | null = null;
     let bucket: "fromSheet" | "fromPattern" | null = null;
-    if (fromSheetName) {
-      target = fromSheetName;
-      bucket = "fromSheet";
-    } else if (patternName) {
+    if (patternName) {
       target = patternName;
       bucket = "fromPattern";
+    } else if (fromSheetName) {
+      target = fromSheetName;
+      bucket = "fromSheet";
     }
 
     if (!target || target === row.productName) {

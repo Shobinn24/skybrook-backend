@@ -5,23 +5,18 @@
 //   ev-{family}-{...modifiers...}-{size}
 //
 // Where modifiers can include any of: pack-size token (1x/5x/10x/15x),
-// color (beige/black/fc), and HF (high-flow). Order varies — bshort
-// puts color before HF before pack, og/hw put pack before color.
+// color (beige/black/pink/lilac/fc), and HF (high-flow).
 //
-// Known families and their target shapes:
-//   ev-9055-5x-*           → "Style 9055"   (canonical Boyshort 5-pack)
-//   ev-9055-{10x|15x}-*    → "Style 9055 10-Pack" / "Style 9055 15-Pack"
-//   ev-bshort-...          → "Boyshort [Color] [HF] [pack]"  (5-pack is implicit)
-//   ev-og-1x-{color}-*     → "OG {Color} 1-Pack"
-//   ev-og-{5x|10x|...}-*   → "OG [Color] {Pack}"
-//   ev-hw-1x-{color}-*     → "HW {Color} 1-Pack"
-//   ev-hw-{5x|10x|...}-*   → "HW [Color] {Pack}"
-//   ev-mixed-{size}        → "OG 5-Pack"  (no-color default OG 5-pack;
-//                            Scott 2026-05-05: "should be mapped to
-//                            product OG")
+// Scott 2026-05-06 round-2: combine color variants into one product at
+// the rollup level. Color, FC, and other colorway markers are parsed
+// (so they don't break size/pack/hf detection) but intentionally
+// dropped from the productName output. Pack and HF stay distinguishing
+// — those represent separate products. The SKU code itself still
+// surfaces variant detail in the per-SKU expanded view.
 //
-// Returns null when the SKU doesn't match a known family — caller should
-// keep whatever name was already set (often the SKU itself as fallback).
+// Returns null when the SKU doesn't match a known family — caller
+// should keep whatever name was already set (often the SKU itself as
+// fallback).
 
 const FAMILY_LABELS: Record<string, string> = {
   "9055": "Style 9055",
@@ -32,13 +27,35 @@ const FAMILY_LABELS: Record<string, string> = {
   "suphw": "Super High-Waist",
   "mens": "Mens",
   "cb": "CB",
+  "hip": "Hipster",
+  "bik": "Bikini",
+  "french": "French",
+  // Best-guess labels for new families seen in production stock data
+  // 2026-05-06. Pending Scott confirmation on exact wording.
+  "jac": "Jacquard",
+  "mlb": "MLB",
 };
 
-const COLOR_LABELS: Record<string, string> = {
-  beige: "Beige",
-  black: "Black",
-  fc: "FC",
+// Multi-segment family prefixes — checked before single-segment lookup.
+// Example: ev-sl-bik-pink-5x-l → family = "sl-bik".
+const MULTI_FAMILY_LABELS: Record<string, string> = {
+  "new-og": "New OG",
+  "new-9055": "New Style 9055",
+  "sl-bik": "Super Light Bikini",
+  "sl-hw": "Super Light HW",
+  "bp-9055": "BP Style 9055",
 };
+
+// Colorways are parsed (so they don't get mistaken for size/pack/hf
+// tokens) but intentionally dropped from productName. The SKU code
+// itself still distinguishes variants in the expanded view.
+const COLOR_TOKENS = new Set([
+  "beige",
+  "black",
+  "pink",
+  "lilac",
+  "fc", // FC = 5-color colorway per Scott 2026-05-06
+]);
 
 const PACK_LABELS: Record<string, string> = {
   "1x": "1-Pack",
@@ -51,94 +68,73 @@ const PACK_LABELS: Record<string, string> = {
   "15x": "15-Pack",
 };
 
+// For families with only one pack tier in the catalog, the pack label
+// is implicit and dropped from productName to avoid noise.
+// Multi-pack families (og, hw, mens) keep the pack label so 1-pack
+// and 5-pack remain distinct products per Scott 2026-05-06.
+const IMPLICIT_5PACK_FAMILIES = new Set([
+  "9055",
+  "bshort",
+  "sw",
+  "hip",
+  "bik",
+  "french",
+  "jac",
+  "sl-bik",
+  "sl-hw",
+  "new-og",
+  "new-9055",
+  "bp-9055",
+]);
+
 export function deriveProductName(sku: string): string | null {
   const lower = sku.toLowerCase();
   const parts = lower.split("-");
   if (parts[0] !== "ev" || parts.length < 3) return null;
 
-  const family = parts[1];
-  // Last segment is size (xxs/xs/s/m/l/xl/xxl/2xl/3xl/4xl/5xl). Middle is modifiers.
-  const middle = parts.slice(2, -1);
+  // Try multi-segment family first (sl-bik, new-og, etc.) before
+  // falling back to single-segment family.
+  let family: string;
+  let middleStart: number;
+  const twoSeg = parts.length >= 3 ? `${parts[1]}-${parts[2]}` : "";
+  if (MULTI_FAMILY_LABELS[twoSeg]) {
+    family = twoSeg;
+    middleStart = 3;
+  } else {
+    family = parts[1];
+    middleStart = 2;
+  }
 
-  let color: string | null = null;
+  // Need at least one segment after the family for the size.
+  if (parts.length < middleStart + 1) return null;
+
+  const middle = parts.slice(middleStart, -1);
+
   let pack: string | null = null;
   let hf = false;
   for (const t of middle) {
-    if (COLOR_LABELS[t] && !color) color = COLOR_LABELS[t];
-    else if (PACK_LABELS[t] && !pack) pack = PACK_LABELS[t];
+    if (PACK_LABELS[t] && !pack) pack = PACK_LABELS[t];
     else if (t === "hf") hf = true;
+    // Color/FC tokens parsed but ignored — they're SKU-level variants,
+    // not separate products. Other unknown tokens (e.g. trailing
+    // colorway not yet in COLOR_TOKENS) are silently skipped so a new
+    // colorway doesn't break out into its own product row.
   }
 
-  switch (family) {
-    case "9055": {
-      // Default 5-pack: just "Style 9055"; non-default packs append the pack label.
-      if (pack === "5-Pack" && !color && !hf) return "Style 9055";
-      const out = ["Style 9055"];
-      if (color) out.push(color);
-      if (pack && pack !== "5-Pack") out.push(pack);
-      if (hf) out.push("HF");
-      return out.join(" ");
-    }
-    case "bshort": {
-      // 5-pack is implicit for bshort; non-5-pack appends pack label.
-      const out = ["Boyshort"];
-      if (color) out.push(color);
-      if (hf) out.push("HF");
-      if (pack && pack !== "5-Pack") out.push(pack);
-      return out.join(" ");
-    }
-    case "og":
-    case "hw": {
-      const out = [FAMILY_LABELS[family]];
-      if (color) out.push(color);
-      if (pack) out.push(pack);
-      if (hf) out.push("HF");
-      return out.join(" ");
-    }
-    case "sw": {
-      // Shapewear — 5-pack is implicit (same convention as bshort).
-      const out = ["Shapewear"];
-      if (color) out.push(color);
-      if (hf) out.push("HF");
-      if (pack && pack !== "5-Pack") out.push(pack);
-      return out.join(" ");
-    }
-    case "suphw": {
-      // Super High-Waist — pack is always shown when present (no implicit
-      // default observed in the velocity sheet yet).
-      const out = ["Super High-Waist"];
-      if (color) out.push(color);
-      if (pack) out.push(pack);
-      if (hf) out.push("HF");
-      return out.join(" ");
-    }
-    case "mens": {
-      // Mens — 3-pack is canonical; 6/9-packs are multiples per Scott
-      // (4/29 WhatsApp), so show the pack label always.
-      const out = ["Mens"];
-      if (color) out.push(color);
-      if (pack) out.push(pack);
-      if (hf) out.push("HF");
-      return out.join(" ");
-    }
-    case "cb": {
-      // CB family — exact meaning unconfirmed (Scott noted ev-cb-3x-s
-      // exists). Render as "CB [color] [pack] [hf]" until naming is locked.
-      const out = ["CB"];
-      if (color) out.push(color);
-      if (pack) out.push(pack);
-      if (hf) out.push("HF");
-      return out.join(" ");
-    }
-    case "mixed": {
-      // ev-mixed-{size} is Scott's no-color OG 5-pack — the inventory
-      // sheet uses these as the default OG SKUs (no colorway suffix).
-      // Map to "OG 5-Pack" so the rollup groups them with the other
-      // OG 5-Pack colorways (Beige, Black, etc.) instead of leaving
-      // each size as its own product row.
-      return "OG 5-Pack";
-    }
-    default:
-      return null;
-  }
+  // ev-mixed is a special case — Scott's no-color default OG 5-pack.
+  // Bucket under "OG 5-Pack" so /inventory groups it with the other
+  // ev-og-5x-{color}-{size} variants.
+  if (family === "mixed") return "OG 5-Pack";
+
+  const baseLabel = MULTI_FAMILY_LABELS[family] ?? FAMILY_LABELS[family];
+  if (!baseLabel) return null;
+
+  const out = [baseLabel];
+  // Drop pack label when it's the family's implicit default (5-pack
+  // for bshort/9055/sw/hip/bik/etc). Keep pack label when the family
+  // ships in multiple pack tiers (og/hw/mens/cb/suphw).
+  const dropPack = pack === "5-Pack" && IMPLICIT_5PACK_FAMILIES.has(family);
+  if (pack && !dropPack) out.push(pack);
+  if (hf) out.push("HF");
+  return out.join(" ");
 }

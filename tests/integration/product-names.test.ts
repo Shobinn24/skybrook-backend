@@ -39,19 +39,23 @@ describe("syncProductNames", () => {
     await resetDb();
   });
 
-  it("upserts sheet-supplied names over the default SKU-as-name", async () => {
+  it("parser-derived names win for known families (color-consolidated rollup)", async () => {
+    // Scott 2026-05-06: parser is canonical because it strips color so
+    // colorways merge under one product. Sheet labels for known families
+    // (which may include colors) are overridden by the parser.
     await seedDefaultNames([{ sku: "ev-9055-5x-l" }, { sku: "ev-og-1x-beige-m" }]);
     const result = await syncProductNames({
       mappingProvider: async () =>
         new Map<string, string>([
           ["ev-9055-5x-l", "Style 9055"],
-          ["ev-og-1x-beige-m", "OG Beige 1-Pack"],
+          ["ev-og-1x-beige-m", "OG Beige 1-Pack"], // sheet has color; parser drops it
         ]),
     });
-    expect(result.fromSheet).toBe(2);
+    expect(result.fromPattern).toBe(2);
+    expect(result.fromSheet).toBe(0);
     const out = await db.select().from(skus);
     expect(out.find((r) => r.sku === "ev-9055-5x-l")?.productName).toBe("Style 9055");
-    expect(out.find((r) => r.sku === "ev-og-1x-beige-m")?.productName).toBe("OG Beige 1-Pack");
+    expect(out.find((r) => r.sku === "ev-og-1x-beige-m")?.productName).toBe("OG 1-Pack");
   });
 
   it("falls back to the SKU pattern parser for SKUs the sheet doesn't cover", async () => {
@@ -62,37 +66,43 @@ describe("syncProductNames", () => {
     expect(result.fromPattern).toBe(2);
     expect(result.fromSheet).toBe(0);
     const out = await db.select().from(skus);
+    // Color-consolidated rollup names per Scott 2026-05-06: color is
+    // dropped from productName so colorways merge into one product.
     expect(out.find((r) => r.sku === "ev-bshort-beige-HF-5x-xxl")?.productName).toBe(
-      "Boyshort Beige HF"
+      "Boyshort HF"
     );
     expect(out.find((r) => r.sku === "ev-hw-1x-black-3xl")?.productName).toBe(
-      "HW Black 1-Pack"
+      "HW 1-Pack"
     );
   });
 
-  it("does not overwrite a non-default productName via the pattern parser", async () => {
-    // Scott (or a previous sheet sync) already set this — don't clobber.
+  it("pattern parser overwrites stale productName for known families", async () => {
+    // Under the parser-canonical model the parser-derived name wins,
+    // so a stale color-specific label like "Boyshort Beige" gets
+    // normalized to "Boyshort" on the next sync.
     await seedDefaultNames([
-      { sku: "ev-9055-5x-l", productName: "Custom Override" },
+      { sku: "ev-bshort-beige-5x-l", productName: "Boyshort Beige" },
     ]);
     const result = await syncProductNames({
       mappingProvider: async () => new Map<string, string>(),
     });
-    expect(result.fromPattern).toBe(0);
-    expect(result.unchanged).toBe(1);
+    expect(result.fromPattern).toBe(1);
     const out = await db.select().from(skus);
-    expect(out.find((r) => r.sku === "ev-9055-5x-l")?.productName).toBe("Custom Override");
+    expect(out.find((r) => r.sku === "ev-bshort-beige-5x-l")?.productName).toBe("Boyshort");
   });
 
-  it("sheet mapping always wins, even over a non-default productName", async () => {
-    // Sheet is canonical — if Scott's sheet says X, prefer X over a stale custom value.
-    await seedDefaultNames([{ sku: "ev-9055-5x-l", productName: "Stale Manual Edit" }]);
+  it("sheet mapping is the authority for unknown families", async () => {
+    // Parser returns null for unrecognized families; sheet fills the gap.
+    await seedDefaultNames([{ sku: "ev-customfamily-5x-l" }]);
     const result = await syncProductNames({
-      mappingProvider: async () => new Map([["ev-9055-5x-l", "Style 9055"]]),
+      mappingProvider: async () =>
+        new Map([["ev-customfamily-5x-l", "Custom Brand Item"]]),
     });
     expect(result.fromSheet).toBe(1);
     const out = await db.select().from(skus);
-    expect(out.find((r) => r.sku === "ev-9055-5x-l")?.productName).toBe("Style 9055");
+    expect(out.find((r) => r.sku === "ev-customfamily-5x-l")?.productName).toBe(
+      "Custom Brand Item",
+    );
   });
 
   it("unmapped + unparseable SKUs are left alone", async () => {
