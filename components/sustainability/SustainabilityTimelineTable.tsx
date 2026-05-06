@@ -64,8 +64,8 @@ export function SustainabilityTimelineTable({
   productLineFilter?: string;
 }) {
   const [sort, setSort] = useState<SortConfig<SustainSortKey>>({
-    key: "sku",
-    direction: "asc",
+    key: "sales",
+    direction: "desc",
   });
 
   const rawRows = data?.rows ?? [];

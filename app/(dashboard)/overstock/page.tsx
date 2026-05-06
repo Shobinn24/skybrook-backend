@@ -43,7 +43,7 @@ export default function OverstockPage() {
   const [search, setSearch] = useState("");
   const [location, setLocation] = useState<LocationFilter>("all");
   const [sort, setSort] = useState<SortConfig<SortKey>>({
-    key: "stockValue",
+    key: "velocity",
     direction: "desc",
   });
 
