@@ -215,6 +215,7 @@ export function ProductRollupTable({
               <SortableHeader label="Velocity/day" sortKey="velocity" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="WOS" sortKey="weeksOfStock" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="FUT WOS" sortKey="futureWeeksOfStock" config={sort} onChange={setSort} align="right" />
+              <th className="px-4 py-2 text-left text-xs uppercase tracking-wide text-neutral-600">Runs out</th>
               <SortableHeader label="Status" sortKey="flag" config={sort} onChange={setSort} />
               <SortableHeader label="Stock value" sortKey="stockValue" config={sort} onChange={setSort} align="right" />
             </tr>
@@ -257,6 +258,9 @@ export function ProductRollupTable({
                     </td>
                     <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-neutral-700">
                       {weeksDisplay(g.futureWeeksOfStock)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-2 text-xs text-neutral-600">
+                      {g.earliestRunOutDate ?? "—"}
                     </td>
                     <td className="px-4 py-2">
                       <FlagPill flag={g.worstFlag} />
@@ -302,6 +306,9 @@ export function ProductRollupTable({
                         <td className="whitespace-nowrap px-4 py-1.5 text-right tabular-nums text-neutral-500">
                           {weeksDisplay(s.futureWeeksOfStock)}
                         </td>
+                        <td className="whitespace-nowrap px-4 py-1.5 text-xs text-neutral-500">
+                          {s.runOutDate ?? "—"}
+                        </td>
                         <td className="px-4 py-1.5">
                           <FlagPill flag={s.flag} />
                         </td>
@@ -315,7 +322,7 @@ export function ProductRollupTable({
             })}
             {groups.length === 0 && (
               <tr>
-                <td colSpan={11} className="px-4 py-6 text-center text-sm text-neutral-500">
+                <td colSpan={12} className="px-4 py-6 text-center text-sm text-neutral-500">
                   No stock data for {warehouse} yet. Run the daily ingest to populate.
                 </td>
               </tr>

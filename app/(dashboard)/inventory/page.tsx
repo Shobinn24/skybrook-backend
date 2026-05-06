@@ -9,6 +9,10 @@ import {
 } from "@/components/inventory/WarehouseToggle";
 import { trpc } from "@/lib/trpc/client";
 import type { NumberTrace } from "@/lib/queries/inventory";
+import {
+  applyAtRiskWindow,
+  AT_RISK_HORIZON_DAYS,
+} from "@/lib/domain/at-risk-window";
 
 function moneyCompact(n: number): string {
   if (n === 0) return "$0";
@@ -54,8 +58,14 @@ export default function InventoryPage() {
   );
 
   const rows = useMemo(() => {
-    if (isAll) return [...(usQuery.data ?? []), ...(cnQuery.data ?? [])];
-    return (selection === "US" ? usQuery.data : cnQuery.data) ?? [];
+    const raw = isAll
+      ? [...(usQuery.data ?? []), ...(cnQuery.data ?? [])]
+      : (selection === "US" ? usQuery.data : cnQuery.data) ?? [];
+    // Scott 2026-05-06: at-risk on /inventory means "running out within
+    // 45 days" per the sustainability projection — different rule than
+    // the underlying flag (which is preserved on other tabs).
+    const today = new Date().toISOString().slice(0, 10);
+    return applyAtRiskWindow(raw, today);
   }, [isAll, selection, usQuery.data, cnQuery.data]);
 
   const isLoading = isAll
@@ -111,18 +121,22 @@ export default function InventoryPage() {
   };
   const atRiskTrace: NumberTrace = {
     label: `SKUs at risk — ${scopeRefLabel}`,
-    formula: "count of (sku, location) rows where sustainability flag = 'at_risk'",
+    formula: `count of (sku, location) rows projected to run out within the next ${AT_RISK_HORIZON_DAYS} days`,
     inputs: [
       { label: "Rows scanned", value: kpis.skuCount.toLocaleString() },
       { label: "At risk", value: kpis.atRisk.toLocaleString() },
-      { label: "Watch", value: kpis.watch.toLocaleString() },
+      { label: "Watch (out beyond 45d)", value: kpis.watch.toLocaleString() },
+      { label: "Horizon", value: `${AT_RISK_HORIZON_DAYS} days` },
     ],
     sources: [
-      { label: "Source", ref: "sustainability_flags (latest per sku, location)" },
+      { label: "Source", ref: "sustainability_flags + runOutDate (latest per sku, location)" },
       {
-        label: "Threshold",
-        ref: "at_risk = projected days of stock < 7d (per spec §4.3)",
+        label: "Rule",
+        ref:
+          "at_risk = projected runOutDate ≤ today + 45d, OR daysOfStock ≤ 45 when " +
+          "no projection date exists. Overstocked rows are excluded.",
       },
+      { label: "Scott", ref: "2026-05-06 round 2: 'at risk based off the sustainability report ... in the next 45 days'" },
     ],
   };
   const overstockedTrace: NumberTrace = {
@@ -182,10 +196,10 @@ export default function InventoryPage() {
           trace={stockValueTrace}
         />
         <KpiCard
-          label="SKUs at risk"
+          label={`SKUs at risk (${AT_RISK_HORIZON_DAYS}d)`}
           value={kpis.atRisk}
           tone={kpis.atRisk > 0 ? "danger" : "neutral"}
-          hint={kpis.watch > 0 ? `+${kpis.watch} on watch` : undefined}
+          hint={kpis.watch > 0 ? `+${kpis.watch} runs out beyond ${AT_RISK_HORIZON_DAYS}d` : undefined}
           trace={atRiskTrace}
         />
         <KpiCard
