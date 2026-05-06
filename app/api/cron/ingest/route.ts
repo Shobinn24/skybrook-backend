@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runAutoReceiptDetection } from "@/lib/jobs/auto-receipt";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
+import { runLaunchAutoPopulate } from "@/lib/jobs/launches";
 import { syncProductNames } from "@/lib/jobs/product-names";
 import { runPhase2 } from "@/lib/jobs/reconcile";
 import { syncUnitCosts } from "@/lib/jobs/unit-costs";
@@ -43,6 +44,10 @@ export async function POST(req: Request) {
   // is fresh) and before phase2 (so derived metrics see the updated
   // receipt state, e.g. incoming projections drop the auto-marked POs).
   const autoReceipts = await runAutoReceiptDetection({ asOfDate });
+  // Auto-populate launches runs after syncProductNames (so productNames
+  // are current) but is independent of phase2 — failures shouldn't
+  // block downstream metrics.
+  const autoLaunches = await runLaunchAutoPopulate();
   const phase2 = await runPhase2({ asOfDate, pullBatchId: batchId });
 
   logger.info("cron.ingest.done", {
@@ -51,6 +56,7 @@ export async function POST(req: Request) {
     productNames,
     unitCosts,
     autoReceipts,
+    autoLaunches,
     ...phase2,
   });
   return NextResponse.json({
@@ -60,6 +66,7 @@ export async function POST(req: Request) {
     productNames,
     unitCosts,
     autoReceipts,
+    autoLaunches,
     phase2,
   });
 }
