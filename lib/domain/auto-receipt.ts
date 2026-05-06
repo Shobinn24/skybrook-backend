@@ -86,7 +86,11 @@ export function detectAutoReceipts(input: {
   }
 
   const out: AutoReceipt[] = [];
+  const matchedShipmentKeys = new Set<string>();
+  const shipmentKey = (po: Pick<OverduePO, "shipmentName" | "destination" | "expectedArrival">) =>
+    `${po.shipmentName}|${po.destination}|${po.expectedArrival}`;
 
+  // PASS 1 — per-SKU exact matching (the original detector).
   for (const today of input.todaySnapshots) {
     const k = `${today.sku}|${today.location}`;
     const yesterdayHand = yesterdayByKey.get(k);
@@ -108,6 +112,7 @@ export function detectAutoReceipts(input: {
     if (inBand.length !== 1) continue; // 0 or 2+ matches → skip ambiguous
 
     const po = inBand[0];
+    matchedShipmentKeys.add(shipmentKey(po));
     out.push({
       shipmentName: po.shipmentName,
       destination: po.destination,
@@ -119,6 +124,101 @@ export function detectAutoReceipts(input: {
         (sales > 0 ? ` (+${sales} sold same day)` : ``) +
         ` ≈ ${po.quantity}-unit PO ${po.shipmentName} ETA ${po.expectedArrival}.`,
     });
+  }
+
+  // PASS 2 — shipment-level aggregate matching. Scott 2026-05-06 round 2:
+  // partial deliveries where individual SKUs come in below/above the
+  // 0.7-1.3× band would never match per-SKU, but their SUM across all
+  // SKUs in a shipment usually lands close to the shipment total. Sum
+  // gives us a stronger signal at the cost of some precision.
+  //
+  // To avoid mis-attributing one shipment's delivery to another that
+  // shares SKUs (e.g., a fresh and a stale Boyshort PO both overdue),
+  // we restrict the aggregate to SKUs that are EXCLUSIVE to this
+  // shipment among the still-unmatched overdue POs at the same
+  // destination. If the exclusive coverage is too thin, we skip
+  // rather than guess.
+  //
+  // Build per-shipment buckets of (sku, quantity) and a (destination,
+  // sku) → number-of-shipments index for overlap detection.
+  type ShipmentBucket = {
+    shipmentName: string;
+    destination: "US" | "CN";
+    expectedArrival: string;
+    skus: Array<{ sku: string; quantity: number }>;
+  };
+  const shipmentBuckets = new Map<string, ShipmentBucket>();
+  const skuOccurrencesAtDest = new Map<string, number>(); // key: sku|dest
+  for (const po of input.overduePOs) {
+    const sk = shipmentKey(po);
+    if (matchedShipmentKeys.has(sk)) continue; // pass-1 already got it
+    const bucket = shipmentBuckets.get(sk) ?? {
+      shipmentName: po.shipmentName,
+      destination: po.destination,
+      expectedArrival: po.expectedArrival,
+      skus: [],
+    };
+    bucket.skus.push({ sku: po.sku, quantity: po.quantity });
+    shipmentBuckets.set(sk, bucket);
+    const dk = `${po.sku}|${po.destination}`;
+    skuOccurrencesAtDest.set(dk, (skuOccurrencesAtDest.get(dk) ?? 0) + 1);
+  }
+
+  // Threshold: at least half of the shipment's expected qty must come
+  // from SKUs exclusive to this shipment for us to trust the aggregate.
+  const EXCLUSIVE_COVERAGE_MIN = 0.5;
+  // Floor on the exclusive shipment total so we don't fire on tiny
+  // shipments where noise dominates signal.
+  const SHIPMENT_MIN_EXPECTED = 50;
+
+  for (const bucket of shipmentBuckets.values()) {
+    const exclusive = bucket.skus.filter(
+      (s) => (skuOccurrencesAtDest.get(`${s.sku}|${bucket.destination}`) ?? 0) === 1,
+    );
+    const totalExpected = bucket.skus.reduce((n, s) => n + s.quantity, 0);
+    const exclusiveExpected = exclusive.reduce((n, s) => n + s.quantity, 0);
+    if (exclusiveExpected < SHIPMENT_MIN_EXPECTED) continue;
+    if (exclusiveExpected / totalExpected < EXCLUSIVE_COVERAGE_MIN) continue;
+
+    // Sum observed (delta + sales) across exclusive SKUs only.
+    let observedSum = 0;
+    let positiveJumpCount = 0;
+    for (const s of exclusive) {
+      const k = `${s.sku}|${bucket.destination}`;
+      const today = input.todaySnapshots.find((t) => t.sku === s.sku && t.location === bucket.destination);
+      const yest = yesterdayByKey.get(k);
+      if (today === undefined || yest === undefined) continue;
+      const raw = today.onHand - yest;
+      const sales = salesByKey.get(k) ?? 0;
+      const contribution = raw + sales;
+      // Only count up-jumps + sales — down-jumps are noise (manual
+      // adjustments) and would unfairly drag the aggregate down.
+      if (contribution > 0) {
+        observedSum += contribution;
+        if (raw > 0) positiveJumpCount++;
+      }
+    }
+
+    // Need at least 2 SKUs to actually have jumped — a single jump is
+    // pass-1's job and shouldn't trigger an aggregate match.
+    if (positiveJumpCount < 2) continue;
+
+    const ratio = observedSum / exclusiveExpected;
+    if (ratio < MIN_MULTIPLIER || ratio > MAX_MULTIPLIER) continue;
+
+    out.push({
+      shipmentName: bucket.shipmentName,
+      destination: bucket.destination,
+      expectedArrival: bucket.expectedArrival,
+      detectedDelta: observedSum,
+      poQuantity: exclusiveExpected,
+      reasoning:
+        `Aggregate stock jump across ${positiveJumpCount} of ${exclusive.length} ` +
+        `exclusive SKUs ≈ ${observedSum.toLocaleString()} units vs ` +
+        `${exclusiveExpected.toLocaleString()}-unit shipment ${bucket.shipmentName} ` +
+        `ETA ${bucket.expectedArrival}.`,
+    });
+    matchedShipmentKeys.add(shipmentKey(bucket));
   }
 
   return out;

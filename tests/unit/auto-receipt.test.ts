@@ -142,4 +142,185 @@ describe("detectAutoReceipts", () => {
     expect(out).toHaveLength(2);
     expect(out.every((m) => m.shipmentName === "KAI Mens Apr26")).toBe(true);
   });
+
+  describe("pass 2 — shipment-level aggregate matching", () => {
+    // Scott 2026-05-06 round 2: per-SKU matching can miss when SKUs
+    // come in below/above the 0.7-1.3× tolerance individually but the
+    // shipment-wide sum lands on target.
+
+    it("matches a partial delivery via aggregate when no SKU passes per-SKU band", () => {
+      // PO 100u/SKU × 4 SKUs = 400u total. Real arrival: 60+70+80+90 = 300.
+      // Per-SKU ratios: 0.6, 0.7, 0.8, 0.9 — three within band per SKU,
+      // but the shipment is unmatched after pass 1 because each SKU only
+      // appears on this shipment so pass 1 would actually match three of
+      // them. To isolate pass 2, pick ratios that ALL fall outside
+      // per-SKU tolerance (e.g., 0.5 each) so pass 1 fires for none.
+      const out = detectAutoReceipts({
+        todaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 50 },
+          { sku: "ev-bshort-m", location: "CN", onHand: 50 },
+          { sku: "ev-bshort-l", location: "CN", onHand: 50 },
+          { sku: "ev-bshort-xl", location: "CN", onHand: 50 },
+        ],
+        yesterdaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-m", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-l", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-xl", location: "CN", onHand: 0 },
+        ],
+        todaySales: [],
+        // PO 100/SKU. Each individual ratio is 50/100 = 0.5, below 0.7
+        // per-SKU min. Aggregate 200/400 = 0.5 — also below band.
+        // Move thresholds: deliver 80/SKU instead → 320/400 = 0.8.
+        overduePOs: [
+          { sku: "ev-bshort-s", destination: "CN", quantity: 100, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-m", destination: "CN", quantity: 100, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-l", destination: "CN", quantity: 100, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-xl", destination: "CN", quantity: 100, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+        ],
+      });
+      // 0.5 ratio is below per-SKU band AND below aggregate band → no match.
+      expect(out).toEqual([]);
+    });
+
+    it("matches via aggregate when individual SKUs vary but the sum lands in band", () => {
+      // PO 200/SKU × 4 = 800u. Reality: 100, 180, 220, 280 — individual
+      // ratios 0.5, 0.9, 1.1, 1.4 (one above 1.3, one below 0.7). Pass 1
+      // matches the 0.9 and 1.1 cases, taking the shipment.
+      // To isolate pass 2: make each SKU's ratio fall outside per-SKU
+      // band so pass 1 doesn't fire. e.g., individual ratios all 0.6
+      // (under 0.7) but aggregate 0.6 too — won't match.
+      // Better: 0.6, 0.6, 1.4, 1.4 — none in per-SKU band, aggregate
+      // (0.6+0.6+1.4+1.4)/4 = 1.0 → matches.
+      const out = detectAutoReceipts({
+        todaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 60 },
+          { sku: "ev-bshort-m", location: "CN", onHand: 60 },
+          { sku: "ev-bshort-l", location: "CN", onHand: 140 },
+          { sku: "ev-bshort-xl", location: "CN", onHand: 140 },
+        ],
+        yesterdaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-m", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-l", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-xl", location: "CN", onHand: 0 },
+        ],
+        todaySales: [],
+        overduePOs: [
+          { sku: "ev-bshort-s", destination: "CN", quantity: 100, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-m", destination: "CN", quantity: 100, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-l", destination: "CN", quantity: 100, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-xl", destination: "CN", quantity: 100, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+        ],
+      });
+      expect(out).toHaveLength(1);
+      expect(out[0].shipmentName).toBe("KAI Bshort PO");
+      expect(out[0].reasoning).toContain("Aggregate stock jump");
+    });
+
+    it("does NOT aggregate-match when SKUs overlap with another overdue shipment", () => {
+      // Shipment A and B both have ev-bshort-s + ev-bshort-m at CN.
+      // No exclusive coverage → pass 2 skips both.
+      const out = detectAutoReceipts({
+        todaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 100 },
+          { sku: "ev-bshort-m", location: "CN", onHand: 100 },
+        ],
+        yesterdaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-m", location: "CN", onHand: 0 },
+        ],
+        todaySales: [],
+        overduePOs: [
+          // Shipment A
+          { sku: "ev-bshort-s", destination: "CN", quantity: 100, shipmentName: "KAI Bshort A", expectedArrival: "2026-04-15" },
+          { sku: "ev-bshort-m", destination: "CN", quantity: 100, shipmentName: "KAI Bshort A", expectedArrival: "2026-04-15" },
+          // Shipment B (overlaps A)
+          { sku: "ev-bshort-s", destination: "CN", quantity: 100, shipmentName: "KAI Bshort B", expectedArrival: "2026-04-25" },
+          { sku: "ev-bshort-m", destination: "CN", quantity: 100, shipmentName: "KAI Bshort B", expectedArrival: "2026-04-25" },
+        ],
+      });
+      // Pass 1: each SKU has 2 candidates → ambiguous → skip.
+      // Pass 2: zero exclusive SKUs in either shipment → both skip.
+      expect(out).toEqual([]);
+    });
+
+    it("requires at least 2 SKUs to have positively jumped before aggregate-matching", () => {
+      // 4-SKU shipment but only 1 SKU jumped — that's pass-1 territory,
+      // not pass 2. Aggregate match should NOT fire.
+      const out = detectAutoReceipts({
+        todaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 600 }, // huge jump
+          { sku: "ev-bshort-m", location: "CN", onHand: 0 },   // no movement
+          { sku: "ev-bshort-l", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-xl", location: "CN", onHand: 0 },
+        ],
+        yesterdaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-m", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-l", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-xl", location: "CN", onHand: 0 },
+        ],
+        todaySales: [],
+        // PO 200/SKU × 4 = 800. Aggregate 600/800 = 0.75 — in band, but
+        // only 1 SKU jumped. Pass 1 already found the match (600/200 = 3,
+        // outside per-SKU band, no pass-1 hit). Pass 2 should skip
+        // because <2 SKUs jumped.
+        overduePOs: [
+          { sku: "ev-bshort-s", destination: "CN", quantity: 200, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-m", destination: "CN", quantity: 200, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-l", destination: "CN", quantity: 200, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-xl", destination: "CN", quantity: 200, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+        ],
+      });
+      expect(out).toEqual([]);
+    });
+
+    it("aggregate match doesn't double-fire when pass 1 already matched the shipment", () => {
+      // Pass 1 catches the clean SKU; pass 2 must skip the rest of the
+      // shipment so we don't end up with duplicate receipt rows.
+      const out = detectAutoReceipts({
+        todaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 200 }, // clean +200
+          { sku: "ev-bshort-m", location: "CN", onHand: 60 },  // partial
+          { sku: "ev-bshort-l", location: "CN", onHand: 60 },
+        ],
+        yesterdaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-m", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-l", location: "CN", onHand: 0 },
+        ],
+        todaySales: [],
+        overduePOs: [
+          { sku: "ev-bshort-s", destination: "CN", quantity: 200, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-m", destination: "CN", quantity: 100, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-l", destination: "CN", quantity: 100, shipmentName: "KAI Bshort PO", expectedArrival: "2026-04-30" },
+        ],
+      });
+      // Pass 1 matches ev-bshort-s. Pass 2 should NOT also match.
+      expect(out).toHaveLength(1);
+      expect(out[0].reasoning).toContain("ev-bshort-s");
+    });
+
+    it("aggregate-skip tiny shipments (below the 50-unit floor)", () => {
+      // Pick deltas under 20 each so pass-1's floor skips them, AND
+      // total expected under 50 so pass 2's floor skips them too.
+      const out = detectAutoReceipts({
+        todaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 19 },
+          { sku: "ev-bshort-m", location: "CN", onHand: 19 },
+        ],
+        yesterdaySnapshots: [
+          { sku: "ev-bshort-s", location: "CN", onHand: 0 },
+          { sku: "ev-bshort-m", location: "CN", onHand: 0 },
+        ],
+        todaySales: [],
+        overduePOs: [
+          { sku: "ev-bshort-s", destination: "CN", quantity: 20, shipmentName: "KAI Tiny PO", expectedArrival: "2026-04-30" },
+          { sku: "ev-bshort-m", destination: "CN", quantity: 20, shipmentName: "KAI Tiny PO", expectedArrival: "2026-04-30" },
+        ],
+      });
+      expect(out).toEqual([]);
+    });
+  });
 });
