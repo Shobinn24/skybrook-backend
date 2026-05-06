@@ -24,6 +24,12 @@ function fmtRoas(n: number | null): string {
   return n.toFixed(2);
 }
 
+// Shorten Supermetrics tab names for the spend breakdown — operators just
+// want to see "FB" vs "AL", not the full per-product tab title.
+function shortTabLabel(tab: string): string {
+  return / AL$/i.test(tab) ? "AL" : "FB";
+}
+
 function fmtDate(ymd: string): string {
   const [y, m, d] = ymd.split("-").map(Number);
   if (!y || !m || !d) return ymd;
@@ -129,7 +135,7 @@ export default function PerformancePage() {
                     <div className="text-neutral-500">Spend breakdown:</div>
                     {r.spendByTab.map((b) => (
                       <div key={b.tab} className="flex justify-between text-neutral-600">
-                        <span>{b.tab}</span>
+                        <span>{shortTabLabel(b.tab)}</span>
                         <span className="tabular-nums">{fmtMoney(b.spendUsd)}</span>
                       </div>
                     ))}
