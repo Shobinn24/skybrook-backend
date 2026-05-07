@@ -2,6 +2,8 @@ import { and, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { adSpendDaily, dailySales, skus } from "@/lib/db/schema";
 
+export type SalesChannel = "shopify_us" | "shopify_intl";
+
 /** Canonical products surfaced on /performance. Each one rolls up:
  *   - Spend across one or more sheet tabs (Facebook + AppLovin etc.)
  *   - Revenue across the SKUs whose productName matches any of the
@@ -72,6 +74,13 @@ function addDays(ymd: string, days: number): string {
 export async function getPerformanceRollup(opts: {
   today: string; // YYYY-MM-DD anchor (treated as "today, not yet complete")
   rangeDays: number; // 1 (yesterday) | 7 | 14 | 30
+  /** Optional channel filter on the revenue side. Spend is unaffected
+   * because ad-spend tabs aren't channel-tagged uniformly (e.g., the
+   * "SuperHW" tab is FB INTL by convention; "Super HW AL" is AppLovin
+   * across regions). When set, revenue rolls up only the matching
+   * Shopify store — used to reconcile against partial reports
+   * (e.g., the daily-report agency's "SupHW INTL Daily Report"). */
+  channel?: SalesChannel;
 }): Promise<PerformanceResult> {
   // Range is [today - rangeDays, today - 1] inclusive. Excludes today
   // itself because the day's sales are still accumulating.
@@ -118,18 +127,20 @@ export async function getPerformanceRollup(opts: {
 
     let revenueUsd = 0;
     if (matchedSkus.length > 0) {
+      const baseConditions = [
+        inArray(dailySales.sku, matchedSkus),
+        gte(dailySales.salesDate, rangeStart),
+        lte(dailySales.salesDate, rangeEnd),
+      ];
+      const conditions = opts.channel
+        ? [...baseConditions, eq(dailySales.channel, opts.channel)]
+        : baseConditions;
       const [rev] = await db
         .select({
           total: sql<string>`coalesce(sum(${dailySales.netSalesUsd}), 0)`,
         })
         .from(dailySales)
-        .where(
-          and(
-            inArray(dailySales.sku, matchedSkus),
-            gte(dailySales.salesDate, rangeStart),
-            lte(dailySales.salesDate, rangeEnd),
-          ),
-        );
+        .where(and(...conditions));
       revenueUsd = Number(rev?.total ?? 0);
     }
 
