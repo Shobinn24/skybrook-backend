@@ -6,7 +6,14 @@ type LineItem = {
   quantity: number;
   discountedUnitPriceSet: { shopMoney: { amount: string } } | null;
 };
-type Order = { createdAt: string; lineItems: { nodes: LineItem[] } };
+type MoneySet = { shopMoney: { amount: string } } | null;
+type Order = {
+  createdAt: string;
+  lineItems: { nodes: LineItem[] };
+  totalTaxSet?: MoneySet;
+  totalShippingPriceSet?: MoneySet;
+  totalTipReceivedSet?: MoneySet;
+};
 
 function order(createdAt: string, lines: LineItem[]): Order {
   return { createdAt, lineItems: { nodes: lines } };
@@ -16,6 +23,22 @@ function li(sku: string | null, quantity: number, amount: string | null = "20.00
     sku,
     quantity,
     discountedUnitPriceSet: amount != null ? { shopMoney: { amount } } : null,
+  };
+}
+function money(amount: string): MoneySet {
+  return { shopMoney: { amount } };
+}
+function orderWith(
+  createdAt: string,
+  lines: LineItem[],
+  ancillary: { tax?: string; shipping?: string; tip?: string },
+): Order {
+  return {
+    createdAt,
+    lineItems: { nodes: lines },
+    totalTaxSet: ancillary.tax != null ? money(ancillary.tax) : null,
+    totalShippingPriceSet: ancillary.shipping != null ? money(ancillary.shipping) : null,
+    totalTipReceivedSet: ancillary.tip != null ? money(ancillary.tip) : null,
   };
 }
 
@@ -190,5 +213,117 @@ describe("aggregateToDailySales", () => {
     expect(aggregateToDailySales(orders)).toEqual([
       { sku: "ev-9055-hf-5x-xl", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
     ]);
+  });
+
+  // ---- Tax / shipping / tips inclusion (Scott 2026-05-07) -----------------
+
+  it("adds tax + shipping + tips to revenue, single SKU gets all of it", () => {
+    const orders = [
+      orderWith(
+        "2026-04-22T10:00:00Z",
+        [li("ev-a", 1, "100.00")],
+        { tax: "8.00", shipping: "5.00", tip: "2.00" },
+      ),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      // 100 line + (8+5+2) ancillary = 115
+      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 115 },
+    ]);
+  });
+
+  it("pro-rates ancillary across multiple SKUs by line-item revenue share", () => {
+    const orders = [
+      orderWith(
+        "2026-04-22T10:00:00Z",
+        [
+          li("ev-a", 1, "75.00"),  // 75% share
+          li("ev-b", 1, "25.00"),  // 25% share
+        ],
+        { tax: "10.00", shipping: "10.00" }, // 20 total ancillary
+      ),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      // ev-a: 75 + 0.75 * 20 = 90
+      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 90 },
+      // ev-b: 25 + 0.25 * 20 = 30
+      { sku: "ev-b", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 30 },
+    ]);
+  });
+
+  it("falls back to even split when tracked line revenue is 0 (free-promo with shipping)", () => {
+    const orders = [
+      orderWith(
+        "2026-04-22T10:00:00Z",
+        [li("ev-a", 1, "0.00"), li("ev-b", 1, "0.00")],
+        { shipping: "10.00" },
+      ),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 5 },
+      { sku: "ev-b", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 5 },
+    ]);
+  });
+
+  it("ancillary is fully attributed to tracked SKUs even when order also has gift cards", () => {
+    // Mixed order: $50 tracked EV + $50 untracked gift card + $5 tax.
+    // Pro-rate denominator is tracked-only revenue, so all $5 lands on
+    // the tracked SKU. Acceptable approximation since ev-only orders
+    // are the common case at Everdries.
+    const orders = [
+      orderWith(
+        "2026-04-22T10:00:00Z",
+        [
+          li("ev-real", 1, "50.00"),
+          li("gift-card", 1, "50.00"), // skipped (no ev- prefix)
+        ],
+        { tax: "5.00" },
+      ),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-real", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 55 },
+    ]);
+  });
+
+  it("missing ancillary fields default to 0 (existing behavior preserved)", () => {
+    // No tax/shipping/tip on an OrderWith — verifies optional-field path.
+    const orders = [
+      orderWith("2026-04-22T10:00:00Z", [li("ev-a", 1, "100.00")], {}),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 100 },
+    ]);
+  });
+
+  it("ancillary distributes correctly across pack-SKU lines after decomposition", () => {
+    // 5x-m at $100 + 10x-m at $200 → both fold to ev-bshort-5x-m
+    // Total tracked rev = $300. Tax of $30 split 1:2.
+    // 5x line: 100 + (100/300)*30 = 110
+    // 10x line: 200 + (200/300)*30 = 220
+    // Sum after agg merge: 110 + 220 = 330
+    const orders = [
+      orderWith(
+        "2026-04-22T10:00:00Z",
+        [
+          li("ev-bshort-5x-m", 5, "20.00"),  // 5 units, $100
+          li("ev-bshort-10x-m", 1, "200.00"), // 2 units (after decompose), $200
+        ],
+        { tax: "30.00" },
+      ),
+    ];
+    expect(aggregateToDailySales(orders)).toEqual([
+      { sku: "ev-bshort-5x-m", salesDate: "2026-04-22", unitsSold: 7, netSalesUsd: 330 },
+    ]);
+  });
+
+  it("ancillary on order with no tracked SKUs is dropped (order is no-op)", () => {
+    const orders = [
+      orderWith(
+        "2026-04-22T10:00:00Z",
+        [li("gift-card", 1, "50.00"), li(null, 1, "10.00")],
+        { tax: "5.00", shipping: "5.00" },
+      ),
+    ];
+    // No ev- SKUs → entire order skipped, ancillary disappears (no row to host it).
+    expect(aggregateToDailySales(orders)).toEqual([]);
   });
 });

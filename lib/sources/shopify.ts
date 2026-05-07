@@ -30,9 +30,18 @@ type LineItemNode = {
   discountedUnitPriceSet: { shopMoney: { amount: string } } | null;
 };
 
+type MoneySet = { shopMoney: { amount: string } } | null;
+
 type OrderNode = {
   createdAt: string;
   lineItems: { nodes: LineItemNode[] };
+  // Order-level ancillary amounts pro-rated to SKUs (Scott 2026-05-07).
+  // Optional in the type so existing test fixtures and any minimal
+  // OrderNode constructions still typecheck — null/missing → $0 ancillary,
+  // which preserves prior per-line-item-only semantics.
+  totalTaxSet?: MoneySet;
+  totalShippingPriceSet?: MoneySet;
+  totalTipReceivedSet?: MoneySet;
 };
 
 type OrdersPageResponse = {
@@ -94,6 +103,9 @@ async function* iterateOrderPages(
                   discountedUnitPriceSet { shopMoney { amount } }
                 }
               }
+              totalTaxSet { shopMoney { amount } }
+              totalShippingPriceSet { shopMoney { amount } }
+              totalTipReceivedSet { shopMoney { amount } }
             }
           }
         }
@@ -141,10 +153,20 @@ async function* iterateOrderPages(
  * We sum raw `lineItem.quantity` and don't filter by order.displayFinancialStatus,
  * matching the old ShopifyQL `units_sold` semantics exactly.
  *
- * Null SKUs (gift cards, custom items without variants) are skipped —
- * they don't map to our inventory-tracked catalog.
+ * Scott 2026-05-07: include tax + shipping + tips in revenue, pro-rated
+ * to tracked SKUs by line-item revenue share within the order. Matches
+ * Shopify's "Total sales" column semantics, which is what the daily-
+ * report agency pulls. When line-item revenue is 0 (e.g., promo orders
+ * with all line items free but a real shipping charge), ancillary is
+ * split evenly across tracked SKUs in the order.
  *
- * Net sales uses `discountedUnitPriceSet.shopMoney.amount` × quantity.
+ * Null SKUs (gift cards, custom items without variants) are skipped —
+ * they don't map to our inventory-tracked catalog. Ancillary is
+ * pro-rated only across tracked SKUs (post-`ev-*` filter), which means
+ * a small fraction of tax on mixed orders containing a gift card is
+ * effectively allocated to the tracked SKUs rather than dropped.
+ *
+ * Per-line revenue uses `discountedUnitPriceSet.shopMoney.amount` × quantity.
  * Shop currency is USD on both stores (verified live 2026-04-24), so
  * shopMoney is directly comparable across channels.
  */
@@ -152,6 +174,12 @@ export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
   const agg = new Map<string, { units: number; net: number }>();
   for (const order of orders) {
     const day = order.createdAt.slice(0, 10); // YYYY-MM-DD
+
+    // Pass 1: collect tracked SKU rows for this order. We need the full
+    // set before allocating ancillary because share = lineNet / orderRev.
+    type Tracked = { skuKey: string; units: number; lineNet: number };
+    const tracked: Tracked[] = [];
+    let orderTrackedRev = 0;
     for (const li of order.lineItems.nodes) {
       if (!li.sku) continue; // skip gift cards / custom items
       if (!Number.isFinite(li.quantity) || li.quantity <= 0) continue;
@@ -167,19 +195,41 @@ export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
       if (!skuLower.startsWith("ev-")) continue;
       // Pack-SKU normalization: 10-pack and 15-pack SKUs come out of
       // 5-pack inventory. Multiply units by the pack factor and key
-      // the row under the canonical 5-pack SKU. Net stays at the
-      // actual order revenue (no multiplier).
+      // the row under the canonical 5-pack SKU. Per-line revenue stays
+      // at the actual order amount (no multiplier).
       const decomposed = decomposePackSku(skuLower);
       const skuKey = decomposed?.canonicalSku ?? skuLower;
       const unitsContributed = li.quantity * (decomposed?.multiplier ?? 1);
 
       const unitPrice = li.discountedUnitPriceSet?.shopMoney?.amount;
       const priceNum = unitPrice != null ? Number(unitPrice) : 0;
-      const net = Number.isFinite(priceNum) ? priceNum * li.quantity : 0;
-      const key = `${skuKey}|${day}`;
+      const lineNet = Number.isFinite(priceNum) ? priceNum * li.quantity : 0;
+      tracked.push({ skuKey, units: unitsContributed, lineNet });
+      orderTrackedRev += lineNet;
+    }
+
+    if (tracked.length === 0) continue;
+
+    // Pass 2: pro-rate ancillary across tracked rows.
+    const ancillary =
+      parseMoneyAmount(order.totalTaxSet) +
+      parseMoneyAmount(order.totalShippingPriceSet) +
+      parseMoneyAmount(order.totalTipReceivedSet);
+    for (const t of tracked) {
+      let share: number;
+      if (orderTrackedRev > 0) {
+        share = t.lineNet / orderTrackedRev;
+      } else {
+        // All tracked lines are $0 (e.g., entirely-free promo with paid
+        // shipping). Even-split keeps the ancillary $ on the books
+        // instead of dropping it.
+        share = 1 / tracked.length;
+      }
+      const itemTotal = t.lineNet + share * ancillary;
+      const key = `${t.skuKey}|${day}`;
       const prev = agg.get(key) ?? { units: 0, net: 0 };
-      prev.units += unitsContributed;
-      prev.net += net;
+      prev.units += t.units;
+      prev.net += itemTotal;
       agg.set(key, prev);
     }
   }
@@ -193,6 +243,13 @@ export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
     a.salesDate === b.salesDate ? a.sku.localeCompare(b.sku) : a.salesDate.localeCompare(b.salesDate),
   );
   return out;
+}
+
+function parseMoneyAmount(set: MoneySet | undefined): number {
+  const amount = set?.shopMoney?.amount;
+  if (amount == null) return 0;
+  const n = Number(amount);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function makeRunner(channel: Channel): SourceRunner {
