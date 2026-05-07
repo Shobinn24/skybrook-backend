@@ -1,10 +1,15 @@
 // Read-only diagnostic for the /launches page auto-populate logic.
 //
+// Mirrors runLaunchAutoPopulate's variant-level decision rules
+// (Scott 2026-05-07): a SKU with no prior stock_snapshots history
+// triggers a launch row even when its productName has prior history.
+//
 // Returns:
 // - currentLaunches: every row in product_launches (newest first)
-// - candidates: dry-run preview of (productName, shipmentName) pairs
-//   from incoming, with the auto-populate decision for each:
-//     "would_insert" | "skipped_existing_product" | "skipped_already_launched" | "skipped_default_name"
+// - candidates: dry-run preview of (sku, productName, shipmentName)
+//   tuples from incoming, with the auto-populate decision for each:
+//     "would_insert" | "skipped_existing_variant" |
+//     "skipped_already_launched" | "skipped_default_name" | "skipped_null_name"
 //
 // Auth: Bearer CRON_SECRET. Read-only — does not insert anything.
 import { NextResponse } from "next/server";
@@ -49,49 +54,83 @@ async function authedHandler(req: Request) {
     .from(productLaunches)
     .orderBy(desc(productLaunches.createdAt));
 
-  // 2. Candidate (productName, shipmentName) pairs from incoming
-  const incomingPairs = await db
-    .selectDistinct({
+  // 2. Candidate (sku, productName, shipmentName) tuples from incoming.
+  //    Dedupe at SKU level so a SKU appearing across multiple POs in
+  //    the same shipment counts once.
+  const rows = await db
+    .select({
+      sku: incomingShipments.sku,
       productName: skus.productName,
       shipmentName: incomingShipments.shipmentName,
     })
     .from(incomingShipments)
     .innerJoin(skus, eq(incomingShipments.sku, skus.sku))
     .where(isNotNull(skus.productName));
+  const seen = new Set<string>();
+  const tuples: Array<{ sku: string; productName: string | null; shipmentName: string }> = [];
+  for (const r of rows) {
+    const key = `${r.sku}|${r.shipmentName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tuples.push({
+      sku: r.sku,
+      productName: r.productName,
+      shipmentName: r.shipmentName,
+    });
+  }
 
-  // 3. ProductNames with stock history (= "established")
+  // 3. SKUs with stock history (= "established variants")
   const stockedRows = await db
-    .selectDistinct({ productName: skus.productName })
-    .from(skus)
-    .innerJoin(stockSnapshots, eq(skus.sku, stockSnapshots.sku))
-    .where(isNotNull(skus.productName));
-  const productsWithStockHistory = new Set(
-    stockedRows.map((r) => r.productName as string),
-  );
+    .selectDistinct({ sku: stockSnapshots.sku })
+    .from(stockSnapshots);
+  const skusWithStockHistory = new Set(stockedRows.map((r) => r.sku));
 
   // 4. Existing launch keys
   const existingKeys = new Set(
     currentLaunches.map((r) => `${r.productName}|${r.shipmentName}`),
   );
 
-  // 5. Decide outcome for each pair (matches runLaunchAutoPopulate logic)
-  const candidates = incomingPairs.map((pair) => {
-    const productName = pair.productName as string | null;
-    const shipmentName = pair.shipmentName as string;
-    if (!productName) {
-      return { productName: null, shipmentName, decision: "skipped_null_name" };
+  // 5. Decide outcome for each tuple (matches runLaunchAutoPopulate)
+  const candidates = tuples.map((t) => {
+    if (!t.productName) {
+      return {
+        sku: t.sku,
+        productName: null,
+        shipmentName: t.shipmentName,
+        decision: "skipped_null_name",
+      };
     }
-    if (productName.startsWith("ev-")) {
-      return { productName, shipmentName, decision: "skipped_default_name" };
+    if (t.productName.startsWith("ev-")) {
+      return {
+        sku: t.sku,
+        productName: t.productName,
+        shipmentName: t.shipmentName,
+        decision: "skipped_default_name",
+      };
     }
-    if (productsWithStockHistory.has(productName)) {
-      return { productName, shipmentName, decision: "skipped_existing_product" };
+    if (skusWithStockHistory.has(t.sku)) {
+      return {
+        sku: t.sku,
+        productName: t.productName,
+        shipmentName: t.shipmentName,
+        decision: "skipped_existing_variant",
+      };
     }
-    const key = `${productName}|${shipmentName}`;
+    const key = `${t.productName}|${t.shipmentName}`;
     if (existingKeys.has(key)) {
-      return { productName, shipmentName, decision: "skipped_already_launched" };
+      return {
+        sku: t.sku,
+        productName: t.productName,
+        shipmentName: t.shipmentName,
+        decision: "skipped_already_launched",
+      };
     }
-    return { productName, shipmentName, decision: "would_insert" };
+    return {
+      sku: t.sku,
+      productName: t.productName,
+      shipmentName: t.shipmentName,
+      decision: "would_insert",
+    };
   });
 
   // 6. Roll up
@@ -100,12 +139,22 @@ async function authedHandler(req: Request) {
     return acc;
   }, {});
 
+  // Distinct (productName, shipmentName) pairs that would actually
+  // produce a launch row (since multiple new SKUs in same shipment
+  // dedupe to one launch).
+  const wouldInsertLaunchRows = new Set(
+    candidates
+      .filter((c) => c.decision === "would_insert")
+      .map((c) => `${c.productName}|${c.shipmentName}`),
+  );
+
   return NextResponse.json({
     ok: true,
     currentLaunchesCount: currentLaunches.length,
     currentLaunches,
     candidatePairsCount: candidates.length,
     summary,
+    wouldInsertLaunchRowCount: wouldInsertLaunchRows.size,
     candidates,
   });
 }

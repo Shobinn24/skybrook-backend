@@ -142,4 +142,64 @@ describe("runLaunchAutoPopulate", () => {
     const launches = await db.select().from(productLaunches);
     expect(launches).toHaveLength(1);
   });
+
+  it("creates a launch when a NEW VARIANT of an established product arrives (variant-level newness, Scott 2026-05-07)", async () => {
+    const rawId = await seedRawPull();
+    // Established variant: ev-bshort-5x-l has stock history.
+    // New variant: ev-bshort-fc-5x-l is a different SKU under the same
+    // productName (post-color-consolidation) and has NO stock history.
+    await db.insert(skus).values([
+      { sku: "ev-bshort-5x-l", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-04-01", active: true },
+      { sku: "ev-bshort-fc-5x-l", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
+    ]);
+    await db.insert(stockSnapshots).values([
+      { sku: "ev-bshort-5x-l", location: "US", snapshotDate: "2026-04-15", onHand: 100, sourcePullId: rawId },
+    ]);
+    await db.insert(incomingShipments).values([
+      // Old variant restock — should NOT trigger
+      { sku: "ev-bshort-5x-l", shipmentName: "KAI Bshort May", destination: "CN", expectedArrival: "2026-06-01", quantity: 1000, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
+      // New variant in the same shipment — SHOULD trigger
+      { sku: "ev-bshort-fc-5x-l", shipmentName: "KAI Bshort May", destination: "CN", expectedArrival: "2026-06-01", quantity: 500, status: "po", sourcePullId: rawId, sourceRowRef: "row-2" },
+    ]);
+
+    const result = await runLaunchAutoPopulate();
+    expect(result.inserted).toBe(1);
+    expect(result.skippedExisting).toBe(1); // ev-bshort-5x-l counted as established
+
+    const launches = await db.select().from(productLaunches);
+    expect(launches).toHaveLength(1);
+    expect(launches[0].productName).toBe("Boyshort");
+    expect(launches[0].shipmentName).toBe("KAI Bshort May");
+    expect(launches[0].note).toMatch(/new variant/i);
+  });
+
+  it("dedupes to one launch when multiple new variants of an established product land in the same shipment", async () => {
+    const rawId = await seedRawPull();
+    await db.insert(skus).values([
+      { sku: "ev-bshort-5x-l", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-04-01", active: true },
+      { sku: "ev-bshort-fc-5x-l", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
+      { sku: "ev-bshort-fc-5x-m", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
+      { sku: "ev-bshort-fc-5x-s", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
+    ]);
+    await db.insert(stockSnapshots).values([
+      { sku: "ev-bshort-5x-l", location: "US", snapshotDate: "2026-04-15", onHand: 100, sourcePullId: rawId },
+    ]);
+    await db.insert(incomingShipments).values(
+      ["ev-bshort-fc-5x-l", "ev-bshort-fc-5x-m", "ev-bshort-fc-5x-s"].map((sku) => ({
+        sku,
+        shipmentName: "KAI Bshort May",
+        destination: "CN" as const,
+        expectedArrival: "2026-06-01",
+        quantity: 200,
+        status: "po" as const,
+        sourcePullId: rawId, sourceRowRef: "row-1",
+      })),
+    );
+
+    const result = await runLaunchAutoPopulate();
+    expect(result.inserted).toBe(1); // 3 new variants → 1 dedupe-by-(product,shipment) launch row
+
+    const launches = await db.select().from(productLaunches);
+    expect(launches).toHaveLength(1);
+  });
 });
