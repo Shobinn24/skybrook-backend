@@ -100,14 +100,6 @@ async function authedHandler(req: Request) {
         decision: "skipped_null_name",
       };
     }
-    if (t.productName.startsWith("ev-")) {
-      return {
-        sku: t.sku,
-        productName: t.productName,
-        shipmentName: t.shipmentName,
-        decision: "skipped_default_name",
-      };
-    }
     if (skusWithStockHistory.has(t.sku)) {
       return {
         sku: t.sku,
@@ -125,11 +117,15 @@ async function authedHandler(req: Request) {
         decision: "skipped_already_launched",
       };
     }
+    // Note: default-named (productName starts with "ev-") tuples now
+    // pass through and would_insert with the SKU as placeholder name.
+    // Scott 2026-05-07.
     return {
       sku: t.sku,
       productName: t.productName,
       shipmentName: t.shipmentName,
       decision: "would_insert",
+      defaultName: t.productName.startsWith("ev-"),
     };
   });
 

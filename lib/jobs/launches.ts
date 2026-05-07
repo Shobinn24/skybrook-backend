@@ -100,14 +100,18 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
   // 4. For each tuple, decide. Tuples that pass all filters are
   //    deduplicated by (productName, shipmentName) so multiple new
   //    SKUs in one shipment produce a single launch row.
+  //
+  // Scott 2026-05-07: do NOT skip default-named SKUs (productName ===
+  // sku, starts with "ev-"). Earlier behavior held them back until
+  // syncProductNames assigned a friendly label, but for unknown family
+  // codes (e.g. "hrshort", "pp") deriveProductName returns null and the
+  // SKU stays default-named indefinitely, leaving the launches tab
+  // empty. Insert with the SKU as placeholder productName; Scott can
+  // rename in the velocity sheet later.
   let skippedExisting = 0;
   let skippedAlreadyLaunched = 0;
   const launchKeysToInsert = new Set<string>();
   for (const t of tuples) {
-    // Default-named SKUs (productName === sku, starts with "ev-") have
-    // no friendly label yet — skip until syncProductNames assigns one.
-    if (t.productName.startsWith("ev-")) continue;
-
     if (skusWithStockHistory.has(t.sku)) {
       skippedExisting++;
       continue;

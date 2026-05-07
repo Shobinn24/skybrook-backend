@@ -99,7 +99,12 @@ describe("runLaunchAutoPopulate", () => {
     expect(launches[0].intlLaunchDate).toBe("2026-07-01");
   });
 
-  it("skips SKUs whose productName is the default fallback (starts with ev-)", async () => {
+  it("inserts default-named SKUs (productName === sku) with the SKU as placeholder name (Scott 2026-05-07)", async () => {
+    // Earlier behavior was to skip these and wait for syncProductNames
+    // to assign a friendly label. But unknown family codes (hrshort, pp)
+    // leave the SKU default-named indefinitely. Insert with placeholder
+    // so the launches tab populates; Scott can rename via the velocity
+    // sheet later.
     const rawId = await seedRawPull();
     await db.insert(skus).values([
       { sku: "ev-mystery-5x-l", productName: "ev-mystery-5x-l", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
@@ -109,10 +114,12 @@ describe("runLaunchAutoPopulate", () => {
     ]);
 
     const result = await runLaunchAutoPopulate();
-    expect(result.inserted).toBe(0);
+    expect(result.inserted).toBe(1);
 
     const launches = await db.select().from(productLaunches);
-    expect(launches).toHaveLength(0);
+    expect(launches).toHaveLength(1);
+    expect(launches[0].productName).toBe("ev-mystery-5x-l");
+    expect(launches[0].shipmentName).toBe("KAI Mystery");
   });
 
   it("creates one launch per (product, shipment) pair when many SKUs of the new product land in the same PO", async () => {
