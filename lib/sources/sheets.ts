@@ -608,10 +608,33 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
       // Truncate-replace per pull keeps state in sync without needing a unique
       // constraint on (sku, shipmentName, expectedArrival, destination). When
       // a second source lands later, switch to delete-by-source-id.
+      //
+      // Upsert SKUs into the catalog as we go (Scott 2026-05-07): a SKU that
+      // appears only in incoming (ordered but not yet stocked, e.g. a brand-
+      // new variant being launched) was previously never in the `skus` table,
+      // which made runLaunchAutoPopulate's innerJoin silently drop it. Upsert
+      // here so the SKU enters the catalog the moment it's ordered. The
+      // downstream syncProductNames job will rewrite the default productName
+      // (the SKU itself) into a friendly label via deriveProductName.
       await db.transaction(async (tx) => {
         await tx.delete(incomingShipments);
         if (rows.length === 0) return;
+        const today = new Date().toISOString().slice(0, 10);
+        const seenSkus = new Set<string>();
         for (const row of rows) {
+          if (!seenSkus.has(row.sku)) {
+            seenSkus.add(row.sku);
+            await tx
+              .insert(skus)
+              .values({
+                sku: row.sku,
+                productName: row.sku, // syncProductNames replaces this
+                productLine: null, // inventory runner fills this when the SKU lands
+                firstSeenAt: today,
+                active: true,
+              })
+              .onConflictDoNothing({ target: skus.sku });
+          }
           await tx.insert(incomingShipments).values({
             sku: row.sku,
             destination: row.destination,
