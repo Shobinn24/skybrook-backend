@@ -265,11 +265,20 @@ export function SustainabilityTimelineTable({
                     </TracedNumber>
                   </td>
                   {r.projections.map((p, i) => {
-                    // Stockout = projected on-hand at the next ETA goes negative
-                    // OR a run-out date falls inside this projection window.
-                    // Both signal "we'll be out of stock before the next PO
-                    // lands" — Scott wants those cells obviously red.
-                    const stockOut = p.stockLeftAtEta < 0 || p.runOutDate !== null;
+                    // Stockout = projected on-hand at the next ETA goes
+                    // negative — i.e., we actually run out before the
+                    // next PO lands. `runOutDate` is informational per
+                    // the walkProjection contract (always set when
+                    // velocity > 0, regardless of incoming shipments)
+                    // so it can't be used as a red-flag signal.
+                    // Scott 2026-05-07: previous OR-with-runOutDate
+                    // turned every row with sales velocity red.
+                    const stockOut = p.stockLeftAtEta < 0;
+                    // The run-out date itself only shows red when it
+                    // falls inside this projection window — same signal
+                    // as stockOut, but kept as a separate boolean for
+                    // clarity at the cell call sites below.
+                    const runsOutInWindow = stockOut;
                     const isTerminal = shipmentCols[i]?.kind === "terminal";
                     // Striped column background. Terminal "+30d outlook"
                     // column gets amber. Stockout overrides with red so
@@ -292,7 +301,7 @@ export function SustainabilityTimelineTable({
                         <td className={colCls + (stockOut ? " text-red-700 font-semibold" : "")}>
                           {fmtNum(p.stockLeftAtEta)}
                         </td>
-                        <td className={colCls + " whitespace-nowrap " + (p.runOutDate ? "text-red-700 font-medium" : "text-neutral-500")}>
+                        <td className={colCls + " whitespace-nowrap " + (runsOutInWindow ? "text-red-700 font-medium" : "text-neutral-500")}>
                           {p.runOutDate ? formatYmd(p.runOutDate) : "—"}
                         </td>
                         <td className={colCls}>
