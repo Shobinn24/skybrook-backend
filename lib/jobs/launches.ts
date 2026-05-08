@@ -20,7 +20,7 @@
 // Runs after syncProductNames so the productNames here reflect the
 // latest sku-naming pass (color-consolidated etc.).
 
-import { eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, like, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   incomingShipments,
@@ -39,10 +39,55 @@ export type LaunchAutoPopulateResult = {
   skippedAlreadyLaunched: number;
   /** New launch rows inserted this run. */
   inserted: number;
+  /** Stale default-named placeholder rows deleted at the start of this run. */
+  staleDeleted: number;
 };
+
+/**
+ * Delete launch rows whose productName is a raw `ev-*` SKU placeholder
+ * AND whose corresponding `skus.productName` has since been resolved to
+ * a friendly label. Idempotent. Self-heals when a new family mapping
+ * (FAMILY_LABELS / FAMILY_ALIAS in lib/domain/sku-naming.ts) is added —
+ * the next run replaces the placeholder rows with properly-named ones.
+ *
+ * Scott 2026-05-08: needed because the auto-populate inserts default-
+ * named placeholders the moment a new SKU shows up in incoming, then
+ * once the human-friendly label is added in code the next run inserts
+ * a SECOND row rather than updating the first. Without this, the
+ * launches tab accumulates stale placeholders alongside the proper rows.
+ */
+export async function cleanupStaleDefaultLaunches(): Promise<number> {
+  // DELETE FROM product_launches l
+  // WHERE l.product_name LIKE 'ev-%'
+  //   AND EXISTS (
+  //     SELECT 1 FROM skus s
+  //     WHERE s.sku = l.product_name
+  //       AND s.product_name <> l.product_name
+  //   )
+  const result = await db
+    .delete(productLaunches)
+    .where(
+      and(
+        like(productLaunches.productName, "ev-%"),
+        sql`EXISTS (
+          SELECT 1 FROM ${skus} s
+          WHERE s.sku = ${productLaunches.productName}
+          AND s.product_name <> ${productLaunches.productName}
+        )`,
+      ),
+    )
+    .returning({ id: productLaunches.id });
+  return result.length;
+}
 
 export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult> {
   const start = Date.now();
+
+  // 0. Self-heal: drop stale default-named placeholder rows whose SKUs
+  //    now have a friendly productName. Run before the dedupe step so
+  //    properly-named rows can claim the same (productName, shipmentName)
+  //    slot the placeholder previously occupied.
+  const staleDeleted = await cleanupStaleDefaultLaunches();
 
   // 1. Pull (sku, productName, shipmentName) tuples from incoming via
   //    SKU join. We dedupe at the SKU level so a SKU appearing in many
@@ -72,8 +117,8 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
   }
 
   if (tuples.length === 0) {
-    logger.info("launches.auto.no-candidates");
-    return { candidatePairs: 0, skippedExisting: 0, skippedAlreadyLaunched: 0, inserted: 0 };
+    logger.info("launches.auto.no-candidates", { staleDeleted });
+    return { candidatePairs: 0, skippedExisting: 0, skippedAlreadyLaunched: 0, inserted: 0, staleDeleted };
   }
 
   // 2. Build set of SKUs that have any row in stock_snapshots — these
@@ -149,6 +194,7 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
     skippedExisting,
     skippedAlreadyLaunched,
     inserted,
+    staleDeleted,
     ms: Date.now() - start,
   });
 
@@ -157,5 +203,6 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
     skippedExisting,
     skippedAlreadyLaunched,
     inserted,
+    staleDeleted,
   };
 }

@@ -8,7 +8,7 @@ import {
   skus,
   stockSnapshots,
 } from "@/lib/db/schema";
-import { runLaunchAutoPopulate } from "@/lib/jobs/launches";
+import { cleanupStaleDefaultLaunches, runLaunchAutoPopulate } from "@/lib/jobs/launches";
 import { resetDb } from "@/tests/fixtures/seed";
 
 async function seedRawPull(): Promise<string> {
@@ -208,5 +208,71 @@ describe("runLaunchAutoPopulate", () => {
 
     const launches = await db.select().from(productLaunches);
     expect(launches).toHaveLength(1);
+  });
+
+  // Scott 2026-05-08: stale-placeholder cleanup. When a new SKU prefix
+  // shows up in incoming before its family label is in sku-naming.ts,
+  // auto-populate inserts a placeholder row (productName = sku). Once
+  // the friendly label is deployed, the next run inserts a SECOND row
+  // under the proper name. Without cleanup, both rows persist.
+  it("cleanupStaleDefaultLaunches drops ev-* placeholders whose SKU now has a friendly name", async () => {
+    const rawId = await seedRawPull();
+    // Two SKUs: one whose skus.productName has been resolved to a real
+    // name, one still default-named (the family is still unmapped).
+    await db.insert(skus).values([
+      { sku: "ev-hrshort-5x-l", productName: "High Rise Short", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-newfam-5x-l", productName: "ev-newfam-5x-l", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+    ]);
+    // Three pre-existing launch rows: one stale placeholder for the
+    // resolved SKU, one current placeholder for the still-default SKU,
+    // one already properly-named row (should be untouched).
+    await db.insert(productLaunches).values([
+      { productName: "ev-hrshort-5x-l", shipmentName: "KAI Sec Mar26", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "ev-newfam-5x-l", shipmentName: "KAI Mar26", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "Boyshort", shipmentName: "KAI Apr26", note: "Auto-added: new variant detected in incoming shipment" },
+    ]);
+
+    const deleted = await cleanupStaleDefaultLaunches();
+    expect(deleted).toBe(1);
+
+    const remaining = await db.select().from(productLaunches);
+    expect(remaining).toHaveLength(2);
+    const names = remaining.map((r) => r.productName).sort();
+    expect(names).toEqual(["Boyshort", "ev-newfam-5x-l"]);
+  });
+
+  it("cleanupStaleDefaultLaunches is idempotent (running twice deletes nothing the second time)", async () => {
+    await db.insert(skus).values([
+      { sku: "ev-hrshort-5x-l", productName: "High Rise Short", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+    ]);
+    await db.insert(productLaunches).values([
+      { productName: "ev-hrshort-5x-l", shipmentName: "KAI Sec Mar26", note: "Auto-added" },
+    ]);
+
+    expect(await cleanupStaleDefaultLaunches()).toBe(1);
+    expect(await cleanupStaleDefaultLaunches()).toBe(0);
+  });
+
+  it("runLaunchAutoPopulate runs cleanup at start (combined: stale removed + properly-named inserted)", async () => {
+    const rawId = await seedRawPull();
+    // SKU with resolved productName + a stale ev-* placeholder launch
+    await db.insert(skus).values([
+      { sku: "ev-hrshort-5x-l", productName: "High Rise Short", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+    ]);
+    await db.insert(productLaunches).values([
+      { productName: "ev-hrshort-5x-l", shipmentName: "KAI Sec Mar26", note: "Auto-added: stale placeholder" },
+    ]);
+    // Same SKU has no stock_snapshots history (variant-level new) and is in incoming
+    await db.insert(incomingShipments).values([
+      { sku: "ev-hrshort-5x-l", shipmentName: "KAI Sec Mar26", destination: "CN", expectedArrival: "2026-06-10", quantity: 200, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
+    ]);
+
+    const result = await runLaunchAutoPopulate();
+    expect(result.staleDeleted).toBe(1);
+    expect(result.inserted).toBe(1);
+
+    const launches = await db.select().from(productLaunches);
+    expect(launches).toHaveLength(1);
+    expect(launches[0].productName).toBe("High Rise Short");
   });
 });
