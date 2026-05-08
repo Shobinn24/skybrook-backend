@@ -166,7 +166,23 @@ export function deriveProductName(sku: string): string | null {
 // stock and clutter the at-risk view. Boyshort + Super HW are
 // excluded from this rule because all their colorways are
 // independently advertised, so all colors count as main.
+//
+// Scott 2026-05-08: same rule applies to launches — alt-colors of
+// these families don't get treated as new launches even when they're
+// new SKUs in incoming, because the parent product is "old" and the
+// colorways aren't independently advertised.
 const ALT_COLOR_FAMILIES = new Set(["og", "hw", "9055"]);
+
+// Display labels for color tokens, used by deriveLaunchName so that a
+// new colorway of an advertised product surfaces as e.g. "Shapewear
+// Black" rather than collapsing under the parent productName.
+const COLORWAY_DISPLAY: Record<string, string> = {
+  beige: "Beige",
+  black: "Black",
+  pink: "Pink",
+  lilac: "Lilac",
+  fc: "Multi Color",
+};
 
 /**
  * True when `sku` is a "main color" SKU per Scott's inventory filter:
@@ -210,4 +226,33 @@ export function isMainColor(sku: string): boolean {
     if (COLOR_TOKENS.has(t)) return false;
   }
   return true;
+}
+
+/**
+ * Compose a launch-tab display name for a SKU. When the SKU carries a
+ * known color token, the result includes a colorway suffix so a new
+ * colorway of an advertised product surfaces under its own row instead
+ * of collapsing into the parent product. Examples:
+ *
+ *   ev-sw-black-5x-l       + "Shapewear"        → "Shapewear Black"
+ *   ev-suphw-fc-5x-l       + "Super High-Waist" → "Super High-Waist Multi Color"
+ *   ev-bshort-5x-l         + "Boyshort"         → "Boyshort"   (no color token)
+ *   ev-hrshort-5x-l        + "High Rise Short"  → "High Rise Short"
+ *   ev-mystery-5x-l        + "ev-mystery-5x-l"  → "ev-mystery-5x-l"  (placeholder)
+ *
+ * Placeholder names (anything starting with "ev-") are returned as-is
+ * so we don't double-decorate raw SKU codes. The cleanup pass in
+ * runLaunchAutoPopulate replaces these once a friendly label is added
+ * to FAMILY_LABELS / FAMILY_ALIAS in this file.
+ */
+export function deriveLaunchName(sku: string, baseName: string): string {
+  if (baseName.startsWith("ev-")) return baseName;
+  const lower = sku.toLowerCase();
+  const parts = lower.split("-");
+  for (const t of parts) {
+    if (COLORWAY_DISPLAY[t]) {
+      return `${baseName} ${COLORWAY_DISPLAY[t]}`;
+    }
+  }
+  return baseName;
 }

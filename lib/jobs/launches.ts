@@ -1,70 +1,83 @@
-// Daily job that auto-populates the Launches tab when a new product
-// VARIANT (a SKU with no prior stock history) appears in the incoming
-// shipments sheet.
+// Daily job that auto-populates the Launches tab when a SKU appears in
+// incoming shipments without current stock or recent sales at the
+// destination. Scott 2026-05-07: "SKUs in incoming shipments that
+// currently have 0 stock and 0 sales in the US/International respectively.
+// Therefore we can deduce that they are new SKUs about to be launched."
 //
-// Scott 2026-05-06: "as soon as a new SKU is entered in an upcoming
-// shipment, the product gets added here in the launch tab."
+// Filters applied per (sku, shipmentName, destination) tuple:
+//   1. isMainColor — alt-colors of OG / HW / 9055 are NOT launches
+//      (Scott 2026-05-08: "HW and OG are not launched, those are old
+//      products"). Boyshort + Super HW + everything else: all colorways
+//      count.
+//   2. 0 stock at destination — latest stock_snapshots row for
+//      (sku, destination) must be null or 0. Pre-created zero-stock rows
+//      from the inventory sheet count as "no stock" (the bug under the
+//      old has-history rule).
+//   3. 0 sales on the destination's channel within SALES_LOOKBACK_DAYS —
+//      no daily_sales rows for (sku, destinationChannel) in the window.
 //
-// Scott 2026-05-07: original rule was productName-level — a product
-// only counted as "new" if its parent productName had zero stock history.
-// After the 2026-05-06 color-consolidation pass collapsed colorways
-// under one productName ("Boyshort", "Style 9055" etc.), every new
-// colorway counted as a restock and the launches tab stayed empty.
-// Loosened to variant-level: a SKU with no prior stock history triggers
-// a launch row even when its productName has prior history.
+// Launch rows use deriveLaunchName so a new colorway of an advertised
+// product surfaces as e.g. "Shapewear Black" instead of collapsing under
+// the parent "Shapewear" launch.
 //
-// Multiple new SKUs of the same product in the same shipment still
-// produce a single launch row — dedupe is at (productName, shipmentName)
-// level.
+// Multiple new SKUs of the same launchName in the same shipment dedupe
+// to a single launch row.
 //
-// Runs after syncProductNames so the productNames here reflect the
-// latest sku-naming pass (color-consolidated etc.).
+// Runs after syncProductNames so productNames in the SKU join reflect
+// the latest sku-naming pass.
 
-import { and, eq, isNotNull, like, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, like, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
+  dailySales,
   incomingShipments,
   productLaunches,
   skus,
   stockSnapshots,
 } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
+import { deriveLaunchName, isMainColor } from "@/lib/domain/sku-naming";
+
+/** Sales lookback window. A SKU with any sales in this window is
+ *  treated as "currently selling" and not flagged as a new launch. */
+const SALES_LOOKBACK_DAYS = 60;
+
+/** Parent product names that are alt-color buckets per Scott 2026-05-08
+ *  ("HW and OG are not launched, those are old products"). Auto-added
+ *  launches under these labels are always stale and get cleaned up. */
+const ALT_COLOR_LAUNCH_BLOCKLIST = ["HW", "OG", "Style 9055"];
+
+const AUTO_ADDED_NOTE = "Auto-added: new variant detected in incoming shipment";
 
 export type LaunchAutoPopulateResult = {
-  /** Distinct (sku, shipmentName) tuples visible in incoming. */
   candidatePairs: number;
-  /** Tuples filtered out because the SKU has stock history (variant-level). */
-  skippedExisting: number;
-  /** Tuples filtered out because a launch row already exists. */
+  skippedAltColor: number;
+  skippedHasStock: number;
+  skippedHasSales: number;
   skippedAlreadyLaunched: number;
-  /** New launch rows inserted this run. */
   inserted: number;
-  /** Stale default-named placeholder rows deleted at the start of this run. */
   staleDeleted: number;
 };
 
 /**
- * Delete launch rows whose productName is a raw `ev-*` SKU placeholder
- * AND whose corresponding `skus.productName` has since been resolved to
- * a friendly label. Idempotent. Self-heals when a new family mapping
- * (FAMILY_LABELS / FAMILY_ALIAS in lib/domain/sku-naming.ts) is added —
- * the next run replaces the placeholder rows with properly-named ones.
+ * Cleanup pass run at the start of every auto-populate. Two cases:
  *
- * Scott 2026-05-08: needed because the auto-populate inserts default-
- * named placeholders the moment a new SKU shows up in incoming, then
- * once the human-friendly label is added in code the next run inserts
- * a SECOND row rather than updating the first. Without this, the
- * launches tab accumulates stale placeholders alongside the proper rows.
+ *   1. Stale `ev-*` placeholder rows whose underlying SKU's
+ *      `skus.productName` has since been resolved to a friendly label
+ *      (FAMILY_LABELS / FAMILY_ALIAS in lib/domain/sku-naming.ts).
+ *
+ *   2. Auto-added launches under one of ALT_COLOR_LAUNCH_BLOCKLIST.
+ *      These appear when alt-color SKUs of OG / HW / 9055 (e.g.
+ *      ev-pp-hw-*, ev-pp-og-*) pass through FAMILY_ALIAS and produce
+ *      launch rows under the parent label. Scott 2026-05-08: those
+ *      parent products are old and shouldn't ever be in the launches
+ *      table.
+ *
+ * Idempotent. Manual launch rows (note != AUTO_ADDED_NOTE) are
+ * preserved.
  */
 export async function cleanupStaleDefaultLaunches(): Promise<number> {
-  // DELETE FROM product_launches l
-  // WHERE l.product_name LIKE 'ev-%'
-  //   AND EXISTS (
-  //     SELECT 1 FROM skus s
-  //     WHERE s.sku = l.product_name
-  //       AND s.product_name <> l.product_name
-  //   )
-  const result = await db
+  const stalePlaceholderResult = await db
     .delete(productLaunches)
     .where(
       and(
@@ -77,61 +90,113 @@ export async function cleanupStaleDefaultLaunches(): Promise<number> {
       ),
     )
     .returning({ id: productLaunches.id });
-  return result.length;
+
+  const altColorResult = await db
+    .delete(productLaunches)
+    .where(
+      and(
+        inArray(productLaunches.productName, ALT_COLOR_LAUNCH_BLOCKLIST),
+        eq(productLaunches.note, AUTO_ADDED_NOTE),
+      ),
+    )
+    .returning({ id: productLaunches.id });
+
+  return stalePlaceholderResult.length + altColorResult.length;
+}
+
+function destinationToChannel(dest: string): "shopify_us" | "shopify_intl" {
+  return dest === "US" ? "shopify_us" : "shopify_intl";
+}
+
+function ymdDaysAgo(days: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
 }
 
 export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult> {
   const start = Date.now();
-
-  // 0. Self-heal: drop stale default-named placeholder rows whose SKUs
-  //    now have a friendly productName. Run before the dedupe step so
-  //    properly-named rows can claim the same (productName, shipmentName)
-  //    slot the placeholder previously occupied.
   const staleDeleted = await cleanupStaleDefaultLaunches();
 
-  // 1. Pull (sku, productName, shipmentName) tuples from incoming via
-  //    SKU join. We dedupe at the SKU level so a SKU appearing in many
-  //    POs of the same shipment only counts once.
+  // 1. Pull (sku, productName, shipmentName, destination) tuples from
+  //    incoming. Inner-join to skus so we have the canonical productName
+  //    base; deriveLaunchName layers the colorway suffix on top.
   const rows = await db
     .select({
       sku: incomingShipments.sku,
       productName: skus.productName,
       shipmentName: incomingShipments.shipmentName,
+      destination: incomingShipments.destination,
     })
     .from(incomingShipments)
-    .innerJoin(skus, eq(incomingShipments.sku, skus.sku))
-    .where(isNotNull(skus.productName));
+    .innerJoin(skus, eq(incomingShipments.sku, skus.sku));
 
+  // Dedupe at (sku, shipmentName, destination) level. Same SKU across
+  // multiple POs of the same shipment + destination only counts once.
   const seen = new Set<string>();
-  const tuples: Array<{ sku: string; productName: string; shipmentName: string }> = [];
+  type Tuple = {
+    sku: string;
+    productName: string | null;
+    shipmentName: string;
+    destination: string;
+  };
+  const tuples: Tuple[] = [];
   for (const r of rows) {
-    if (!r.productName) continue;
-    const key = `${r.sku}|${r.shipmentName}`;
+    const key = `${r.sku}|${r.shipmentName}|${r.destination}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    tuples.push({
-      sku: r.sku,
-      productName: r.productName,
-      shipmentName: r.shipmentName,
-    });
+    tuples.push(r);
   }
 
   if (tuples.length === 0) {
     logger.info("launches.auto.no-candidates", { staleDeleted });
-    return { candidatePairs: 0, skippedExisting: 0, skippedAlreadyLaunched: 0, inserted: 0, staleDeleted };
+    return {
+      candidatePairs: 0,
+      skippedAltColor: 0,
+      skippedHasStock: 0,
+      skippedHasSales: 0,
+      skippedAlreadyLaunched: 0,
+      inserted: 0,
+      staleDeleted,
+    };
   }
 
-  // 2. Build set of SKUs that have any row in stock_snapshots — these
-  //    are "established variants." A new SKU within an existing product
-  //    is still considered new for launch purposes (Scott 2026-05-07
-  //    decision after color consolidation collapsed productNames).
-  const stockedRows = await db
-    .selectDistinct({ sku: stockSnapshots.sku })
-    .from(stockSnapshots);
-  const skusWithStockHistory = new Set(stockedRows.map((r) => r.sku));
+  // 2. Bulk fetch latest on-hand per (sku, location) for SKUs in
+  //    incoming. Last write wins per key.
+  const skusInIncoming = Array.from(new Set(tuples.map((t) => t.sku)));
+  const stockRows = await db
+    .select({
+      sku: stockSnapshots.sku,
+      location: stockSnapshots.location,
+      onHand: stockSnapshots.onHand,
+      snapshotDate: stockSnapshots.snapshotDate,
+    })
+    .from(stockSnapshots)
+    .where(inArray(stockSnapshots.sku, skusInIncoming))
+    .orderBy(desc(stockSnapshots.snapshotDate));
+  const latestStock = new Map<string, number>();
+  for (const r of stockRows) {
+    const k = `${r.sku}|${r.location}`;
+    if (!latestStock.has(k)) latestStock.set(k, r.onHand);
+  }
 
-  // 3. Build set of existing (productName, shipmentName) pairs already
-  //    in product_launches so we don't duplicate.
+  // 3. Bulk fetch recent sales per (sku, channel) within SALES_LOOKBACK_DAYS.
+  const since = ymdDaysAgo(SALES_LOOKBACK_DAYS);
+  const salesRows = await db
+    .select({
+      sku: dailySales.sku,
+      channel: dailySales.channel,
+      unitsSold: dailySales.unitsSold,
+    })
+    .from(dailySales)
+    .where(and(inArray(dailySales.sku, skusInIncoming), gte(dailySales.salesDate, since)));
+  const recentSales = new Map<string, number>();
+  for (const r of salesRows) {
+    const k = `${r.sku}|${r.channel}`;
+    recentSales.set(k, (recentSales.get(k) ?? 0) + r.unitsSold);
+  }
+
+  // 4. Existing launches keyed by (productName, shipmentName).
   const existingLaunches = await db
     .select({
       productName: productLaunches.productName,
@@ -142,26 +207,31 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
     existingLaunches.map((r) => `${r.productName}|${r.shipmentName}`),
   );
 
-  // 4. For each tuple, decide. Tuples that pass all filters are
-  //    deduplicated by (productName, shipmentName) so multiple new
-  //    SKUs in one shipment produce a single launch row.
-  //
-  // Scott 2026-05-07: do NOT skip default-named SKUs (productName ===
-  // sku, starts with "ev-"). Earlier behavior held them back until
-  // syncProductNames assigned a friendly label, but for unknown family
-  // codes (e.g. "hrshort", "pp") deriveProductName returns null and the
-  // SKU stays default-named indefinitely, leaving the launches tab
-  // empty. Insert with the SKU as placeholder productName; Scott can
-  // rename in the velocity sheet later.
-  let skippedExisting = 0;
+  // 5. Apply filter chain and dedupe by (launchName, shipmentName).
+  let skippedAltColor = 0;
+  let skippedHasStock = 0;
+  let skippedHasSales = 0;
   let skippedAlreadyLaunched = 0;
   const launchKeysToInsert = new Set<string>();
   for (const t of tuples) {
-    if (skusWithStockHistory.has(t.sku)) {
-      skippedExisting++;
+    if (!isMainColor(t.sku)) {
+      skippedAltColor++;
       continue;
     }
-    const launchKey = `${t.productName}|${t.shipmentName}`;
+    const stock = latestStock.get(`${t.sku}|${t.destination}`) ?? 0;
+    if (stock > 0) {
+      skippedHasStock++;
+      continue;
+    }
+    const channel = destinationToChannel(t.destination);
+    const sales = recentSales.get(`${t.sku}|${channel}`) ?? 0;
+    if (sales > 0) {
+      skippedHasSales++;
+      continue;
+    }
+    const baseName = t.productName ?? t.sku;
+    const launchName = deriveLaunchName(t.sku, baseName);
+    const launchKey = `${launchName}|${t.shipmentName}`;
     if (existingKeys.has(launchKey)) {
       skippedAlreadyLaunched++;
       continue;
@@ -169,7 +239,7 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
     launchKeysToInsert.add(launchKey);
   }
 
-  // 5. Insert deduplicated launch rows.
+  // 6. Insert deduplicated launch rows.
   let inserted = 0;
   for (const launchKey of launchKeysToInsert) {
     const sep = launchKey.indexOf("|");
@@ -180,7 +250,7 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
       .values({
         productName,
         shipmentName,
-        note: "Auto-added: new variant detected in incoming shipment",
+        note: AUTO_ADDED_NOTE,
       })
       .onConflictDoNothing({
         target: [productLaunches.productName, productLaunches.shipmentName],
@@ -191,7 +261,9 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
 
   logger.info("launches.auto.done", {
     candidatePairs: tuples.length,
-    skippedExisting,
+    skippedAltColor,
+    skippedHasStock,
+    skippedHasSales,
     skippedAlreadyLaunched,
     inserted,
     staleDeleted,
@@ -200,7 +272,9 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
 
   return {
     candidatePairs: tuples.length,
-    skippedExisting,
+    skippedAltColor,
+    skippedHasStock,
+    skippedHasSales,
     skippedAlreadyLaunched,
     inserted,
     staleDeleted,

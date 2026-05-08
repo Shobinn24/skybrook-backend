@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import {
+  dailySales,
   incomingShipments,
   productLaunches,
   rawPulls,
@@ -25,6 +26,13 @@ async function seedRawPull(): Promise<string> {
   return r.id;
 }
 
+/** Today minus N days, as YYYY-MM-DD. */
+function ymdDaysAgo(days: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
 describe("runLaunchAutoPopulate", () => {
   beforeAll(() => {
     if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL not set in test env");
@@ -34,7 +42,7 @@ describe("runLaunchAutoPopulate", () => {
     await resetDb();
   });
 
-  it("creates a launch row for a brand-new product (no stock history)", async () => {
+  it("creates a launch row for a brand-new product (no stock at destination, no recent sales)", async () => {
     const rawId = await seedRawPull();
     await db.insert(skus).values([
       { sku: "ev-newprod-5x-l", productName: "Brand New Product", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
@@ -53,14 +61,13 @@ describe("runLaunchAutoPopulate", () => {
     expect(launches[0].note).toMatch(/Auto-added/i);
   });
 
-  it("does NOT create a launch for restocks of existing products", async () => {
+  it("does NOT create a launch when the SKU has stock at the destination", async () => {
     const rawId = await seedRawPull();
     await db.insert(skus).values([
       { sku: "ev-bshort-5x-l", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-04-01", active: true },
     ]);
-    // Stock history → product is established, not a launch
     await db.insert(stockSnapshots).values([
-      { sku: "ev-bshort-5x-l", location: "US", snapshotDate: "2026-04-15", onHand: 100, sourcePullId: rawId },
+      { sku: "ev-bshort-5x-l", location: "CN", snapshotDate: "2026-04-15", onHand: 100, sourcePullId: rawId },
     ]);
     await db.insert(incomingShipments).values([
       { sku: "ev-bshort-5x-l", shipmentName: "KAI Bshort May", destination: "CN", expectedArrival: "2026-06-01", quantity: 1000, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
@@ -68,10 +75,48 @@ describe("runLaunchAutoPopulate", () => {
 
     const result = await runLaunchAutoPopulate();
     expect(result.inserted).toBe(0);
-    expect(result.skippedExisting).toBe(1);
+    expect(result.skippedHasStock).toBe(1);
 
     const launches = await db.select().from(productLaunches);
     expect(launches).toHaveLength(0);
+  });
+
+  it("does NOT create a launch when the SKU had recent sales on the destination's channel", async () => {
+    const rawId = await seedRawPull();
+    await db.insert(skus).values([
+      { sku: "ev-bshort-5x-l", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-04-01", active: true },
+    ]);
+    // 0 stock at CN but recent INTL sales → established product, no launch.
+    await db.insert(dailySales).values([
+      { channel: "shopify_intl", sku: "ev-bshort-5x-l", salesDate: ymdDaysAgo(7), unitsSold: 50, netSalesUsd: "1000.00", sourcePullId: rawId },
+    ]);
+    await db.insert(incomingShipments).values([
+      { sku: "ev-bshort-5x-l", shipmentName: "KAI Bshort May", destination: "CN", expectedArrival: "2026-06-01", quantity: 1000, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
+    ]);
+
+    const result = await runLaunchAutoPopulate();
+    expect(result.inserted).toBe(0);
+    expect(result.skippedHasSales).toBe(1);
+  });
+
+  it("treats pre-created zero-stock snapshot rows as 'no stock' (Scott 2026-05-08 fix)", async () => {
+    // The inventory sheet pre-creates onHand=0 rows for upcoming SKUs.
+    // Pre-2026-05-08 logic treated ANY snapshot row as "established"
+    // and the SKU never surfaced as a launch. New rule: only non-zero
+    // current stock blocks the launch.
+    const rawId = await seedRawPull();
+    await db.insert(skus).values([
+      { sku: "ev-newprod-5x-l", productName: "Brand New Product", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
+    ]);
+    await db.insert(stockSnapshots).values([
+      { sku: "ev-newprod-5x-l", location: "CN", snapshotDate: "2026-05-01", onHand: 0, sourcePullId: rawId },
+    ]);
+    await db.insert(incomingShipments).values([
+      { sku: "ev-newprod-5x-l", shipmentName: "KAI New 1", destination: "CN", expectedArrival: "2026-06-01", quantity: 500, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
+    ]);
+
+    const result = await runLaunchAutoPopulate();
+    expect(result.inserted).toBe(1);
   });
 
   it("doesn't duplicate when an existing launch row already exists for the same (product, shipment)", async () => {
@@ -95,16 +140,10 @@ describe("runLaunchAutoPopulate", () => {
 
     const launches = await db.select().from(productLaunches);
     expect(launches).toHaveLength(1);
-    // The manually-set date is preserved
     expect(launches[0].intlLaunchDate).toBe("2026-07-01");
   });
 
   it("inserts default-named SKUs (productName === sku) with the SKU as placeholder name (Scott 2026-05-07)", async () => {
-    // Earlier behavior was to skip these and wait for syncProductNames
-    // to assign a friendly label. But unknown family codes (hrshort, pp)
-    // leave the SKU default-named indefinitely. Insert with placeholder
-    // so the launches tab populates; Scott can rename via the velocity
-    // sheet later.
     const rawId = await seedRawPull();
     await db.insert(skus).values([
       { sku: "ev-mystery-5x-l", productName: "ev-mystery-5x-l", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
@@ -124,7 +163,6 @@ describe("runLaunchAutoPopulate", () => {
 
   it("creates one launch per (product, shipment) pair when many SKUs of the new product land in the same PO", async () => {
     const rawId = await seedRawPull();
-    // Single new product spread across 4 sizes, all in the same shipment
     await db.insert(skus).values([
       { sku: "ev-newprod-5x-s", productName: "Brand New Product", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
       { sku: "ev-newprod-5x-m", productName: "Brand New Product", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
@@ -140,92 +178,109 @@ describe("runLaunchAutoPopulate", () => {
         quantity: 200,
         status: "po" as const,
         sourcePullId: rawId, sourceRowRef: "row-1",
-      }))
-    );
-
-    const result = await runLaunchAutoPopulate();
-    expect(result.inserted).toBe(1);
-
-    const launches = await db.select().from(productLaunches);
-    expect(launches).toHaveLength(1);
-  });
-
-  it("creates a launch when a NEW VARIANT of an established product arrives (variant-level newness, Scott 2026-05-07)", async () => {
-    const rawId = await seedRawPull();
-    // Established variant: ev-bshort-5x-l has stock history.
-    // New variant: ev-bshort-fc-5x-l is a different SKU under the same
-    // productName (post-color-consolidation) and has NO stock history.
-    await db.insert(skus).values([
-      { sku: "ev-bshort-5x-l", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-04-01", active: true },
-      { sku: "ev-bshort-fc-5x-l", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
-    ]);
-    await db.insert(stockSnapshots).values([
-      { sku: "ev-bshort-5x-l", location: "US", snapshotDate: "2026-04-15", onHand: 100, sourcePullId: rawId },
-    ]);
-    await db.insert(incomingShipments).values([
-      // Old variant restock — should NOT trigger
-      { sku: "ev-bshort-5x-l", shipmentName: "KAI Bshort May", destination: "CN", expectedArrival: "2026-06-01", quantity: 1000, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
-      // New variant in the same shipment — SHOULD trigger
-      { sku: "ev-bshort-fc-5x-l", shipmentName: "KAI Bshort May", destination: "CN", expectedArrival: "2026-06-01", quantity: 500, status: "po", sourcePullId: rawId, sourceRowRef: "row-2" },
-    ]);
-
-    const result = await runLaunchAutoPopulate();
-    expect(result.inserted).toBe(1);
-    expect(result.skippedExisting).toBe(1); // ev-bshort-5x-l counted as established
-
-    const launches = await db.select().from(productLaunches);
-    expect(launches).toHaveLength(1);
-    expect(launches[0].productName).toBe("Boyshort");
-    expect(launches[0].shipmentName).toBe("KAI Bshort May");
-    expect(launches[0].note).toMatch(/new variant/i);
-  });
-
-  it("dedupes to one launch when multiple new variants of an established product land in the same shipment", async () => {
-    const rawId = await seedRawPull();
-    await db.insert(skus).values([
-      { sku: "ev-bshort-5x-l", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-04-01", active: true },
-      { sku: "ev-bshort-fc-5x-l", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
-      { sku: "ev-bshort-fc-5x-m", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
-      { sku: "ev-bshort-fc-5x-s", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
-    ]);
-    await db.insert(stockSnapshots).values([
-      { sku: "ev-bshort-5x-l", location: "US", snapshotDate: "2026-04-15", onHand: 100, sourcePullId: rawId },
-    ]);
-    await db.insert(incomingShipments).values(
-      ["ev-bshort-fc-5x-l", "ev-bshort-fc-5x-m", "ev-bshort-fc-5x-s"].map((sku) => ({
-        sku,
-        shipmentName: "KAI Bshort May",
-        destination: "CN" as const,
-        expectedArrival: "2026-06-01",
-        quantity: 200,
-        status: "po" as const,
-        sourcePullId: rawId, sourceRowRef: "row-1",
       })),
     );
 
     const result = await runLaunchAutoPopulate();
-    expect(result.inserted).toBe(1); // 3 new variants → 1 dedupe-by-(product,shipment) launch row
+    expect(result.inserted).toBe(1);
 
     const launches = await db.select().from(productLaunches);
     expect(launches).toHaveLength(1);
   });
 
-  // Scott 2026-05-08: stale-placeholder cleanup. When a new SKU prefix
-  // shows up in incoming before its family label is in sku-naming.ts,
-  // auto-populate inserts a placeholder row (productName = sku). Once
-  // the friendly label is deployed, the next run inserts a SECOND row
-  // under the proper name. Without cleanup, both rows persist.
-  it("cleanupStaleDefaultLaunches drops ev-* placeholders whose SKU now has a friendly name", async () => {
+  // Scott 2026-05-08: a new colorway of an established product (e.g.
+  // Shapewear Black where Shapewear is an existing product) surfaces
+  // under its colorway-suffixed name.
+  it("surfaces a new colorway of an advertised product as 'ParentName Color' launch", async () => {
     const rawId = await seedRawPull();
-    // Two SKUs: one whose skus.productName has been resolved to a real
-    // name, one still default-named (the family is still unmapped).
+    await db.insert(skus).values([
+      { sku: "ev-sw-5x-l", productName: "Shapewear", productLine: "Core", firstSeenAt: "2026-04-01", active: true },
+      { sku: "ev-sw-black-5x-l", productName: "Shapewear", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+    ]);
+    // Established Shapewear has stock + sales at CN. New black colorway has neither.
+    await db.insert(stockSnapshots).values([
+      { sku: "ev-sw-5x-l", location: "CN", snapshotDate: "2026-04-15", onHand: 200, sourcePullId: rawId },
+    ]);
+    await db.insert(dailySales).values([
+      { channel: "shopify_intl", sku: "ev-sw-5x-l", salesDate: ymdDaysAgo(5), unitsSold: 30, netSalesUsd: "600.00", sourcePullId: rawId },
+    ]);
+    await db.insert(incomingShipments).values([
+      { sku: "ev-sw-5x-l", shipmentName: "KAI Apr26", destination: "CN", expectedArrival: "2026-06-01", quantity: 1000, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
+      { sku: "ev-sw-black-5x-l", shipmentName: "KAI Apr26", destination: "CN", expectedArrival: "2026-06-01", quantity: 500, status: "po", sourcePullId: rawId, sourceRowRef: "row-2" },
+    ]);
+
+    const result = await runLaunchAutoPopulate();
+    expect(result.inserted).toBe(1);
+    expect(result.skippedHasStock).toBe(1); // ev-sw-5x-l blocked by stock at CN
+
+    const launches = await db.select().from(productLaunches);
+    expect(launches).toHaveLength(1);
+    expect(launches[0].productName).toBe("Shapewear Black");
+    expect(launches[0].shipmentName).toBe("KAI Apr26");
+  });
+
+  it("composes 'Multi Color' suffix for fc-tagged new colorways (Super HW Multi Color)", async () => {
+    const rawId = await seedRawPull();
+    await db.insert(skus).values([
+      { sku: "ev-suphw-fc-5x-l", productName: "Super High-Waist", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+    ]);
+    await db.insert(incomingShipments).values([
+      { sku: "ev-suphw-fc-5x-l", shipmentName: "KAI Jan26", destination: "CN", expectedArrival: "2026-06-01", quantity: 500, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
+    ]);
+
+    const result = await runLaunchAutoPopulate();
+    expect(result.inserted).toBe(1);
+
+    const launches = await db.select().from(productLaunches);
+    expect(launches[0].productName).toBe("Super High-Waist Multi Color");
+  });
+
+  // Scott 2026-05-08: alt-color SKUs of OG / HW / 9055 are NOT launches
+  // even if they're brand-new SKUs in incoming. The parent products are
+  // old and these colorways aren't independently advertised.
+  it("does NOT create a launch for alt-color SKUs of OG / HW / 9055 (FAMILY_ALIAS rewrites)", async () => {
+    const rawId = await seedRawPull();
+    await db.insert(skus).values([
+      { sku: "ev-pp-hw-l", productName: "HW", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-pp-og-l", productName: "OG", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-bp-9055-5x-l", productName: "Style 9055", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+    ]);
+    await db.insert(incomingShipments).values([
+      { sku: "ev-pp-hw-l", shipmentName: "KAI 26", destination: "CN", expectedArrival: "2026-06-01", quantity: 100, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
+      { sku: "ev-pp-og-l", shipmentName: "KAI 26", destination: "CN", expectedArrival: "2026-06-01", quantity: 100, status: "po", sourcePullId: rawId, sourceRowRef: "row-2" },
+      { sku: "ev-bp-9055-5x-l", shipmentName: "KAI 26", destination: "CN", expectedArrival: "2026-06-01", quantity: 100, status: "po", sourcePullId: rawId, sourceRowRef: "row-3" },
+    ]);
+
+    const result = await runLaunchAutoPopulate();
+    expect(result.inserted).toBe(0);
+    expect(result.skippedAltColor).toBe(3);
+
+    const launches = await db.select().from(productLaunches);
+    expect(launches).toHaveLength(0);
+  });
+
+  it("does NOT create a launch for color-token SKUs in og / hw / 9055 families (e.g. ev-og-5x-beige-l)", async () => {
+    const rawId = await seedRawPull();
+    await db.insert(skus).values([
+      { sku: "ev-og-1x-beige-l", productName: "OG", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-9055-black-5x-l", productName: "Style 9055", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+    ]);
+    await db.insert(incomingShipments).values([
+      { sku: "ev-og-1x-beige-l", shipmentName: "KAI 26", destination: "CN", expectedArrival: "2026-06-01", quantity: 100, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
+      { sku: "ev-9055-black-5x-l", shipmentName: "KAI 26", destination: "CN", expectedArrival: "2026-06-01", quantity: 100, status: "po", sourcePullId: rawId, sourceRowRef: "row-2" },
+    ]);
+
+    const result = await runLaunchAutoPopulate();
+    expect(result.skippedAltColor).toBe(2);
+  });
+
+  // Scott 2026-05-08: stale-placeholder cleanup, plus blocklist
+  // cleanup for HW / OG / Style 9055 auto-added launches.
+  it("cleanupStaleDefaultLaunches drops ev-* placeholders whose SKU now has a friendly name", async () => {
     await db.insert(skus).values([
       { sku: "ev-hrshort-5x-l", productName: "High Rise Short", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
       { sku: "ev-newfam-5x-l", productName: "ev-newfam-5x-l", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
     ]);
-    // Three pre-existing launch rows: one stale placeholder for the
-    // resolved SKU, one current placeholder for the still-default SKU,
-    // one already properly-named row (should be untouched).
     await db.insert(productLaunches).values([
       { productName: "ev-hrshort-5x-l", shipmentName: "KAI Sec Mar26", note: "Auto-added: new variant detected in incoming shipment" },
       { productName: "ev-newfam-5x-l", shipmentName: "KAI Mar26", note: "Auto-added: new variant detected in incoming shipment" },
@@ -241,28 +296,47 @@ describe("runLaunchAutoPopulate", () => {
     expect(names).toEqual(["Boyshort", "ev-newfam-5x-l"]);
   });
 
+  it("cleanupStaleDefaultLaunches drops auto-added HW / OG / Style 9055 launches (alt-color blocklist)", async () => {
+    await db.insert(productLaunches).values([
+      { productName: "HW", shipmentName: "KAI 24", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "OG", shipmentName: "KAI 26", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "Style 9055", shipmentName: "KAI 24", note: "Auto-added: new variant detected in incoming shipment" },
+      // Manually-added launch under one of the blocklist names: preserved.
+      { productName: "HW", shipmentName: "KAI 27", note: "Manually added by Scott" },
+      // Other launches: preserved.
+      { productName: "Boyshort", shipmentName: "KAI Apr26", note: "Auto-added: new variant detected in incoming shipment" },
+    ]);
+
+    const deleted = await cleanupStaleDefaultLaunches();
+    expect(deleted).toBe(3);
+
+    const remaining = await db.select().from(productLaunches);
+    expect(remaining).toHaveLength(2);
+    const names = remaining.map((r) => `${r.productName}|${r.shipmentName}`).sort();
+    expect(names).toEqual(["Boyshort|KAI Apr26", "HW|KAI 27"]);
+  });
+
   it("cleanupStaleDefaultLaunches is idempotent (running twice deletes nothing the second time)", async () => {
     await db.insert(skus).values([
       { sku: "ev-hrshort-5x-l", productName: "High Rise Short", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
     ]);
     await db.insert(productLaunches).values([
-      { productName: "ev-hrshort-5x-l", shipmentName: "KAI Sec Mar26", note: "Auto-added" },
+      { productName: "ev-hrshort-5x-l", shipmentName: "KAI Sec Mar26", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "HW", shipmentName: "KAI 24", note: "Auto-added: new variant detected in incoming shipment" },
     ]);
 
-    expect(await cleanupStaleDefaultLaunches()).toBe(1);
+    expect(await cleanupStaleDefaultLaunches()).toBe(2);
     expect(await cleanupStaleDefaultLaunches()).toBe(0);
   });
 
   it("runLaunchAutoPopulate runs cleanup at start (combined: stale removed + properly-named inserted)", async () => {
     const rawId = await seedRawPull();
-    // SKU with resolved productName + a stale ev-* placeholder launch
     await db.insert(skus).values([
       { sku: "ev-hrshort-5x-l", productName: "High Rise Short", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
     ]);
     await db.insert(productLaunches).values([
       { productName: "ev-hrshort-5x-l", shipmentName: "KAI Sec Mar26", note: "Auto-added: stale placeholder" },
     ]);
-    // Same SKU has no stock_snapshots history (variant-level new) and is in incoming
     await db.insert(incomingShipments).values([
       { sku: "ev-hrshort-5x-l", shipmentName: "KAI Sec Mar26", destination: "CN", expectedArrival: "2026-06-10", quantity: 200, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
     ]);

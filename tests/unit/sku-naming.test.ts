@@ -148,7 +148,7 @@ describe("deriveProductName — color-consolidated rollup names", () => {
   });
 });
 
-import { isMainColor } from "@/lib/domain/sku-naming";
+import { deriveLaunchName, isMainColor } from "@/lib/domain/sku-naming";
 
 describe("isMainColor — Scott's main-color filter", () => {
   it("og / hw / 9055 base colorway returns true", () => {
@@ -208,5 +208,42 @@ describe("isMainColor — Scott's main-color filter", () => {
     expect(isMainColor("EV-OG-5X-L")).toBe(true);
     expect(isMainColor("EV-OG-5X-BEIGE-L")).toBe(false);
     expect(isMainColor("EV-PP-HW-L")).toBe(false);
+  });
+});
+
+describe("deriveLaunchName — colorway-suffixed launch labels", () => {
+  it("returns baseName unchanged when SKU has no color token", () => {
+    expect(deriveLaunchName("ev-bshort-5x-l", "Boyshort")).toBe("Boyshort");
+    expect(deriveLaunchName("ev-hrshort-5x-l", "High Rise Short")).toBe("High Rise Short");
+    expect(deriveLaunchName("ev-sw-5x-l", "Shapewear")).toBe("Shapewear");
+  });
+
+  it("appends colorway label when SKU carries a known color token", () => {
+    expect(deriveLaunchName("ev-sw-black-5x-l", "Shapewear")).toBe("Shapewear Black");
+    expect(deriveLaunchName("ev-bshort-pink-5x-l", "Boyshort")).toBe("Boyshort Pink");
+    expect(deriveLaunchName("ev-suphw-fc-5x-l", "Super High-Waist")).toBe("Super High-Waist Multi Color");
+    expect(deriveLaunchName("ev-bshort-beige-5x-l", "Boyshort")).toBe("Boyshort Beige");
+    expect(deriveLaunchName("ev-bshort-lilac-5x-l", "Boyshort")).toBe("Boyshort Lilac");
+  });
+
+  it("works for HF SKUs (color token before HF)", () => {
+    expect(deriveLaunchName("ev-bshort-black-hf-5x-l", "Boyshort")).toBe("Boyshort Black");
+  });
+
+  it("returns baseName as-is when baseName is a placeholder (starts with ev-)", () => {
+    // Don't decorate placeholder names; the cleanup pass replaces these
+    // once a proper label is added to FAMILY_LABELS / FAMILY_ALIAS.
+    expect(deriveLaunchName("ev-mystery-5x-l", "ev-mystery-5x-l")).toBe("ev-mystery-5x-l");
+    expect(deriveLaunchName("ev-newfam-black-5x-l", "ev-newfam-black-5x-l")).toBe("ev-newfam-black-5x-l");
+  });
+
+  it("case-insensitive on the SKU input", () => {
+    expect(deriveLaunchName("EV-SW-BLACK-5X-L", "Shapewear")).toBe("Shapewear Black");
+  });
+
+  it("uses the first color token encountered (deterministic on weird multi-color SKUs)", () => {
+    // Defensive — real SKUs don't carry two color tokens, but if one
+    // ever did the function should still return one stable label.
+    expect(deriveLaunchName("ev-bshort-black-pink-5x-l", "Boyshort")).toBe("Boyshort Black");
   });
 });

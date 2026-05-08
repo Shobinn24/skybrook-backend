@@ -1,29 +1,42 @@
 // Read-only diagnostic for the /launches page auto-populate logic.
 //
-// Mirrors runLaunchAutoPopulate's variant-level decision rules
-// (Scott 2026-05-07): a SKU with no prior stock_snapshots history
-// triggers a launch row even when its productName has prior history.
+// Mirrors runLaunchAutoPopulate's per-tuple decision rules so the
+// returned `candidates` array shows what would happen on the next run:
 //
-// Returns:
-// - currentLaunches: every row in product_launches (newest first)
-// - candidates: dry-run preview of (sku, productName, shipmentName)
-//   tuples from incoming, with the auto-populate decision for each:
-//     "would_insert" | "skipped_existing_variant" |
-//     "skipped_already_launched" | "skipped_default_name" | "skipped_null_name"
+//   "would_insert"             — passes all filters, would insert
+//   "skipped_alt_color"        — alt-color of OG / HW / 9055
+//   "skipped_has_stock"        — non-zero stock at the destination
+//   "skipped_has_sales"        — recent sales on the destination's channel
+//   "skipped_already_launched" — (productName, shipmentName) already in launches
 //
-// Auth: Bearer CRON_SECRET. Read-only — does not insert anything.
+// Auth: Bearer CRON_SECRET. Read-only — does not insert or delete.
+
 import { NextResponse } from "next/server";
-import { desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
+  dailySales,
   incomingShipments,
   productLaunches,
   skus,
   stockSnapshots,
 } from "@/lib/db/schema";
+import { deriveLaunchName, isMainColor } from "@/lib/domain/sku-naming";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const SALES_LOOKBACK_DAYS = 60;
+
+function destinationToChannel(dest: string): "shopify_us" | "shopify_intl" {
+  return dest === "US" ? "shopify_us" : "shopify_intl";
+}
+
+function ymdDaysAgo(days: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
 
 async function authedHandler(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
@@ -38,7 +51,6 @@ async function authedHandler(req: Request) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
-  // 1. Current launches table
   const currentLaunches = await db
     .select({
       id: productLaunches.id,
@@ -54,98 +66,106 @@ async function authedHandler(req: Request) {
     .from(productLaunches)
     .orderBy(desc(productLaunches.createdAt));
 
-  // 2. Candidate (sku, productName, shipmentName) tuples from incoming.
-  //    Dedupe at SKU level so a SKU appearing across multiple POs in
-  //    the same shipment counts once.
   const rows = await db
     .select({
       sku: incomingShipments.sku,
       productName: skus.productName,
       shipmentName: incomingShipments.shipmentName,
+      destination: incomingShipments.destination,
     })
     .from(incomingShipments)
-    .innerJoin(skus, eq(incomingShipments.sku, skus.sku))
-    .where(isNotNull(skus.productName));
+    .innerJoin(skus, eq(incomingShipments.sku, skus.sku));
+
   const seen = new Set<string>();
-  const tuples: Array<{ sku: string; productName: string | null; shipmentName: string }> = [];
+  type Tuple = {
+    sku: string;
+    productName: string | null;
+    shipmentName: string;
+    destination: string;
+  };
+  const tuples: Tuple[] = [];
   for (const r of rows) {
-    const key = `${r.sku}|${r.shipmentName}`;
+    const key = `${r.sku}|${r.shipmentName}|${r.destination}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    tuples.push({
-      sku: r.sku,
-      productName: r.productName,
-      shipmentName: r.shipmentName,
-    });
+    tuples.push(r);
   }
 
-  // 3. SKUs with stock history (= "established variants")
-  const stockedRows = await db
-    .selectDistinct({ sku: stockSnapshots.sku })
-    .from(stockSnapshots);
-  const skusWithStockHistory = new Set(stockedRows.map((r) => r.sku));
+  const skusInIncoming = Array.from(new Set(tuples.map((t) => t.sku)));
+  const stockRows = skusInIncoming.length
+    ? await db
+        .select({
+          sku: stockSnapshots.sku,
+          location: stockSnapshots.location,
+          onHand: stockSnapshots.onHand,
+          snapshotDate: stockSnapshots.snapshotDate,
+        })
+        .from(stockSnapshots)
+        .where(inArray(stockSnapshots.sku, skusInIncoming))
+        .orderBy(desc(stockSnapshots.snapshotDate))
+    : [];
+  const latestStock = new Map<string, number>();
+  for (const r of stockRows) {
+    const k = `${r.sku}|${r.location}`;
+    if (!latestStock.has(k)) latestStock.set(k, r.onHand);
+  }
 
-  // 4. Existing launch keys
+  const since = ymdDaysAgo(SALES_LOOKBACK_DAYS);
+  const salesRows = skusInIncoming.length
+    ? await db
+        .select({
+          sku: dailySales.sku,
+          channel: dailySales.channel,
+          unitsSold: dailySales.unitsSold,
+        })
+        .from(dailySales)
+        .where(and(inArray(dailySales.sku, skusInIncoming), gte(dailySales.salesDate, since)))
+    : [];
+  const recentSales = new Map<string, number>();
+  for (const r of salesRows) {
+    const k = `${r.sku}|${r.channel}`;
+    recentSales.set(k, (recentSales.get(k) ?? 0) + r.unitsSold);
+  }
+
   const existingKeys = new Set(
     currentLaunches.map((r) => `${r.productName}|${r.shipmentName}`),
   );
 
-  // 5. Decide outcome for each tuple (matches runLaunchAutoPopulate)
   const candidates = tuples.map((t) => {
-    if (!t.productName) {
-      return {
-        sku: t.sku,
-        productName: null,
-        shipmentName: t.shipmentName,
-        decision: "skipped_null_name",
-      };
+    const baseName = t.productName ?? t.sku;
+    const launchName = deriveLaunchName(t.sku, baseName);
+    if (!isMainColor(t.sku)) {
+      return { ...t, launchName, decision: "skipped_alt_color" };
     }
-    if (skusWithStockHistory.has(t.sku)) {
-      return {
-        sku: t.sku,
-        productName: t.productName,
-        shipmentName: t.shipmentName,
-        decision: "skipped_existing_variant",
-      };
+    const stock = latestStock.get(`${t.sku}|${t.destination}`) ?? 0;
+    if (stock > 0) {
+      return { ...t, launchName, decision: "skipped_has_stock", stock };
     }
-    const key = `${t.productName}|${t.shipmentName}`;
-    if (existingKeys.has(key)) {
-      return {
-        sku: t.sku,
-        productName: t.productName,
-        shipmentName: t.shipmentName,
-        decision: "skipped_already_launched",
-      };
+    const channel = destinationToChannel(t.destination);
+    const sales = recentSales.get(`${t.sku}|${channel}`) ?? 0;
+    if (sales > 0) {
+      return { ...t, launchName, decision: "skipped_has_sales", recentSalesUnits: sales };
     }
-    // Note: default-named (productName starts with "ev-") tuples now
-    // pass through and would_insert with the SKU as placeholder name.
-    // Scott 2026-05-07.
-    return {
-      sku: t.sku,
-      productName: t.productName,
-      shipmentName: t.shipmentName,
-      decision: "would_insert",
-      defaultName: t.productName.startsWith("ev-"),
-    };
+    if (existingKeys.has(`${launchName}|${t.shipmentName}`)) {
+      return { ...t, launchName, decision: "skipped_already_launched" };
+    }
+    return { ...t, launchName, decision: "would_insert" };
   });
 
-  // 6. Roll up
   const summary = candidates.reduce<Record<string, number>>((acc, c) => {
     acc[c.decision] = (acc[c.decision] ?? 0) + 1;
     return acc;
   }, {});
 
-  // Distinct (productName, shipmentName) pairs that would actually
-  // produce a launch row (since multiple new SKUs in same shipment
-  // dedupe to one launch).
   const wouldInsertLaunchRows = new Set(
     candidates
       .filter((c) => c.decision === "would_insert")
-      .map((c) => `${c.productName}|${c.shipmentName}`),
+      .map((c) => `${c.launchName}|${c.shipmentName}`),
   );
 
   return NextResponse.json({
     ok: true,
+    salesLookbackDays: SALES_LOOKBACK_DAYS,
     currentLaunchesCount: currentLaunches.length,
     currentLaunches,
     candidatePairsCount: candidates.length,
