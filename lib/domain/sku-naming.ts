@@ -34,6 +34,8 @@ const FAMILY_LABELS: Record<string, string> = {
   // 2026-05-06. Pending Scott confirmation on exact wording.
   "jac": "Jacquard",
   "mlb": "MLB",
+  // Scott 2026-05-07
+  "hrshort": "High Rise Short",
 };
 
 // Multi-segment family prefixes — checked before single-segment lookup.
@@ -49,11 +51,16 @@ const MULTI_FAMILY_LABELS: Record<string, string> = {
 // rather than creating a new parent product. Scott 2026-05-06:
 //  - "new-og" / "new-9055" → color variants of OG / Style 9055
 //  - "bp-9055" → Beige Pink colorway of Style 9055
+// Scott 2026-05-07:
+//  - "pp-hw" / "pp-og" → variants of HW / OG (the pp- prefix is
+//    a colorway/spec marker; the actual product is HW/OG)
 // Treat them as if they were ev-og-5x-* / ev-9055-5x-* respectively.
 const FAMILY_ALIAS: Record<string, string> = {
   "new-og": "og",
   "new-9055": "9055",
   "bp-9055": "9055",
+  "pp-hw": "hw",
+  "pp-og": "og",
 };
 
 // Colorways are parsed (so they don't get mistaken for size/pack/hf
@@ -92,6 +99,7 @@ const IMPLICIT_5PACK_FAMILIES = new Set([
   "jac",
   "sl-bik",
   "sl-hw",
+  "hrshort",
 ]);
 
 export function deriveProductName(sku: string): string | null {

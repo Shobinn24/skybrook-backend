@@ -121,4 +121,29 @@ describe("deriveProductName — color-consolidated rollup names", () => {
     expect(deriveProductName("ev-mixed-3xl")).toBe("OG 5-Pack");
     expect(deriveProductName("EV-mixed-l")).toBe("OG 5-Pack");
   });
+
+  // Scott 2026-05-07: hrshort = High Rise Short (new family)
+  it("maps ev-hrshort-5x-{size} to 'High Rise Short' (5-pack implicit)", () => {
+    expect(deriveProductName("ev-hrshort-5x-l")).toBe("High Rise Short");
+    expect(deriveProductName("ev-hrshort-5x-xxl")).toBe("High Rise Short");
+    expect(deriveProductName("ev-hrshort-5x-xs")).toBe("High Rise Short");
+    expect(deriveProductName("EV-hrshort-5x-3xl")).toBe("High Rise Short");
+  });
+
+  // Scott 2026-05-07: pp-hw / pp-og are colorway variants of HW / OG.
+  // No pack token in the SKU, so output has no pack label — matches
+  // existing FAMILY_ALIAS behavior for new-og / new-9055.
+  it("collapses pp-hw under 'HW' via FAMILY_ALIAS", () => {
+    expect(deriveProductName("ev-pp-hw-l")).toBe("HW");
+    expect(deriveProductName("ev-pp-hw-xl")).toBe("HW");
+    expect(deriveProductName("ev-pp-hw-xxl")).toBe("HW");
+    expect(deriveProductName("ev-pp-hw-xxs")).toBe("HW");
+  });
+
+  it("collapses pp-og under 'OG' via FAMILY_ALIAS", () => {
+    expect(deriveProductName("ev-pp-og-l")).toBe("OG");
+    expect(deriveProductName("ev-pp-og-xs")).toBe("OG");
+    expect(deriveProductName("ev-pp-og-xxl")).toBe("OG");
+    expect(deriveProductName("ev-pp-og-xxxl")).toBe("OG");
+  });
 });
