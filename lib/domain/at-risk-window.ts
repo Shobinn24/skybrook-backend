@@ -29,8 +29,11 @@ function addDays(ymd: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** True when this row's projected run-out (or DOS-implied run-out)
- * falls inside the horizon window. */
+/** True when this row's projected run-out falls inside the horizon
+ * window. Trusts the sustainability check's projection only — does
+ * NOT fall back to raw days-of-stock. Scott 2026-05-07: previous
+ * DOS fallback flagged SKUs as at_risk based on weeks-of-stock alone,
+ * even when incoming POs in the projection covered them. */
 export function isAtRiskWithin(
   row: Pick<InventoryRow, "runOutDate" | "daysOfStock" | "flag">,
   asOfDate: string,
@@ -39,16 +42,8 @@ export function isAtRiskWithin(
   // Overstocked is excluded — these have far more stock than needed,
   // so they're never "at risk of running out".
   if (row.flag === "overstocked") return false;
-  // Projection-based date is the strongest signal when present.
-  if (row.runOutDate !== null) {
-    return row.runOutDate <= addDays(asOfDate, horizonDays);
-  }
-  // Fallback: DOS-implied run-out. Used when the SKU has no upcoming
-  // POs to walk through, so the projection didn't produce a date.
-  if (row.daysOfStock !== null && Number.isFinite(row.daysOfStock)) {
-    return row.daysOfStock <= horizonDays;
-  }
-  return false;
+  if (row.runOutDate === null) return false;
+  return row.runOutDate <= addDays(asOfDate, horizonDays);
 }
 
 export type DisplayFlag = "healthy" | "watch" | "at_risk" | "overstocked" | null;

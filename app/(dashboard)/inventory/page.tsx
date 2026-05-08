@@ -133,10 +133,11 @@ export default function InventoryPage() {
       {
         label: "Rule",
         ref:
-          "at_risk = projected runOutDate ≤ today + 45d, OR daysOfStock ≤ 45 when " +
-          "no projection date exists. Overstocked rows are excluded.",
+          "at_risk = projected runOutDate ≤ today + 45d. " +
+          "Overstocked rows are excluded. " +
+          "Rows with no projected run-out date (PO coverage holds through horizon) are NOT at risk.",
       },
-      { label: "Scott", ref: "2026-05-06 round 2: 'at risk based off the sustainability report ... in the next 45 days'" },
+      { label: "Scott", ref: "2026-05-07: at risk should mean projected to run out per sustainability check, not raw weeks-of-stock" },
     ],
   };
   const overstockedTrace: NumberTrace = {

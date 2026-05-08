@@ -86,12 +86,20 @@ export function computeSustainabilityFlag(input: {
 
   // Fewer than 2 POs were available to project through — fall back to DOS thresholds on the
   // stock we end up with after any partial projection.
+  // Scott 2026-05-07: populate runOutDate in fallback at_risk / watch paths
+  // so the inventory tab can rely on `runOutDate !== null` as the at_risk
+  // signal instead of a raw days-of-stock threshold (which double-counted
+  // SKUs already covered by upcoming POs).
   const remainingDos = input.velocityPerDay > 0 ? stock / input.velocityPerDay : Infinity;
+  const fallbackRunOutDate =
+    input.velocityPerDay > 0 && stock > 0
+      ? addDays(currentDate, Math.ceil(stock / input.velocityPerDay))
+      : null;
   if (remainingDos < thresholds.atRiskDays) {
-    return { flag: "at_risk", reasoning, daysOfStock: dos, runOutDate: null };
+    return { flag: "at_risk", reasoning, daysOfStock: dos, runOutDate: fallbackRunOutDate };
   }
   if (remainingDos <= thresholds.watchDays) {
-    return { flag: "watch", reasoning, daysOfStock: dos, runOutDate: null };
+    return { flag: "watch", reasoning, daysOfStock: dos, runOutDate: fallbackRunOutDate };
   }
   return { flag: "healthy", reasoning, daysOfStock: dos, runOutDate: null };
 }

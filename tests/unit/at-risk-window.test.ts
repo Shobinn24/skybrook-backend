@@ -21,13 +21,17 @@ describe("at-risk-window — Scott's 45-day inventory rule", () => {
     ).toBe(false); // ~120 days out
   });
 
-  it("falls back to daysOfStock when runOutDate is null (in-window)", () => {
+  // Scott 2026-05-07: previously isAtRiskWithin fell back to
+  // `daysOfStock <= horizonDays` when runOutDate was null. That flagged
+  // SKUs as at_risk based on raw weeks-of-stock even when incoming POs
+  // covered them. Now the projection's runOutDate is the only signal.
+  it("returns false when runOutDate is null even with low DOS", () => {
     expect(
-      isAtRiskWithin({ runOutDate: null, daysOfStock: 30, flag: "at_risk" }, today),
-    ).toBe(true);
+      isAtRiskWithin({ runOutDate: null, daysOfStock: 5, flag: "at_risk" }, today),
+    ).toBe(false);
   });
 
-  it("falls back to daysOfStock when runOutDate is null (out-of-window)", () => {
+  it("returns false when runOutDate is null with high DOS", () => {
     expect(
       isAtRiskWithin({ runOutDate: null, daysOfStock: 80, flag: "watch" }, today),
     ).toBe(false);
@@ -84,13 +88,27 @@ describe("at-risk-window — Scott's 45-day inventory rule", () => {
     ).toBe("healthy");
   });
 
-  it("DOS = 5 with no projection date → at_risk in display", () => {
+  it("at_risk flag with runOutDate inside horizon → at_risk in display", () => {
+    expect(
+      transformedDisplayFlag(
+        { runOutDate: "2026-05-20", daysOfStock: 5, flag: "at_risk" },
+        today,
+      ),
+    ).toBe("at_risk"); // 14d out
+  });
+
+  // Under the new contract (Scott 2026-05-07), computeSustainabilityFlag
+  // always populates runOutDate when flag=at_risk, so this combination
+  // shouldn't occur in real data. If a synthetic row reaches this state,
+  // the transformer falls through to "watch" — safer than asserting risk
+  // off of raw DOS.
+  it("at_risk flag with null runOutDate softens to watch (defensive)", () => {
     expect(
       transformedDisplayFlag(
         { runOutDate: null, daysOfStock: 5, flag: "at_risk" },
         today,
       ),
-    ).toBe("at_risk");
+    ).toBe("watch");
   });
 
   it("applies to a list of rows (preserves all other fields)", () => {
