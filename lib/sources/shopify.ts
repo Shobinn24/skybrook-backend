@@ -27,7 +27,12 @@ type Channel = "shopify_us" | "shopify_intl";
 type LineItemNode = {
   sku: string | null;
   quantity: number;
-  discountedUnitPriceSet: { shopMoney: { amount: string } } | null;
+  // Per-unit price AFTER both line-item AND order-level discounts.
+  // Scott 2026-05-07: switched from `discountedUnitPriceSet` (line-only)
+  // to `discountedUnitPriceAfterAllDiscountsSet` after diagnostic showed
+  // the previous field counted manual $0 draft orders + site-wide promo
+  // codes at full retail. ~$2,200/30d over-count on US store alone.
+  discountedUnitPriceAfterAllDiscountsSet: { shopMoney: { amount: string } } | null;
 };
 
 type MoneySet = { shopMoney: { amount: string } } | null;
@@ -100,7 +105,7 @@ async function* iterateOrderPages(
                 nodes {
                   sku
                   quantity
-                  discountedUnitPriceSet { shopMoney { amount } }
+                  discountedUnitPriceAfterAllDiscountsSet { shopMoney { amount } }
                 }
               }
               totalTaxSet { shopMoney { amount } }
@@ -166,7 +171,10 @@ async function* iterateOrderPages(
  * a small fraction of tax on mixed orders containing a gift card is
  * effectively allocated to the tracked SKUs rather than dropped.
  *
- * Per-line revenue uses `discountedUnitPriceSet.shopMoney.amount` × quantity.
+ * Per-line revenue uses `discountedUnitPriceAfterAllDiscountsSet.shopMoney.amount`
+ * × quantity. This field captures BOTH line-item and order-level
+ * discounts, so manual $0 draft orders and site-wide promo codes track
+ * at the actual paid amount instead of full retail.
  * Shop currency is USD on both stores (verified live 2026-04-24), so
  * shopMoney is directly comparable across channels.
  */
@@ -201,7 +209,7 @@ export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
       const skuKey = decomposed?.canonicalSku ?? skuLower;
       const unitsContributed = li.quantity * (decomposed?.multiplier ?? 1);
 
-      const unitPrice = li.discountedUnitPriceSet?.shopMoney?.amount;
+      const unitPrice = li.discountedUnitPriceAfterAllDiscountsSet?.shopMoney?.amount;
       const priceNum = unitPrice != null ? Number(unitPrice) : 0;
       const lineNet = Number.isFinite(priceNum) ? priceNum * li.quantity : 0;
       tracked.push({ skuKey, units: unitsContributed, lineNet });

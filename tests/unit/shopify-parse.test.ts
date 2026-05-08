@@ -4,7 +4,7 @@ import { aggregateToDailySales } from "@/lib/sources/shopify";
 type LineItem = {
   sku: string | null;
   quantity: number;
-  discountedUnitPriceSet: { shopMoney: { amount: string } } | null;
+  discountedUnitPriceAfterAllDiscountsSet: { shopMoney: { amount: string } } | null;
 };
 type MoneySet = { shopMoney: { amount: string } } | null;
 type Order = {
@@ -22,7 +22,7 @@ function li(sku: string | null, quantity: number, amount: string | null = "20.00
   return {
     sku,
     quantity,
-    discountedUnitPriceSet: amount != null ? { shopMoney: { amount } } : null,
+    discountedUnitPriceAfterAllDiscountsSet: amount != null ? { shopMoney: { amount } } : null,
   };
 }
 function money(amount: string): MoneySet {
@@ -93,7 +93,7 @@ describe("aggregateToDailySales", () => {
     ]);
   });
 
-  it("treats null discountedUnitPriceSet as $0 net sales but still counts units", () => {
+  it("treats null discountedUnitPriceAfterAllDiscountsSet as $0 net sales but still counts units", () => {
     const orders = [
       order("2026-04-22T10:00:00Z", [li("ev-free", 4, null)]),
     ];
