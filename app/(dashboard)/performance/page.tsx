@@ -40,10 +40,26 @@ function fmtDate(ymd: string): string {
   });
 }
 
+// Yesterday in EST as YYYY-MM-DD. Today's data is still accumulating,
+// so the picker max + initial value is yesterday.
+function yesterdayEstYmd(): string {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const todayEst = fmt.format(new Date());
+  const [y, m, d] = todayEst.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
+}
+
 export default function PerformancePage() {
   const [rangeDays, setRangeDays] = useState<RangeDays>(1);
+  const [endDate, setEndDate] = useState<string>(() => yesterdayEstYmd());
+  const yesterday = yesterdayEstYmd();
   const { data, isLoading, error } = trpc.inventory.getPerformance.useQuery(
-    { rangeDays },
+    { rangeDays, endDate },
     { refetchOnWindowFocus: false },
   );
 
@@ -60,21 +76,44 @@ export default function PerformancePage() {
               : "Revenue from Shopify · spend from Supermetrics FB"}
           </p>
         </div>
-        <div className="inline-flex overflow-hidden rounded-md border border-neutral-300 bg-white">
-          {RANGE_OPTIONS.map((opt) => (
-            <button
-              key={opt.days}
-              onClick={() => setRangeDays(opt.days)}
-              className={
-                "px-3 py-1.5 text-sm font-medium " +
-                (rangeDays === opt.days
-                  ? "bg-neutral-900 text-white"
-                  : "text-neutral-700 hover:bg-neutral-100")
-              }
-            >
-              {opt.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-sm">
+            <label htmlFor="perf-end-date" className="text-neutral-600">
+              Ending
+            </label>
+            <input
+              id="perf-end-date"
+              type="date"
+              value={endDate}
+              max={yesterday}
+              onChange={(e) => setEndDate(e.target.value || yesterday)}
+              className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm text-neutral-700 focus:outline-none focus:ring-1 focus:ring-neutral-400"
+            />
+            {endDate !== yesterday && (
+              <button
+                onClick={() => setEndDate(yesterday)}
+                className="text-xs text-neutral-500 hover:text-neutral-900 underline"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+          <div className="inline-flex overflow-hidden rounded-md border border-neutral-300 bg-white">
+            {RANGE_OPTIONS.map((opt) => (
+              <button
+                key={opt.days}
+                onClick={() => setRangeDays(opt.days)}
+                className={
+                  "px-3 py-1.5 text-sm font-medium " +
+                  (rangeDays === opt.days
+                    ? "bg-neutral-900 text-white"
+                    : "text-neutral-700 hover:bg-neutral-100")
+                }
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

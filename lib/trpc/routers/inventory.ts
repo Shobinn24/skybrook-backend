@@ -315,8 +315,8 @@ export const inventoryRouter = router({
     }),
 
   // /performance page rollup. Returns per-canonical-product revenue +
-  // spend + ROAS for the trailing rangeDays ending yesterday. Yesterday
-  // is rangeDays=1; multi-day windows go 7/14/30.
+  // spend + ROAS for the trailing rangeDays ending on endDate (or
+  // yesterday EST if endDate omitted). rangeDays=1 is a single day.
   getPerformance: publicProcedure
     .input(
       z.object({
@@ -324,14 +324,28 @@ export const inventoryRouter = router({
           .number()
           .int()
           .refine((n) => [1, 7, 14, 30].includes(n), "rangeDays must be 1, 7, 14, or 30"),
+        endDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "endDate must be YYYY-MM-DD")
+          .optional(),
       }),
     )
-    .query(({ input }) =>
-      getPerformanceRollup({
-        today: toEstDate(new Date()),
+    .query(({ input }) => {
+      // Rollup treats `today` as the not-yet-complete anchor and
+      // returns [today - rangeDays, today - 1]. To make the window
+      // end on a chosen endDate, anchor today at endDate + 1 day.
+      let today: string;
+      if (input.endDate) {
+        const [y, m, d] = input.endDate.split("-").map(Number);
+        today = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+      } else {
+        today = toEstDate(new Date());
+      }
+      return getPerformanceRollup({
+        today,
         rangeDays: input.rangeDays,
-      }),
-    ),
+      });
+    }),
 
   // /launches page — returns all launch rows with derived ETA Ant/PD.
   getLaunches: publicProcedure.query(() => getLaunches()),
