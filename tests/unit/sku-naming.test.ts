@@ -147,3 +147,66 @@ describe("deriveProductName — color-consolidated rollup names", () => {
     expect(deriveProductName("ev-pp-og-xxxl")).toBe("OG");
   });
 });
+
+import { isMainColor } from "@/lib/domain/sku-naming";
+
+describe("isMainColor — Scott's main-color filter", () => {
+  it("og / hw / 9055 base colorway returns true", () => {
+    expect(isMainColor("ev-og-5x-l")).toBe(true);
+    expect(isMainColor("ev-og-1x-l")).toBe(true);
+    expect(isMainColor("ev-hw-l")).toBe(true);
+    expect(isMainColor("ev-hw-5x-l")).toBe(true);
+    expect(isMainColor("ev-9055-5x-l")).toBe(true);
+  });
+
+  it("og / hw / 9055 with explicit color token returns false", () => {
+    expect(isMainColor("ev-og-5x-beige-l")).toBe(false);
+    expect(isMainColor("ev-og-1x-beige-l")).toBe(false);
+    expect(isMainColor("ev-hw-pink-l")).toBe(false);
+    expect(isMainColor("ev-9055-black-5x-l")).toBe(false);
+    expect(isMainColor("ev-9055-lilac-5x-l")).toBe(false);
+  });
+
+  it("FAMILY_ALIAS rewrites (new-og, pp-hw, bp-9055, etc.) return false", () => {
+    expect(isMainColor("ev-new-og-5x-l")).toBe(false);
+    expect(isMainColor("ev-new-9055-5x-l")).toBe(false);
+    expect(isMainColor("ev-bp-9055-5x-l")).toBe(false);
+    expect(isMainColor("ev-pp-hw-l")).toBe(false);
+    expect(isMainColor("ev-pp-og-l")).toBe(false);
+  });
+
+  it("Boyshort all colorways count as main", () => {
+    expect(isMainColor("ev-bshort-5x-l")).toBe(true);
+    expect(isMainColor("ev-bshort-fc-5x-l")).toBe(true);
+    expect(isMainColor("ev-bshort-beige-5x-l")).toBe(true);
+    expect(isMainColor("ev-bshort-black-hf-5x-l")).toBe(true);
+  });
+
+  it("Super HW (suphw) all colorways count as main", () => {
+    expect(isMainColor("ev-suphw-5x-l")).toBe(true);
+    expect(isMainColor("ev-suphw-pink-5x-l")).toBe(true);
+    expect(isMainColor("ev-suphw-beige-5x-l")).toBe(true);
+  });
+
+  it("other families (sw, mens, cb, hip, bik, hrshort, etc.) are all main", () => {
+    expect(isMainColor("ev-sw-5x-l")).toBe(true);
+    expect(isMainColor("ev-mens-3x-l")).toBe(true);
+    expect(isMainColor("ev-cb-5x-l")).toBe(true);
+    expect(isMainColor("ev-hip-5x-l")).toBe(true);
+    expect(isMainColor("ev-bik-5x-l")).toBe(true);
+    expect(isMainColor("ev-hrshort-5x-l")).toBe(true);
+    expect(isMainColor("ev-sl-bik-5x-l")).toBe(true);
+  });
+
+  it("non-parseable / unknown SKUs default to main (defensive)", () => {
+    expect(isMainColor("ev-unknown-l")).toBe(true);
+    expect(isMainColor("gift-card-1")).toBe(true);
+    expect(isMainColor("ev")).toBe(true);
+  });
+
+  it("case-insensitive", () => {
+    expect(isMainColor("EV-OG-5X-L")).toBe(true);
+    expect(isMainColor("EV-OG-5X-BEIGE-L")).toBe(false);
+    expect(isMainColor("EV-PP-HW-L")).toBe(false);
+  });
+});

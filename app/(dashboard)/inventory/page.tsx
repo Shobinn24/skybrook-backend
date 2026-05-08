@@ -13,6 +13,7 @@ import {
   applyAtRiskWindow,
   AT_RISK_HORIZON_DAYS,
 } from "@/lib/domain/at-risk-window";
+import { isMainColor } from "@/lib/domain/sku-naming";
 
 function moneyCompact(n: number): string {
   if (n === 0) return "$0";
@@ -38,6 +39,10 @@ export default function InventoryPage() {
   // product (not per sku) with an option to click expand to see all SKUs."
   // Flat per-SKU view stays one toggle away for engineering / CSV export.
   const [groupByProduct, setGroupByProduct] = useState(true);
+  // Scott 2026-05-07: filter out alt-color OG / HW / 9055 SKUs so the
+  // at-risk view focuses on currently-advertised colorways. Defaults
+  // off so total counts still match other tabs by default.
+  const [mainColorOnly, setMainColorOnly] = useState(false);
 
   // Two parallel queries — `enabled` gates each so single-warehouse
   // mode only fires the matching one. React Query dedupes + caches both
@@ -65,8 +70,9 @@ export default function InventoryPage() {
     // 45 days" per the sustainability projection — different rule than
     // the underlying flag (which is preserved on other tabs).
     const today = new Date().toISOString().slice(0, 10);
-    return applyAtRiskWindow(raw, today);
-  }, [isAll, selection, usQuery.data, cnQuery.data]);
+    const filtered = mainColorOnly ? raw.filter((r) => isMainColor(r.sku)) : raw;
+    return applyAtRiskWindow(filtered, today);
+  }, [isAll, selection, usQuery.data, cnQuery.data, mainColorOnly]);
 
   const isLoading = isAll
     ? usQuery.isLoading || cnQuery.isLoading
@@ -215,7 +221,19 @@ export default function InventoryPage() {
         />
       </div>
 
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-4">
+        <label
+          className="inline-flex items-center gap-2 text-xs text-neutral-700"
+          title="Hide alt colorways of OG / HW / 9055 (clearance / aging stock). Boyshort + Super HW colors all count as main."
+        >
+          <input
+            type="checkbox"
+            checked={mainColorOnly}
+            onChange={(e) => setMainColorOnly(e.target.checked)}
+            className="h-3.5 w-3.5"
+          />
+          Main colors only
+        </label>
         <label className="inline-flex items-center gap-2 text-xs text-neutral-700">
           <input
             type="checkbox"

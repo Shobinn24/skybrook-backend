@@ -158,3 +158,56 @@ export function deriveProductName(sku: string): string | null {
   if (hf) out.push("HF");
   return out.join(" ");
 }
+
+// Families that have a "base" colorway and a long tail of alternate
+// colorways. Scott 2026-05-07: in the inventory tab he only wants to
+// see main-color SKUs by default — the alt-color variants (e.g.
+// `new-og-*`, `pp-hw-*`, `ev-9055-beige-*`) are clearance / aging
+// stock and clutter the at-risk view. Boyshort + Super HW are
+// excluded from this rule because all their colorways are
+// independently advertised, so all colors count as main.
+const ALT_COLOR_FAMILIES = new Set(["og", "hw", "9055"]);
+
+/**
+ * True when `sku` is a "main color" SKU per Scott's inventory filter:
+ *  - Anything outside the og / hw / 9055 families → main color.
+ *    This covers Boyshort, Super HW, and every other family.
+ *  - Inside og / hw / 9055: only the base colorway is main. SKUs that
+ *    came in via FAMILY_ALIAS rewrite (new-og, pp-hw, bp-9055) or
+ *    that carry an explicit COLOR_TOKEN in their middle segments are
+ *    alt-color (returns false).
+ *
+ * Returns true for SKUs that don't parse (defensive — we'd rather
+ * surface unknown SKUs than hide them).
+ */
+export function isMainColor(sku: string): boolean {
+  const lower = sku.toLowerCase();
+  const parts = lower.split("-");
+  if (parts[0] !== "ev" || parts.length < 3) return true;
+
+  let family: string;
+  let middleStart: number;
+  let routedThroughAlias = false;
+  const twoSeg = parts.length >= 3 ? `${parts[1]}-${parts[2]}` : "";
+  if (FAMILY_ALIAS[twoSeg]) {
+    family = FAMILY_ALIAS[twoSeg];
+    middleStart = 3;
+    routedThroughAlias = true;
+  } else if (MULTI_FAMILY_LABELS[twoSeg]) {
+    family = twoSeg;
+    middleStart = 3;
+  } else {
+    family = parts[1];
+    middleStart = 2;
+  }
+
+  if (!ALT_COLOR_FAMILIES.has(family)) return true;
+  // og / hw / 9055 with an alias rewrite is always alt color.
+  if (routedThroughAlias) return false;
+  // Look for a known color token anywhere in the middle segments.
+  const middle = parts.slice(middleStart, -1);
+  for (const t of middle) {
+    if (COLOR_TOKENS.has(t)) return false;
+  }
+  return true;
+}
