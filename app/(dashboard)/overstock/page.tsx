@@ -162,7 +162,7 @@ export default function OverstockPage() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+              <thead className="sticky top-0 z-20 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
                 <tr>
                   <SortableHeader label="SKU" sortKey="sku" config={sort} onChange={setSort} />
                   <SortableHeader label="Product" sortKey="productName" config={sort} onChange={setSort} />

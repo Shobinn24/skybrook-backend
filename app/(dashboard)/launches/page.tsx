@@ -139,7 +139,7 @@ export default function LaunchesPage() {
       <div className="rounded-md border border-neutral-200 bg-white">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+            <thead className="sticky top-0 z-20 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
               <tr>
                 <th className="px-3 py-2">Product</th>
                 <th className="px-3 py-2">Order</th>

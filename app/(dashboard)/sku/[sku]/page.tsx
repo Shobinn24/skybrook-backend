@@ -143,7 +143,7 @@ export default function SkuDetailPage() {
           </p>
         </header>
         <table className="w-full text-sm">
-          <thead className="bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500">
+          <thead className="sticky top-0 z-20 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
             <tr>
               <th className="px-4 py-2 text-left font-medium">Window</th>
               <th className="px-4 py-2 text-right font-medium">All</th>

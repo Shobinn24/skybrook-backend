@@ -14,7 +14,9 @@ type StockValueSortKey =
   | "unitCount"
   | "totalUsd"
   | "futureUnitCount"
-  | "futureValueUsd";
+  | "futureValueUsd"
+  | "combinedUnits"
+  | "combinedValue";
 
 function moneyCompact(n: number): string {
   if (n === 0) return "$0";
@@ -86,6 +88,14 @@ export default function StockValuePage() {
           return (a.futureUnitCount - b.futureUnitCount) * dir;
         case "futureValueUsd":
           return (a.futureValueUsd - b.futureValueUsd) * dir;
+        case "combinedUnits":
+          return (
+            (a.unitCount + a.futureUnitCount) - (b.unitCount + b.futureUnitCount)
+          ) * dir;
+        case "combinedValue":
+          return (
+            (a.totalUsd + a.futureValueUsd) - (b.totalUsd + b.futureValueUsd)
+          ) * dir;
       }
     };
     return [...productRows].sort(cmp);
@@ -195,6 +205,20 @@ export default function StockValuePage() {
                     onChange={setSort}
                     align="right"
                   />
+                  <SortableHeader<StockValueSortKey>
+                    label="Combined units"
+                    sortKey="combinedUnits"
+                    config={sort}
+                    onChange={setSort}
+                    align="right"
+                  />
+                  <SortableHeader<StockValueSortKey>
+                    label="Combined value"
+                    sortKey="combinedValue"
+                    config={sort}
+                    onChange={setSort}
+                    align="right"
+                  />
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">
@@ -227,6 +251,12 @@ export default function StockValuePage() {
                       </td>
                       <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-neutral-700">
                         {row.futureValueUsd > 0 ? moneyExact(row.futureValueUsd) : "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums font-medium text-neutral-800">
+                        {(row.unitCount + row.futureUnitCount).toLocaleString()}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums font-semibold text-neutral-900">
+                        {moneyExact(row.totalUsd + row.futureValueUsd)}
                       </td>
                     </tr>
                   );

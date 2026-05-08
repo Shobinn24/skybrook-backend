@@ -196,7 +196,7 @@ export function ProductRollupTable({
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-600">
+          <thead className="sticky top-0 z-20 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-600 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
             <tr>
               <th className="w-8 px-2 py-2">
                 <button
