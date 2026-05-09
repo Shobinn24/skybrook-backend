@@ -98,12 +98,21 @@ export default function ProductNamesAdminPage() {
 
   const handleSave = () => {
     if (!form) return;
-    if (!form.family || !form.displayLabel) return;
+    if (!form.family) return;
+    const aliasOf = form.aliasOf ? form.aliasOf.toLowerCase().trim() : null;
+    // displayLabel is unused when aliasOf is set (deriveProductName
+    // follows the alias before reading the label) but the schema still
+    // requires NOT NULL — fall back to the family token when the user
+    // didn't enter one explicitly. For non-alias entries displayLabel
+    // remains required.
+    const trimmedLabel = form.displayLabel.trim();
+    const displayLabel = trimmedLabel || (aliasOf ? form.family : "");
+    if (!displayLabel) return;
     upsert.mutate({
       family: form.family.toLowerCase().trim(),
-      displayLabel: form.displayLabel.trim(),
+      displayLabel,
       isImplicit5pack: form.isImplicit5pack,
-      aliasOf: form.aliasOf ? form.aliasOf.toLowerCase().trim() : null,
+      aliasOf,
     });
   };
 
@@ -193,7 +202,11 @@ export default function ProductNamesAdminPage() {
             <button
               type="button"
               onClick={handleSave}
-              disabled={!form.family || !form.displayLabel || upsert.isPending}
+              disabled={
+                !form.family ||
+                (!form.displayLabel && !form.aliasOf) ||
+                upsert.isPending
+              }
               className="rounded bg-neutral-900 px-3 py-1 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-50"
             >
               {upsert.isPending ? "Saving…" : "Save override"}
