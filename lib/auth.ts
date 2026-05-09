@@ -7,6 +7,28 @@ export const SESSION_COOKIE = "skybrook_session";
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days
 export const OAUTH_STATE_MAX_AGE_SECONDS = 10 * 60; // 10 minutes
 
+/**
+ * Resolves the public-facing origin for redirect URL construction.
+ *
+ * On Railway (and most reverse-proxy setups) `new URL(req.url).origin`
+ * reports the internal upstream URL — e.g. `http://localhost:8080` or
+ * the container's internal hostname — not the public URL Grace's
+ * browser is using. Constructing redirects from that yields links
+ * the browser can't follow. Symptom: "localhost refused to connect"
+ * mid-OAuth, with the session cookie applied so refreshing on the
+ * correct URL works.
+ *
+ * `APP_URL` should be set in production to the public-facing origin
+ * (e.g. `https://skybrook-backend-production.up.railway.app`). When
+ * unset (local dev), we fall back to `req.url`'s origin which is
+ * accurate for direct-served requests.
+ */
+export function appOrigin(req: Request): string {
+  const override = process.env.APP_URL;
+  if (override) return override.replace(/\/$/, "");
+  return new URL(req.url).origin;
+}
+
 export type SessionPayload = {
   email: string;
   iat: number; // seconds since epoch, issued-at

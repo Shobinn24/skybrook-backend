@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
+  appOrigin,
   checkAccess,
   createOAuthStateToken,
   createSessionToken,
@@ -210,5 +211,50 @@ describe("parseAllowedEmails", () => {
       "scott@everdries.com",
       "jasper@everdries.com",
     ]);
+  });
+});
+
+describe("appOrigin", () => {
+  // appOrigin powers all auth-flow redirects. The bug it fixes: on
+  // Railway/proxied deploys, `req.url` reports an internal upstream
+  // origin (often `http://localhost:<port>`), so any redirect built
+  // from it sends the browser to an unreachable URL. APP_URL gives us
+  // a deterministic public origin that survives the proxy hop.
+
+  const ORIGINAL_APP_URL = process.env.APP_URL;
+  afterEach(() => {
+    if (ORIGINAL_APP_URL === undefined) delete process.env.APP_URL;
+    else process.env.APP_URL = ORIGINAL_APP_URL;
+  });
+
+  function reqOf(url: string): Request {
+    return new Request(url);
+  }
+
+  it("uses APP_URL when set, ignoring the request URL", () => {
+    process.env.APP_URL = "https://skybrook-backend-production.up.railway.app";
+    expect(appOrigin(reqOf("http://localhost:8080/api/auth/google/callback?code=x"))).toBe(
+      "https://skybrook-backend-production.up.railway.app"
+    );
+  });
+
+  it("strips a trailing slash from APP_URL so URL composition works", () => {
+    process.env.APP_URL = "https://skybrook.example.com/";
+    expect(appOrigin(reqOf("http://localhost:8080/anything"))).toBe(
+      "https://skybrook.example.com"
+    );
+  });
+
+  it("falls back to the request URL origin when APP_URL is unset (local dev)", () => {
+    delete process.env.APP_URL;
+    expect(appOrigin(reqOf("http://localhost:3000/api/auth/google/callback"))).toBe(
+      "http://localhost:3000"
+    );
+  });
+
+  it("composes a usable redirect URL with new URL(path, appOrigin(req))", () => {
+    process.env.APP_URL = "https://skybrook.example.com";
+    const redirect = new URL("/inventory", appOrigin(reqOf("http://localhost:8080/api/auth/google/callback?code=x")));
+    expect(redirect.toString()).toBe("https://skybrook.example.com/inventory");
   });
 });

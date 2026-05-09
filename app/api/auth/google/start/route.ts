@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createOAuthStateToken } from "@/lib/auth";
+import { appOrigin, createOAuthStateToken } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -13,9 +13,7 @@ function safeNext(raw: string | null): string {
 }
 
 function callbackUrl(req: Request): string {
-  const override = process.env.APP_URL;
-  const origin = override ? override.replace(/\/$/, "") : new URL(req.url).origin;
-  return `${origin}/api/auth/google/callback`;
+  return `${appOrigin(req)}/api/auth/google/callback`;
 }
 
 export async function GET(req: Request) {

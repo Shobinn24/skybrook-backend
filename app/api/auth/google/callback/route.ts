@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   SESSION_COOKIE,
   SESSION_MAX_AGE_SECONDS,
+  appOrigin,
   checkAccess,
   createSessionToken,
   decodeIdToken,
@@ -13,13 +14,11 @@ import {
 export const runtime = "nodejs";
 
 function callbackUrl(req: Request): string {
-  const override = process.env.APP_URL;
-  const origin = override ? override.replace(/\/$/, "") : new URL(req.url).origin;
-  return `${origin}/api/auth/google/callback`;
+  return `${appOrigin(req)}/api/auth/google/callback`;
 }
 
 function errorRedirect(req: Request, code: string): NextResponse {
-  const url = new URL("/login", req.url);
+  const url = new URL("/login", appOrigin(req));
   url.searchParams.set("error", code);
   return NextResponse.redirect(url);
 }
@@ -68,7 +67,7 @@ export async function GET(req: Request) {
 
   const token = await createSessionToken(sessionSecret, result.email);
   const dest = statePayload.next.startsWith("/") ? statePayload.next : "/inventory";
-  const res = NextResponse.redirect(new URL(dest, req.url));
+  const res = NextResponse.redirect(new URL(dest, appOrigin(req)));
   res.cookies.set({
     name: SESSION_COOKIE,
     value: token,
