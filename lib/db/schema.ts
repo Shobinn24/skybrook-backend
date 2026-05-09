@@ -260,3 +260,20 @@ export const dataPulls = pgTable("data_pulls", {
   errorMessage: text("error_message"),
   rawPullId: uuid("raw_pull_id").references(() => rawPulls.id),
 });
+
+// SKU family overrides — DB-backed naming for /launches productName
+// resolution. Replaces the manual edit-commit-deploy loop on
+// lib/domain/sku-naming.ts when a new SKU family appears in production.
+// Managed via /admin/product-names. Read by deriveProductName: the
+// override map is consulted before the FAMILY_LABELS / FAMILY_ALIAS /
+// IMPLICIT_5PACK_FAMILIES constants in sku-naming.ts.
+export const skuFamilyOverrides = pgTable("sku_family_overrides", {
+  family: text("family").primaryKey(),
+  displayLabel: text("display_label").notNull(),
+  isImplicit5pack: boolean("is_implicit_5pack").notNull().default(false),
+  // When set, this family redirects to another family (parallels FAMILY_ALIAS).
+  // E.g. alias_of='og' on family='new-og' makes ev-new-og-* resolve as OG.
+  aliasOf: text("alias_of"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: text("updated_by").notNull(),
+});
