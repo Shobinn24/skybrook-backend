@@ -202,10 +202,12 @@ describe("admin.product-names tRPC procedures", () => {
     await expect(caller.admin.runProductNamesSync()).rejects.toThrow(TRPCError);
   });
 
-  it("runProductNamesSync resolves placeholder names end-to-end (override + sync)", async () => {
+  it("runProductNamesSync runs both syncProductNames AND runLaunchAutoPopulate end-to-end", async () => {
     // Reproduces the exact production flow: SKU rows with raw-SKU
     // placeholder names, no override, then admin upserts an override
-    // and runs sync — all 3 rows resolve.
+    // and runs sync — all 3 rows resolve. The combined call also
+    // returns launches stats so the toast can surface "X stale
+    // placeholders cleared" in the UI.
     const caller = callerWith("admin@skybrookecommerce.com");
     await seedSkus([
       { sku: "ev-cottonhip-5x-l" },
@@ -219,7 +221,10 @@ describe("admin.product-names tRPC procedures", () => {
       aliasOf: null,
     });
     const result = await caller.admin.runProductNamesSync();
-    expect(result.fromPattern).toBe(3);
+    expect(result.productNames.fromPattern).toBe(3);
+    expect(result.launches).toBeDefined();
+    expect(typeof result.launches.staleDeleted).toBe("number");
+    expect(typeof result.launches.inserted).toBe("number");
     const rows = await db.select().from(skus);
     for (const r of rows) {
       expect(r.productName).toBe("Cotton Hipster");

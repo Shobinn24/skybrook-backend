@@ -195,9 +195,11 @@ export default function ProductNamesAdminPage() {
             <>Sync failed: {runSync.error.message}</>
           ) : runSync.data ? (
             <>
-              Sync complete — {runSync.data.fromPattern} resolved by parser,{" "}
-              {runSync.data.fromSheet} from velocity sheet,{" "}
-              {runSync.data.unchanged} unchanged.
+              Sync complete — {runSync.data.productNames.fromPattern} SKUs
+              resolved by parser, {runSync.data.productNames.fromSheet} from
+              velocity sheet, {runSync.data.productNames.unchanged} unchanged.
+              Launches: {runSync.data.launches.staleDeleted} stale placeholders
+              cleared, {runSync.data.launches.inserted} fresh rows added.
             </>
           ) : null}
         </div>
