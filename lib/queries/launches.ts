@@ -1,6 +1,7 @@
-import { and, asc, eq, inArray, min } from "drizzle-orm";
+import { and, asc, inArray, min } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { incomingShipments, productLaunches, skus } from "@/lib/db/schema";
+import { deriveLaunchName } from "@/lib/domain/sku-naming";
 
 /** Single launch row as the /launches page consumes it. ETA Ant + ETA
  * PD are derived live from `incoming_shipments` so they stay in sync
@@ -34,19 +35,22 @@ export async function getLaunches(): Promise<LaunchRow[]> {
   if (launchRows.length === 0) return [];
 
   // Resolve ETA Ant + PD per launch. A launch is identified by
-  // (productName, shipmentName); to map to incoming_shipments we need
-  // the SKUs that belong to the productName, then min(eta) per warehouse
-  // for that shipmentName. Bulk SKU resolution avoids N+1.
-  const productNames = Array.from(new Set(launchRows.map((r) => r.productName)));
+  // (productName, shipmentName) where productName is the colorway-
+  // suffixed launchName (e.g., "Shapewear Black"). The skus catalog
+  // stores the BASE name (e.g., "Shapewear"), so we can't join directly
+  // on productName. Instead: pull every active SKU and bucket by its
+  // own deriveLaunchName output. Bulk resolution avoids N+1.
+  const launchNames = new Set(launchRows.map((r) => r.productName));
   const skuRows = await db
     .select({ sku: skus.sku, productName: skus.productName })
-    .from(skus)
-    .where(inArray(skus.productName, productNames));
+    .from(skus);
   const skusByProduct = new Map<string, string[]>();
   for (const r of skuRows) {
-    const bucket = skusByProduct.get(r.productName) ?? [];
+    const derived = deriveLaunchName(r.sku, r.productName);
+    if (!launchNames.has(derived)) continue;
+    const bucket = skusByProduct.get(derived) ?? [];
     bucket.push(r.sku);
-    skusByProduct.set(r.productName, bucket);
+    skusByProduct.set(derived, bucket);
   }
 
   const shipmentNames = Array.from(new Set(launchRows.map((r) => r.shipmentName)));
