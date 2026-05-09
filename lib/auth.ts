@@ -210,11 +210,29 @@ export type AccessCheck =
 
 export function checkAccess(
   claims: GoogleIdTokenClaims,
-  opts: { workspaceDomain: string; allowedEmails?: string[] }
+  opts: {
+    workspaceDomain: string;
+    allowedEmails?: string[];
+    /** Emails outside the workspace domain that are still allowed in.
+     *  Skips the `hd` + suffix check for these specific addresses; still
+     *  requires email_verified. Use for external collaborators whose
+     *  gmail/other-workspace logins shouldn't require a workspace seat. */
+    externalAllowedEmails?: string[];
+  }
 ): AccessCheck {
   const email = claims.email?.toLowerCase();
   if (!email) return { ok: false, reason: "no_email" };
   if (claims.email_verified !== true) return { ok: false, reason: "email_unverified" };
+
+  const externalAllow = (opts.externalAllowedEmails ?? [])
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  if (externalAllow.includes(email)) {
+    // External collaborator — bypass workspace hd/suffix check. Still
+    // gated by email_verified above and the OAuth code-exchange flow
+    // (only the email's owner can complete the Google login).
+    return { ok: true, email };
+  }
 
   const domain = opts.workspaceDomain.toLowerCase();
   // `hd` is the authoritative Workspace-domain claim. Falling back to the email

@@ -153,6 +153,49 @@ describe("checkAccess", () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  // External-allowlist: 2026-05-09 — let collaborators outside the
+  // workspace domain in (Shobinn's gmail). Bypasses hd/suffix check
+  // for explicitly listed addresses; still requires email_verified.
+  it("external allowlist: lets a non-workspace email through (no hd claim, gmail.com suffix)", () => {
+    const result = checkAccess(
+      baseClaims({ email: "shobinn24@gmail.com", hd: undefined }),
+      { ...opts, externalAllowedEmails: ["shobinn24@gmail.com"] },
+    );
+    expect(result).toEqual({ ok: true, email: "shobinn24@gmail.com" });
+  });
+
+  it("external allowlist: case-insensitive match", () => {
+    const result = checkAccess(
+      baseClaims({ email: "Shobinn24@GMAIL.com", hd: undefined }),
+      { ...opts, externalAllowedEmails: ["SHOBINN24@gmail.com"] },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("external allowlist: still requires email_verified", () => {
+    const result = checkAccess(
+      baseClaims({ email: "shobinn24@gmail.com", hd: undefined, email_verified: false }),
+      { ...opts, externalAllowedEmails: ["shobinn24@gmail.com"] },
+    );
+    expect(result).toEqual({ ok: false, reason: "email_unverified" });
+  });
+
+  it("external allowlist: non-listed gmail still blocked by bad_domain", () => {
+    const result = checkAccess(
+      baseClaims({ email: "stranger@gmail.com", hd: undefined }),
+      { ...opts, externalAllowedEmails: ["shobinn24@gmail.com"] },
+    );
+    expect(result).toEqual({ ok: false, reason: "bad_domain" });
+  });
+
+  it("external allowlist: empty list preserves original workspace-only behavior", () => {
+    const result = checkAccess(
+      baseClaims({ email: "shobinn24@gmail.com", hd: undefined }),
+      { ...opts, externalAllowedEmails: [] },
+    );
+    expect(result).toEqual({ ok: false, reason: "bad_domain" });
+  });
 });
 
 describe("parseAllowedEmails", () => {

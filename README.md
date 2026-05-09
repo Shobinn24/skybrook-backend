@@ -64,7 +64,8 @@ Sign-in is restricted to the Everdries Google Workspace. Users click "Sign in wi
 4. Copy Client ID + Secret into Railway env as `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
 5. Set `GOOGLE_WORKSPACE_DOMAIN` to the Everdries workspace domain (the `hd` claim — confirm with Scott, likely `everdries.com`). This is the real security gate; External consent screen does not weaken it.
 6. Optionally set `ALLOWED_EMAILS` (comma-separated) as a second gate on top of the domain check.
-7. Set `APP_URL` to the public origin of the deploy.
+7. Optionally set `EXTERNAL_ALLOWED_EMAILS` (comma-separated) for external collaborators whose login email is outside the workspace domain (e.g. a personal gmail). These emails bypass the `hd` + suffix check entirely; still require `email_verified` on the OAuth claim.
+8. Set `APP_URL` to the public origin of the deploy.
 
 Session cookies are 30-day HMAC tokens signed with `SESSION_SECRET`. OAuth state tokens (CSRF protection) use the same secret and expire after 10 min.
 

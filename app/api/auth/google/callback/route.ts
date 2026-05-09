@@ -30,6 +30,7 @@ export async function GET(req: Request) {
   const sessionSecret = process.env.SESSION_SECRET;
   const workspaceDomain = process.env.GOOGLE_WORKSPACE_DOMAIN;
   const allowedEmails = parseAllowedEmails(process.env.ALLOWED_EMAILS);
+  const externalAllowedEmails = parseAllowedEmails(process.env.EXTERNAL_ALLOWED_EMAILS);
   if (!clientId || !clientSecret || !sessionSecret || !workspaceDomain) {
     return NextResponse.json(
       { error: "Google SSO is not configured on the server" },
@@ -62,7 +63,7 @@ export async function GET(req: Request) {
   const claims = decodeIdToken(tokens.id_token);
   if (!claims) return errorRedirect(req, "bad_id_token");
 
-  const result = checkAccess(claims, { workspaceDomain, allowedEmails });
+  const result = checkAccess(claims, { workspaceDomain, allowedEmails, externalAllowedEmails });
   if (!result.ok) return errorRedirect(req, result.reason);
 
   const token = await createSessionToken(sessionSecret, result.email);
