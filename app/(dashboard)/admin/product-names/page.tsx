@@ -29,6 +29,16 @@ function fmtTimestamp(iso: string): string {
   });
 }
 
+// User-facing label for the row's source. Internal constant names
+// (FAMILY_LABELS / MULTI_FAMILY_LABELS / FAMILY_ALIAS) are too jargon-y
+// for the admin UI — collapse them to "Built-in" / "Built-in alias".
+function sourceLabel(raw: string): string {
+  if (raw === "DB override") return "Override";
+  if (raw === "FAMILY_ALIAS") return "Built-in alias";
+  if (raw === "FAMILY_LABELS" || raw === "MULTI_FAMILY_LABELS") return "Built-in";
+  return raw;
+}
+
 export default function ProductNamesAdminPage() {
   const utils = trpc.useUtils();
   const overrides = trpc.admin.listOverrides.useQuery(undefined, {
@@ -51,6 +61,11 @@ export default function ProductNamesAdminPage() {
   const remove = trpc.admin.deleteOverride.useMutation({
     onSuccess: () => {
       void utils.admin.listOverrides.invalidate();
+      void utils.admin.listUnmappedFamilies.invalidate();
+    },
+  });
+  const runSync = trpc.admin.runProductNamesSync.useMutation({
+    onSuccess: () => {
       void utils.admin.listUnmappedFamilies.invalidate();
     },
   });
@@ -139,27 +154,63 @@ export default function ProductNamesAdminPage() {
         <div>
           <h1 className="text-2xl font-semibold text-neutral-900">Product names</h1>
           <p className="text-sm text-neutral-500">
-            Map SKU family tokens (e.g. <code className="rounded bg-neutral-100 px-1">cottonhip</code>) to display
-            names for <a className="underline" href="/launches">/launches</a> and inventory rollups.
-            Overrides take effect on the next product-names sync.
+            Tell the system what to display for SKU families on{" "}
+            <a className="underline" href="/launches">/launches</a> and inventory rollups.
+            For example,{" "}
+            <code className="rounded bg-neutral-100 px-1">ev-cottonhip-5x-l</code>{" "}
+            uses the entry for family <code className="rounded bg-neutral-100 px-1">cottonhip</code>.
+            Changes apply on the next product-names sync — click Run sync now to apply immediately.
           </p>
         </div>
         {!form && (
-          <button
-            type="button"
-            onClick={() => setForm({ ...EMPTY_FORM })}
-            className="rounded bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700"
-          >
-            + Add override
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => runSync.mutate()}
+              disabled={runSync.isPending}
+              className="rounded border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-800 hover:bg-neutral-50 disabled:opacity-50"
+            >
+              {runSync.isPending ? "Running…" : "Run sync now"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setForm({ ...EMPTY_FORM })}
+              className="rounded bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700"
+            >
+              + Add override
+            </button>
+          </div>
         )}
       </div>
+
+      {(runSync.data || runSync.error) && (
+        <div
+          className={`rounded border px-3 py-2 text-xs ${
+            runSync.error
+              ? "border-red-200 bg-red-50 text-red-800"
+              : "border-emerald-200 bg-emerald-50 text-emerald-800"
+          }`}
+        >
+          {runSync.error ? (
+            <>Sync failed: {runSync.error.message}</>
+          ) : runSync.data ? (
+            <>
+              Sync complete — {runSync.data.fromPattern} resolved by parser,{" "}
+              {runSync.data.fromSheet} from velocity sheet,{" "}
+              {runSync.data.unchanged} unchanged.
+            </>
+          ) : null}
+        </div>
+      )}
 
       {form && (
         <div className="rounded border border-neutral-200 bg-neutral-50 p-3 space-y-2">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
             <label className="text-xs text-neutral-700">
-              Family token
+              <span className="block">Family</span>
+              <span className="block text-[11px] text-neutral-500">
+                segment after <code className="font-mono">ev-</code>
+              </span>
               <input
                 type="text"
                 value={form.family}
@@ -170,7 +221,10 @@ export default function ProductNamesAdminPage() {
               />
             </label>
             <label className="text-xs text-neutral-700 sm:col-span-2">
-              Display label
+              <span className="block">Product name</span>
+              <span className="block text-[11px] text-neutral-500">
+                shown on /launches and rollups
+              </span>
               <input
                 type="text"
                 value={form.displayLabel}
@@ -180,7 +234,10 @@ export default function ProductNamesAdminPage() {
               />
             </label>
             <label className="text-xs text-neutral-700">
-              Alias of (optional)
+              <span className="block">Alias of (optional)</span>
+              <span className="block text-[11px] text-neutral-500">
+                redirect to another family
+              </span>
               <input
                 type="text"
                 value={form.aliasOf}
@@ -196,7 +253,7 @@ export default function ProductNamesAdminPage() {
               checked={form.isImplicit5pack}
               onChange={(e) => setForm({ ...form, isImplicit5pack: e.target.checked })}
             />
-            Implicit 5-pack — drop the "5-Pack" suffix from product name (use for families that only ship in 5-packs)
+            Drop &ldquo;5-Pack&rdquo; from product name (use for families that only ship in 5-packs)
           </label>
           <div className="flex items-center gap-2">
             <button
@@ -291,8 +348,8 @@ export default function ProductNamesAdminPage() {
           <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
             <tr>
               <th className="px-3 py-2">Family</th>
-              <th className="px-3 py-2">Label</th>
-              <th className="px-3 py-2">5-pack</th>
+              <th className="px-3 py-2">Product name</th>
+              <th className="px-3 py-2">Drop &ldquo;5-Pack&rdquo;</th>
               <th className="px-3 py-2">Alias of</th>
               <th className="px-3 py-2">Source</th>
               <th className="px-3 py-2"></th>
@@ -317,7 +374,7 @@ export default function ProductNamesAdminPage() {
                     {r.aliasOf ?? ""}
                   </td>
                   <td className="px-3 py-1.5 text-xs text-neutral-500">
-                    {r.source}
+                    {sourceLabel(r.source)}
                     {r.updatedAt && r.updatedBy && (
                       <span className="block text-[11px] text-neutral-400">
                         {fmtTimestamp(r.updatedAt)} · {r.updatedBy}

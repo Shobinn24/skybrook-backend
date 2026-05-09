@@ -196,6 +196,35 @@ describe("admin.product-names tRPC procedures", () => {
       aliasOf: "og",
     });
   });
+
+  it("runProductNamesSync rejects null email", async () => {
+    const caller = callerWith(null);
+    await expect(caller.admin.runProductNamesSync()).rejects.toThrow(TRPCError);
+  });
+
+  it("runProductNamesSync resolves placeholder names end-to-end (override + sync)", async () => {
+    // Reproduces the exact production flow: SKU rows with raw-SKU
+    // placeholder names, no override, then admin upserts an override
+    // and runs sync — all 3 rows resolve.
+    const caller = callerWith("admin@skybrookecommerce.com");
+    await seedSkus([
+      { sku: "ev-cottonhip-5x-l" },
+      { sku: "ev-cottonhip-5x-m" },
+      { sku: "ev-cottonhip-5x-xl" },
+    ]);
+    await caller.admin.upsertOverride({
+      family: "cottonhip",
+      displayLabel: "Cotton Hipster",
+      isImplicit5pack: true,
+      aliasOf: null,
+    });
+    const result = await caller.admin.runProductNamesSync();
+    expect(result.fromPattern).toBe(3);
+    const rows = await db.select().from(skus);
+    for (const r of rows) {
+      expect(r.productName).toBe("Cotton Hipster");
+    }
+  });
 });
 
 describe("syncProductNames respects sku_family_overrides", () => {
