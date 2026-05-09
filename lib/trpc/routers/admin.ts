@@ -8,6 +8,7 @@ import { db } from "@/lib/db";
 import { skuFamilyOverrides, skus } from "@/lib/db/schema";
 import { deriveProductName, snapshotKnownFamilies } from "@/lib/domain/sku-naming";
 import { loadFamilyOverrides } from "@/lib/domain/sku-naming-overrides";
+import { syncProductNames } from "@/lib/jobs/product-names";
 import { publicProcedure, router } from "@/lib/trpc/server";
 
 const upsertInput = z.object({
@@ -127,4 +128,20 @@ export const adminRouter = router({
         .where(eq(skuFamilyOverrides.family, input.family));
       return { ok: true as const };
     }),
+
+  // Manually run syncProductNames so the admin page can apply
+  // overrides immediately instead of waiting for the next cron tick.
+  // Uses the production providers (sheet + DB overrides) — same path
+  // the cron takes. Safe to call repeatedly; sync only updates rows
+  // whose target name differs from the stored value.
+  runProductNamesSync: publicProcedure.mutation(async ({ ctx }) => {
+    if (!ctx.email) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: "session has no email",
+      });
+    }
+    const result = await syncProductNames();
+    return result;
+  }),
 });
