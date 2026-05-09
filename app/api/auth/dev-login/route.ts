@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE, SESSION_MAX_AGE_SECONDS, createSessionToken } from "@/lib/auth";
+import {
+  SESSION_COOKIE,
+  SESSION_MAX_AGE_SECONDS,
+  appOrigin,
+  createSessionToken,
+} from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -27,7 +32,7 @@ export async function GET(req: Request) {
 
   const email = process.env.SKYBROOK_DEV_EMAIL ?? "dev@localhost";
   const token = await createSessionToken(secret, email);
-  const res = NextResponse.redirect(new URL("/inventory", req.url));
+  const res = NextResponse.redirect(new URL("/inventory", appOrigin(req)));
   res.cookies.set({
     name: SESSION_COOKIE,
     value: token,
