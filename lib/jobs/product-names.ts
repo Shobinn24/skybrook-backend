@@ -8,6 +8,10 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { skus } from "@/lib/db/schema";
 import { deriveProductName } from "@/lib/domain/sku-naming";
+import {
+  loadFamilyOverrides,
+  type FamilyOverrideMap,
+} from "@/lib/domain/sku-naming-overrides";
 import { logger } from "@/lib/logger";
 
 // Sheet layout reverse-engineered 2026-04-28 from
@@ -97,6 +101,9 @@ async function fetchSheetMapping(spreadsheetId: string): Promise<Map<string, str
 export async function syncProductNames(opts?: {
   // Tests inject a deterministic provider; production reads the sheet.
   mappingProvider?: () => Promise<Map<string, string>>;
+  // Tests inject a deterministic override map; production loads from
+  // the sku_family_overrides table.
+  overridesProvider?: () => Promise<FamilyOverrideMap>;
 }): Promise<ProductNameSyncResult> {
   const start = Date.now();
   const provider =
@@ -113,6 +120,7 @@ export async function syncProductNames(opts?: {
     });
 
   const sheetMap = await provider();
+  const overrides = await (opts?.overridesProvider ?? loadFamilyOverrides)();
   const all = await db.select().from(skus);
 
   let fromSheet = 0;
@@ -121,7 +129,7 @@ export async function syncProductNames(opts?: {
 
   for (const row of all) {
     const fromSheetName = sheetMap.get(row.sku);
-    const patternName = deriveProductName(row.sku);
+    const patternName = deriveProductName(row.sku, overrides);
 
     // Scott 2026-05-06: parser is canonical for known families because
     // it produces color-consolidated rollup names ("Boyshort", not
@@ -157,6 +165,7 @@ export async function syncProductNames(opts?: {
     fromPattern,
     unchanged,
     sheetMappingSize: sheetMap.size,
+    overridesSize: overrides.size,
     ms: Date.now() - start,
   });
 

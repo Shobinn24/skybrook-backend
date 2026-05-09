@@ -57,6 +57,13 @@
       "when": 1778019925270,
       "tag": "0007_awesome_rhodey",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1778343083464,
+      "tag": "0008_cheerful_lady_vermin",
+      "breakpoints": true
     }
   ]
 }

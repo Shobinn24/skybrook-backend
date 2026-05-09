@@ -24,6 +24,7 @@ export async function resetDb() {
       product_launches,
       stock_snapshots,
       velocity_overrides,
+      sku_family_overrides,
       skus,
       raw_pulls
     CASCADE

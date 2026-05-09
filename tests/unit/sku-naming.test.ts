@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { deriveProductName } from "@/lib/domain/sku-naming";
+import { deriveProductName, snapshotKnownFamilies } from "@/lib/domain/sku-naming";
+import type { FamilyOverrideMap } from "@/lib/domain/sku-naming-overrides";
 
 describe("deriveProductName — color-consolidated rollup names", () => {
   // Scott 2026-05-06: combine color variants under one product. Color
@@ -245,5 +246,138 @@ describe("deriveLaunchName — colorway-suffixed launch labels", () => {
     // Defensive — real SKUs don't carry two color tokens, but if one
     // ever did the function should still return one stable label.
     expect(deriveLaunchName("ev-bshort-black-pink-5x-l", "Boyshort")).toBe("Boyshort Black");
+  });
+});
+
+describe("deriveProductName — DB-backed overrides (Auto-naming Option B)", () => {
+  // Override map is loaded once at the start of syncProductNames and
+  // passed through. Each entry can independently set displayLabel,
+  // isImplicit5pack, and aliasOf. Without the second arg, behavior is
+  // unchanged.
+
+  function ovr(entries: Array<[string, { displayLabel: string; isImplicit5pack: boolean; aliasOf: string | null }]>): FamilyOverrideMap {
+    return new Map(entries);
+  }
+
+  it("backwards compatible — omitting overrides arg behaves exactly like before", () => {
+    expect(deriveProductName("ev-9055-5x-l")).toBe("Style 9055");
+    expect(deriveProductName("ev-bshort-fc-HF-5x-l")).toBe("Boyshort HF");
+    expect(deriveProductName("ev-cottonhip-5x-l")).toBeNull();
+  });
+
+  it("override displayLabel resolves a previously-unmapped family", () => {
+    const overrides = ovr([
+      ["cottonhip", { displayLabel: "Cotton Hipster", isImplicit5pack: true, aliasOf: null }],
+    ]);
+    expect(deriveProductName("ev-cottonhip-5x-l", overrides)).toBe("Cotton Hipster");
+    expect(deriveProductName("ev-cottonhip-5x-m", overrides)).toBe("Cotton Hipster");
+  });
+
+  it("isImplicit5pack=true on override drops the 5-Pack suffix", () => {
+    const overrides = ovr([
+      ["cottonhip", { displayLabel: "Cotton Hipster", isImplicit5pack: true, aliasOf: null }],
+    ]);
+    expect(deriveProductName("ev-cottonhip-5x-l", overrides)).toBe("Cotton Hipster");
+  });
+
+  it("isImplicit5pack=false on override keeps the 5-Pack suffix", () => {
+    const overrides = ovr([
+      ["cottonhip", { displayLabel: "Cotton Hipster", isImplicit5pack: false, aliasOf: null }],
+    ]);
+    expect(deriveProductName("ev-cottonhip-5x-l", overrides)).toBe("Cotton Hipster 5-Pack");
+  });
+
+  it("override label wins over an existing FAMILY_LABELS entry", () => {
+    // Scott decides to rename OG → Original via the admin UI.
+    const overrides = ovr([
+      ["og", { displayLabel: "Original", isImplicit5pack: false, aliasOf: null }],
+    ]);
+    expect(deriveProductName("ev-og-5x-beige-l", overrides)).toBe("Original 5-Pack");
+    expect(deriveProductName("ev-og-1x-black-l", overrides)).toBe("Original 1-Pack");
+  });
+
+  it("override isImplicit5pack flips an existing family's pack-suffix behavior", () => {
+    // Scott decides to drop the 5-Pack suffix on OG.
+    const overrides = ovr([
+      ["og", { displayLabel: "OG", isImplicit5pack: true, aliasOf: null }],
+    ]);
+    expect(deriveProductName("ev-og-5x-beige-l", overrides)).toBe("OG");
+    // Non-5-pack tiers still keep their pack label.
+    expect(deriveProductName("ev-og-1x-black-l", overrides)).toBe("OG 1-Pack");
+  });
+
+  it("override aliasOf redirects a two-segment family to another family", () => {
+    // Scott discovers a new alt-color prefix "np-og" for OG.
+    const overrides = ovr([
+      ["np-og", { displayLabel: "np-og", isImplicit5pack: false, aliasOf: "og" }],
+    ]);
+    expect(deriveProductName("ev-np-og-5x-beige-l", overrides)).toBe("OG 5-Pack");
+    expect(deriveProductName("ev-np-og-1x-black-l", overrides)).toBe("OG 1-Pack");
+  });
+
+  it("override aliasOf can chain into another override label", () => {
+    // Override chain: aliasOf points to another override that supplies
+    // the canonical display label.
+    const overrides = ovr([
+      ["np-cottonhip", { displayLabel: "np-cottonhip", isImplicit5pack: false, aliasOf: "cottonhip" }],
+      ["cottonhip", { displayLabel: "Cotton Hipster", isImplicit5pack: true, aliasOf: null }],
+    ]);
+    expect(deriveProductName("ev-np-cottonhip-5x-l", overrides)).toBe("Cotton Hipster");
+  });
+
+  it("constants still apply when no override exists for that family", () => {
+    // Adding an override for cottonhip doesn't affect og / bshort.
+    const overrides = ovr([
+      ["cottonhip", { displayLabel: "Cotton Hipster", isImplicit5pack: true, aliasOf: null }],
+    ]);
+    expect(deriveProductName("ev-9055-5x-l", overrides)).toBe("Style 9055");
+    expect(deriveProductName("ev-og-5x-beige-l", overrides)).toBe("OG 5-Pack");
+    expect(deriveProductName("ev-bshort-5x-m", overrides)).toBe("Boyshort");
+  });
+
+  it("returns null for unknown family without an override", () => {
+    const overrides = ovr([
+      ["cottonhip", { displayLabel: "Cotton Hipster", isImplicit5pack: true, aliasOf: null }],
+    ]);
+    expect(deriveProductName("ev-mystery-5x-l", overrides)).toBeNull();
+  });
+
+  it("override on a multi-segment family creates a new multi-family label", () => {
+    // Like FAMILY_ALIAS / MULTI_FAMILY_LABELS, override keys can be
+    // two-segment family tokens. Treat them the same as the constant
+    // path: middleStart=3, label resolved from the override.
+    const overrides = ovr([
+      ["nx-bik", { displayLabel: "Next-Gen Bikini", isImplicit5pack: true, aliasOf: null }],
+    ]);
+    expect(deriveProductName("ev-nx-bik-5x-l", overrides)).toBe("Next-Gen Bikini");
+    expect(deriveProductName("ev-nx-bik-1x-pink-l", overrides)).toBe("Next-Gen Bikini 1-Pack");
+  });
+});
+
+describe("snapshotKnownFamilies", () => {
+  it("includes FAMILY_LABELS entries with isImplicit5pack derived from membership", () => {
+    const snap = snapshotKnownFamilies();
+    const og = snap.find((s) => s.family === "og");
+    expect(og).toMatchObject({ kind: "label", displayLabel: "OG", isImplicit5pack: false });
+    const bshort = snap.find((s) => s.family === "bshort");
+    expect(bshort).toMatchObject({ kind: "label", displayLabel: "Boyshort", isImplicit5pack: true });
+  });
+
+  it("includes MULTI_FAMILY_LABELS entries", () => {
+    const snap = snapshotKnownFamilies();
+    expect(snap.find((s) => s.family === "sl-bik")).toMatchObject({
+      kind: "label",
+      displayLabel: "Seamless Bikini",
+      source: "MULTI_FAMILY_LABELS",
+    });
+  });
+
+  it("includes FAMILY_ALIAS entries with aliasOf populated", () => {
+    const snap = snapshotKnownFamilies();
+    expect(snap.find((s) => s.family === "pp-og")).toMatchObject({
+      kind: "alias",
+      aliasOf: "og",
+      source: "FAMILY_ALIAS",
+    });
   });
 });

@@ -1,3 +1,5 @@
+import type { FamilyOverrideMap } from "@/lib/domain/sku-naming-overrides";
+
 // Derives a human-readable product name from a SKU code, used as a
 // fallback when the velocity sheet hasn't supplied an explicit name.
 //
@@ -102,22 +104,38 @@ const IMPLICIT_5PACK_FAMILIES = new Set([
   "hrshort",
 ]);
 
-export function deriveProductName(sku: string): string | null {
+// Optional `overrides` Map (loaded from sku_family_overrides at the
+// start of syncProductNames) is consulted before the hardcoded
+// FAMILY_ALIAS / MULTI_FAMILY_LABELS / FAMILY_LABELS /
+// IMPLICIT_5PACK_FAMILIES tables. Each override entry can independently
+// supply: aliasOf (rewrite to another family), displayLabel (label for
+// this family token), and isImplicit5pack (whether to drop the 5-Pack
+// suffix for this family). Without overrides, behavior is unchanged.
+export function deriveProductName(
+  sku: string,
+  overrides?: FamilyOverrideMap
+): string | null {
   const lower = sku.toLowerCase();
   const parts = lower.split("-");
   if (parts[0] !== "ev" || parts.length < 3) return null;
 
   // Resolve family. Multi-segment prefixes (sl-bik, new-og, bp-9055,
-  // etc.) are checked first. FAMILY_ALIAS rewrites colorway-only
-  // multi-segments (new-*, bp-*) to their parent single-segment family
-  // so they collapse under the parent product.
+  // etc.) are checked first. Aliases — DB override or constant —
+  // rewrite colorway-only multi-segments to their parent
+  // single-segment family so they collapse under the parent product.
   let family: string;
   let middleStart: number;
   const twoSeg = parts.length >= 3 ? `${parts[1]}-${parts[2]}` : "";
-  if (FAMILY_ALIAS[twoSeg]) {
-    family = FAMILY_ALIAS[twoSeg];
+  const twoSegOverride = overrides?.get(twoSeg);
+  // Override aliasOf wins over constant FAMILY_ALIAS.
+  const aliasTarget = twoSegOverride?.aliasOf ?? FAMILY_ALIAS[twoSeg];
+  if (aliasTarget) {
+    family = aliasTarget;
     middleStart = 3;
-  } else if (MULTI_FAMILY_LABELS[twoSeg]) {
+  } else if (
+    (twoSegOverride && !twoSegOverride.aliasOf) ||
+    MULTI_FAMILY_LABELS[twoSeg]
+  ) {
     family = twoSeg;
     middleStart = 3;
   } else {
@@ -146,14 +164,27 @@ export function deriveProductName(sku: string): string | null {
   // ev-og-5x-{color}-{size} variants.
   if (family === "mixed") return "OG 5-Pack";
 
-  const baseLabel = MULTI_FAMILY_LABELS[family] ?? FAMILY_LABELS[family];
+  // Override displayLabel wins over MULTI_FAMILY_LABELS / FAMILY_LABELS.
+  // Alias-mode override rows (aliasOf set) don't contribute a label —
+  // we've already followed the alias to the canonical family above.
+  const familyOverride = overrides?.get(family);
+  const overrideLabel =
+    familyOverride && !familyOverride.aliasOf
+      ? familyOverride.displayLabel
+      : null;
+  const baseLabel =
+    overrideLabel ?? MULTI_FAMILY_LABELS[family] ?? FAMILY_LABELS[family];
   if (!baseLabel) return null;
 
   const out = [baseLabel];
   // Drop pack label when it's the family's implicit default (5-pack
-  // for bshort/9055/sw/hip/bik/etc). Keep pack label when the family
-  // ships in multiple pack tiers (og/hw/mens/cb/suphw).
-  const dropPack = pack === "5-Pack" && IMPLICIT_5PACK_FAMILIES.has(family);
+  // for bshort/9055/sw/hip/bik/etc). Override is_implicit_5pack is
+  // authoritative when present (covers both directions: opt new family
+  // in, or opt existing family out).
+  const implicit5pack = familyOverride
+    ? familyOverride.isImplicit5pack
+    : IMPLICIT_5PACK_FAMILIES.has(family);
+  const dropPack = pack === "5-Pack" && implicit5pack;
   if (pack && !dropPack) out.push(pack);
   if (hf) out.push("HF");
   return out.join(" ");
@@ -255,4 +286,46 @@ export function deriveLaunchName(sku: string, baseName: string): string {
     }
   }
   return baseName;
+}
+
+// Snapshot of the constant-driven family entries — used by the
+// /admin/product-names UI to render existing labels alongside DB
+// overrides. Keeps the constants module-local while exposing a stable
+// read-only view.
+export type KnownFamilyEntry = {
+  family: string;
+  kind: "label" | "alias";
+  displayLabel: string | null;
+  aliasOf: string | null;
+  isImplicit5pack: boolean;
+  source: "FAMILY_LABELS" | "MULTI_FAMILY_LABELS" | "FAMILY_ALIAS";
+};
+
+export function snapshotKnownFamilies(): KnownFamilyEntry[] {
+  return [
+    ...Object.entries(FAMILY_LABELS).map(([family, label]) => ({
+      family,
+      kind: "label" as const,
+      displayLabel: label,
+      aliasOf: null,
+      isImplicit5pack: IMPLICIT_5PACK_FAMILIES.has(family),
+      source: "FAMILY_LABELS" as const,
+    })),
+    ...Object.entries(MULTI_FAMILY_LABELS).map(([family, label]) => ({
+      family,
+      kind: "label" as const,
+      displayLabel: label,
+      aliasOf: null,
+      isImplicit5pack: IMPLICIT_5PACK_FAMILIES.has(family),
+      source: "MULTI_FAMILY_LABELS" as const,
+    })),
+    ...Object.entries(FAMILY_ALIAS).map(([family, target]) => ({
+      family,
+      kind: "alias" as const,
+      displayLabel: null,
+      aliasOf: target,
+      isImplicit5pack: false,
+      source: "FAMILY_ALIAS" as const,
+    })),
+  ];
 }
