@@ -57,6 +57,7 @@ export type LaunchAutoPopulateResult = {
   skippedAlreadyLaunched: number;
   inserted: number;
   staleDeleted: number;
+  duplicateShipmentsCollapsed: number;
 };
 
 /**
@@ -104,6 +105,71 @@ export async function cleanupStaleDefaultLaunches(): Promise<number> {
   return stalePlaceholderResult.length + altColorResult.length;
 }
 
+/**
+ * Collapse multi-shipment auto-added launches down to one row per
+ * productName, keeping the row whose shipment has the earliest
+ * `expected_arrival`. Scott 2026-05-08: "Why is each product in there
+ * multiple times?" — a single product launches once; subsequent
+ * shipments are restocks, not separate launches.
+ *
+ * Manual launches (note != AUTO_ADDED_NOTE) are preserved untouched.
+ * Idempotent: running twice deletes nothing the second time.
+ */
+export async function collapseMultiShipmentAutoLaunches(): Promise<number> {
+  const autoLaunches = await db
+    .select({
+      id: productLaunches.id,
+      productName: productLaunches.productName,
+      shipmentName: productLaunches.shipmentName,
+    })
+    .from(productLaunches)
+    .where(eq(productLaunches.note, AUTO_ADDED_NOTE));
+
+  const byProduct = new Map<string, Array<{ id: string; shipmentName: string }>>();
+  for (const r of autoLaunches) {
+    const list = byProduct.get(r.productName);
+    if (list) list.push({ id: r.id, shipmentName: r.shipmentName });
+    else byProduct.set(r.productName, [{ id: r.id, shipmentName: r.shipmentName }]);
+  }
+
+  const idsToDelete: string[] = [];
+  for (const [, rows] of byProduct) {
+    if (rows.length <= 1) continue;
+    const shipNames = Array.from(new Set(rows.map((r) => r.shipmentName)));
+    const etaRows = await db
+      .select({
+        shipmentName: incomingShipments.shipmentName,
+        eta: sql<string>`min(${incomingShipments.expectedArrival})`,
+      })
+      .from(incomingShipments)
+      .where(inArray(incomingShipments.shipmentName, shipNames))
+      .groupBy(incomingShipments.shipmentName);
+    const etaByShipment = new Map(etaRows.map((r) => [r.shipmentName, r.eta]));
+
+    let earliestId: string | null = null;
+    let earliestEta: string | null = null;
+    for (const r of rows) {
+      const eta = etaByShipment.get(r.shipmentName);
+      if (!eta) continue;
+      if (earliestEta === null || eta < earliestEta) {
+        earliestEta = eta;
+        earliestId = r.id;
+      }
+    }
+    if (!earliestId) continue;
+    for (const r of rows) {
+      if (r.id !== earliestId) idsToDelete.push(r.id);
+    }
+  }
+
+  if (idsToDelete.length === 0) return 0;
+  const deleted = await db
+    .delete(productLaunches)
+    .where(inArray(productLaunches.id, idsToDelete))
+    .returning({ id: productLaunches.id });
+  return deleted.length;
+}
+
 function destinationToChannel(dest: string): "shopify_us" | "shopify_intl" {
   return dest === "US" ? "shopify_us" : "shopify_intl";
 }
@@ -117,39 +183,51 @@ function ymdDaysAgo(days: number): string {
 export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult> {
   const start = Date.now();
   const staleDeleted = await cleanupStaleDefaultLaunches();
+  const duplicateShipmentsCollapsed = await collapseMultiShipmentAutoLaunches();
 
-  // 1. Pull (sku, productName, shipmentName, destination) tuples from
-  //    incoming. Inner-join to skus so we have the canonical productName
-  //    base; deriveLaunchName layers the colorway suffix on top.
+  // 1. Pull (sku, productName, shipmentName, destination, expectedArrival)
+  //    tuples from incoming. Inner-join to skus so we have the canonical
+  //    productName base; deriveLaunchName layers the colorway suffix on
+  //    top. expectedArrival is used to pick the earliest shipment per
+  //    launchName (Scott 2026-05-08: a product launches once, additional
+  //    shipments are restocks).
   const rows = await db
     .select({
       sku: incomingShipments.sku,
       productName: skus.productName,
       shipmentName: incomingShipments.shipmentName,
       destination: incomingShipments.destination,
+      expectedArrival: incomingShipments.expectedArrival,
     })
     .from(incomingShipments)
     .innerJoin(skus, eq(incomingShipments.sku, skus.sku));
 
   // Dedupe at (sku, shipmentName, destination) level. Same SKU across
   // multiple POs of the same shipment + destination only counts once.
-  const seen = new Set<string>();
+  // Earliest `expectedArrival` wins on collisions (defensive — same
+  // tuple across POs should always have the same ETA).
+  const seenIdx = new Map<string, number>();
   type Tuple = {
     sku: string;
     productName: string | null;
     shipmentName: string;
     destination: string;
+    expectedArrival: string;
   };
   const tuples: Tuple[] = [];
   for (const r of rows) {
     const key = `${r.sku}|${r.shipmentName}|${r.destination}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    tuples.push(r);
+    const existingIdx = seenIdx.get(key);
+    if (existingIdx === undefined) {
+      seenIdx.set(key, tuples.length);
+      tuples.push(r);
+    } else if (r.expectedArrival < tuples[existingIdx].expectedArrival) {
+      tuples[existingIdx] = r;
+    }
   }
 
   if (tuples.length === 0) {
-    logger.info("launches.auto.no-candidates", { staleDeleted });
+    logger.info("launches.auto.no-candidates", { staleDeleted, duplicateShipmentsCollapsed });
     return {
       candidatePairs: 0,
       skippedAltColor: 0,
@@ -158,6 +236,7 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
       skippedAlreadyLaunched: 0,
       inserted: 0,
       staleDeleted,
+      duplicateShipmentsCollapsed,
     };
   }
 
@@ -196,23 +275,22 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
     recentSales.set(k, (recentSales.get(k) ?? 0) + r.unitsSold);
   }
 
-  // 4. Existing launches keyed by (productName, shipmentName).
+  // 4. Existing launches keyed by productName. Scott 2026-05-08: a
+  //    product launches once. If any auto-added or manual launch row
+  //    already exists for this productName, skip — additional shipments
+  //    are restocks, not new launches.
   const existingLaunches = await db
-    .select({
-      productName: productLaunches.productName,
-      shipmentName: productLaunches.shipmentName,
-    })
+    .select({ productName: productLaunches.productName })
     .from(productLaunches);
-  const existingKeys = new Set(
-    existingLaunches.map((r) => `${r.productName}|${r.shipmentName}`),
-  );
+  const existingLaunchNames = new Set(existingLaunches.map((r) => r.productName));
 
-  // 5. Apply filter chain and dedupe by (launchName, shipmentName).
+  // 5. Apply filter chain. Group surviving candidates by launchName and
+  //    keep the one with the earliest expected_arrival per launchName.
   let skippedAltColor = 0;
   let skippedHasStock = 0;
   let skippedHasSales = 0;
-  let skippedAlreadyLaunched = 0;
-  const launchKeysToInsert = new Set<string>();
+  const skippedAlreadyLaunchedNames = new Set<string>();
+  const earliestPerLaunch = new Map<string, { shipmentName: string; expectedArrival: string }>();
   for (const t of tuples) {
     if (!isMainColor(t.sku)) {
       skippedAltColor++;
@@ -231,20 +309,23 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
     }
     const baseName = t.productName ?? t.sku;
     const launchName = deriveLaunchName(t.sku, baseName);
-    const launchKey = `${launchName}|${t.shipmentName}`;
-    if (existingKeys.has(launchKey)) {
-      skippedAlreadyLaunched++;
+    if (existingLaunchNames.has(launchName)) {
+      skippedAlreadyLaunchedNames.add(launchName);
       continue;
     }
-    launchKeysToInsert.add(launchKey);
+    const current = earliestPerLaunch.get(launchName);
+    if (!current || t.expectedArrival < current.expectedArrival) {
+      earliestPerLaunch.set(launchName, {
+        shipmentName: t.shipmentName,
+        expectedArrival: t.expectedArrival,
+      });
+    }
   }
+  const skippedAlreadyLaunched = skippedAlreadyLaunchedNames.size;
 
-  // 6. Insert deduplicated launch rows.
+  // 6. Insert one row per launchName at its earliest shipment.
   let inserted = 0;
-  for (const launchKey of launchKeysToInsert) {
-    const sep = launchKey.indexOf("|");
-    const productName = launchKey.slice(0, sep);
-    const shipmentName = launchKey.slice(sep + 1);
+  for (const [productName, { shipmentName }] of earliestPerLaunch) {
     const result = await db
       .insert(productLaunches)
       .values({
@@ -267,6 +348,7 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
     skippedAlreadyLaunched,
     inserted,
     staleDeleted,
+    duplicateShipmentsCollapsed,
     ms: Date.now() - start,
   });
 
@@ -278,5 +360,6 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
     skippedAlreadyLaunched,
     inserted,
     staleDeleted,
+    duplicateShipmentsCollapsed,
   };
 }

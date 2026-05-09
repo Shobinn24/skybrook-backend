@@ -9,7 +9,11 @@ import {
   skus,
   stockSnapshots,
 } from "@/lib/db/schema";
-import { cleanupStaleDefaultLaunches, runLaunchAutoPopulate } from "@/lib/jobs/launches";
+import {
+  cleanupStaleDefaultLaunches,
+  collapseMultiShipmentAutoLaunches,
+  runLaunchAutoPopulate,
+} from "@/lib/jobs/launches";
 import { resetDb } from "@/tests/fixtures/seed";
 
 async function seedRawPull(): Promise<string> {
@@ -348,5 +352,60 @@ describe("runLaunchAutoPopulate", () => {
     const launches = await db.select().from(productLaunches);
     expect(launches).toHaveLength(1);
     expect(launches[0].productName).toBe("High Rise Short");
+  });
+
+  // Scott 2026-05-08: "Why is each product in there multiple times?"
+  // A product launches once. Multiple incoming shipments of the same
+  // product collapse to one row at the earliest expected_arrival.
+  it("inserts ONE launch row per product even when multiple shipments are pending (earliest ETA wins)", async () => {
+    const rawId = await seedRawPull();
+    await db.insert(skus).values([
+      { sku: "ev-sw-black-5x-l", productName: "Shapewear", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+    ]);
+    await db.insert(incomingShipments).values([
+      { sku: "ev-sw-black-5x-l", shipmentName: "KAI Sec Apr26", destination: "CN", expectedArrival: "2026-08-15", quantity: 200, status: "po", sourcePullId: rawId, sourceRowRef: "row-3" },
+      { sku: "ev-sw-black-5x-l", shipmentName: "KAI Sec Feb26", destination: "CN", expectedArrival: "2026-06-15", quantity: 200, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
+      { sku: "ev-sw-black-5x-l", shipmentName: "KAI Sec Mar26", destination: "CN", expectedArrival: "2026-07-15", quantity: 200, status: "po", sourcePullId: rawId, sourceRowRef: "row-2" },
+    ]);
+
+    const result = await runLaunchAutoPopulate();
+    expect(result.inserted).toBe(1);
+
+    const launches = await db.select().from(productLaunches);
+    expect(launches).toHaveLength(1);
+    expect(launches[0].productName).toBe("Shapewear Black");
+    expect(launches[0].shipmentName).toBe("KAI Sec Feb26");
+  });
+
+  // Scott 2026-05-08: self-heal pre-existing duplicate auto-added rows
+  // for the same product down to one row at the earliest ETA. Manual
+  // launches with non-default note are preserved.
+  it("collapseMultiShipmentAutoLaunches drops duplicate auto-added rows of the same product (earliest ETA wins)", async () => {
+    const rawId = await seedRawPull();
+    await db.insert(incomingShipments).values([
+      { sku: "ev-sw-black-5x-l", shipmentName: "KAI Sec Feb26", destination: "CN", expectedArrival: "2026-06-15", quantity: 200, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
+      { sku: "ev-sw-black-5x-l", shipmentName: "KAI Sec Mar26", destination: "CN", expectedArrival: "2026-07-15", quantity: 200, status: "po", sourcePullId: rawId, sourceRowRef: "row-2" },
+      { sku: "ev-sw-black-5x-l", shipmentName: "KAI Sec Apr26", destination: "CN", expectedArrival: "2026-08-15", quantity: 200, status: "po", sourcePullId: rawId, sourceRowRef: "row-3" },
+    ]);
+    await db.insert(productLaunches).values([
+      { productName: "Shapewear Black", shipmentName: "KAI Sec Apr26", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "Shapewear Black", shipmentName: "KAI Sec Feb26", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "Shapewear Black", shipmentName: "KAI Sec Mar26", note: "Auto-added: new variant detected in incoming shipment" },
+      // Manual launch with non-default note — must be preserved.
+      { productName: "Manual Launch X", shipmentName: "KAI Other", note: "manually added" },
+    ]);
+
+    const deleted = await collapseMultiShipmentAutoLaunches();
+    expect(deleted).toBe(2);
+
+    const launches = await db.select().from(productLaunches);
+    expect(launches).toHaveLength(2);
+    const black = launches.find((l) => l.productName === "Shapewear Black");
+    expect(black?.shipmentName).toBe("KAI Sec Feb26");
+    const manual = launches.find((l) => l.productName === "Manual Launch X");
+    expect(manual?.shipmentName).toBe("KAI Other");
+
+    // Idempotent: second run is a no-op.
+    expect(await collapseMultiShipmentAutoLaunches()).toBe(0);
   });
 });
