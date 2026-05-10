@@ -131,6 +131,20 @@ export function SustainabilityTimelineTable({
         </p>
       </header>
 
+      {data && data.excludedOverdue.count > 0 && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <span className="font-medium">
+            {data.excludedOverdue.count} overdue PO{data.excludedOverdue.count === 1 ? "" : "s"}
+            {" "}({data.excludedOverdue.totalQuantity.toLocaleString()} units) more than 14 days late
+          </span>
+          {" "}— excluded from this projection. Review on{" "}
+          <Link href="/incoming" className="underline underline-offset-2 hover:text-amber-700">
+            /incoming
+          </Link>
+          {" "}to confirm receipt or remove.
+        </div>
+      )}
+
       <div className="rounded-md border border-neutral-200 bg-white">
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-xs">
@@ -195,11 +209,14 @@ export function SustainabilityTimelineTable({
                 />
                 {shipmentCols.map((col, i) => {
                   const isTerminal = col.kind === "terminal";
-                  const baseBg = isTerminal
-                    ? "bg-amber-50 border-amber-300"
-                    : i % 2 === 0
-                      ? "bg-neutral-50 border-neutral-300"
-                      : "bg-blue-50/40 border-neutral-300";
+                  const isOverdue = !!col.isOverdue;
+                  const baseBg = isOverdue
+                    ? "bg-orange-50 border-orange-300"
+                    : isTerminal
+                      ? "bg-amber-50 border-amber-300"
+                      : i % 2 === 0
+                        ? "bg-neutral-50 border-neutral-300"
+                        : "bg-blue-50/40 border-neutral-300";
                   return (
                     <th
                       key={`${col.eta}|${col.shipmentName}`}
@@ -210,7 +227,9 @@ export function SustainabilityTimelineTable({
                         {isTerminal ? "+30d outlook" : col.shipmentName}
                       </div>
                       <div className="font-normal lowercase tracking-normal text-neutral-500">
-                        {formatYmd(col.eta)} · {col.daysFromToday}d
+                        {isOverdue
+                          ? `overdue · was ${formatYmd(col.eta)} · ${Math.abs(col.daysFromToday)}d late`
+                          : `${formatYmd(col.eta)} · ${col.daysFromToday}d`}
                       </div>
                     </th>
                   );
@@ -219,11 +238,14 @@ export function SustainabilityTimelineTable({
               <tr>
                 {shipmentCols.map((col, i) => {
                   const isTerminal = col.kind === "terminal";
-                  const baseBg = isTerminal
-                    ? "bg-amber-50 border-amber-300"
-                    : i % 2 === 0
-                      ? "bg-neutral-50 border-neutral-300"
-                      : "bg-blue-50/40 border-neutral-300";
+                  const isOverdue = !!col.isOverdue;
+                  const baseBg = isOverdue
+                    ? "bg-orange-50 border-orange-300"
+                    : isTerminal
+                      ? "bg-amber-50 border-amber-300"
+                      : i % 2 === 0
+                        ? "bg-neutral-50 border-neutral-300"
+                        : "bg-blue-50/40 border-neutral-300";
                   const cls = "border-l px-2 py-1 text-right font-medium " + baseBg;
                   // Fragment with a key so React can identify each
                   // 5-column block. `<>` shorthand can't take a key,
@@ -298,14 +320,19 @@ export function SustainabilityTimelineTable({
                     // clarity at the cell call sites below.
                     const runsOutInWindow = stockOut;
                     const isTerminal = shipmentCols[i]?.kind === "terminal";
+                    const isOverdueCol = !!shipmentCols[i]?.isOverdue;
                     // Striped column background. Terminal "+30d outlook"
-                    // column gets amber. Stockout overrides with red so
+                    // column gets amber. Overdue column gets orange so
+                    // the operator's eye lands on it before the regular
+                    // upcoming columns. Stockout overrides with red so
                     // the warning isn't muted by the stripe / outlook tint.
-                    const stripeBg = isTerminal
-                      ? "bg-amber-50/60"
-                      : i % 2 === 0
-                        ? ""
-                        : "bg-blue-50/30";
+                    const stripeBg = isOverdueCol
+                      ? "bg-orange-50/40"
+                      : isTerminal
+                        ? "bg-amber-50/60"
+                        : i % 2 === 0
+                          ? ""
+                          : "bg-blue-50/30";
                     const stockoutBg = stockOut ? "bg-red-50" : stripeBg;
                     const colCls =
                       "border-l px-2 py-1.5 text-right tabular-nums " + stockoutBg;

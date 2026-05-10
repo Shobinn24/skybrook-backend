@@ -57,6 +57,12 @@ export type ShipmentColumn = {
    * to render the column header differently (no shipment name, just an
    * "outlook" label) without re-deriving from the row data. */
   kind: "shipment" | "terminal";
+  /** True when this column represents a PO whose ETA was in the past
+   * but it hasn't been auto-received yet. Within the OVERDUE_GRACE_DAYS
+   * window we still credit it to the projection (treating it as
+   * arriving today since walkProjection clamps past ETAs). UI styles
+   * the column differently and shows the original ETA. */
+  isOverdue?: boolean;
 };
 
 export type SustainabilityTimelineResult = {
@@ -74,9 +80,23 @@ export type SustainabilityTimelineResult = {
   // so the UI can display + edit them in the same payload that powers
   // the projection table.
   overrides: Array<VelocityOverride & { id: string; note: string | null }>;
+  /** Overdue POs that fell outside the grace window and were excluded
+   * from the projection. UI surfaces this as a banner so operators
+   * know to clean them up on /incoming. */
+  excludedOverdue: {
+    count: number;        // distinct (shipmentName, eta) groups
+    totalQuantity: number;
+  };
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+/** Overdue POs within this many days past their ETA still count toward
+ * the projection — they're treated as "arriving today". Beyond this,
+ * they're excluded (presumed canceled or accounted for elsewhere) and
+ * surfaced via the excludedOverdue banner. Scott 2026-05-09 ask:
+ * shapewear was reading as tight because real-but-overdue stock was
+ * silently dropped. */
+const OVERDUE_GRACE_DAYS = 14;
 
 function ymdToUtcMs(ymd: string): number {
   const [y, m, d] = ymd.split("-").map(Number);
@@ -155,10 +175,16 @@ export async function getSustainabilityTimeline(opts: {
     }
   }
 
-  // 3. Future shipments at the location. Excludes:
-  //    - Shipments already received (those units are in stock_snapshots).
-  //    - Past-ETA shipments (the timeline projects forward from today;
-  //      overdue POs are surfaced on /incoming for confirmation, not here).
+  // 3. Shipments at the location. Includes future POs PLUS overdue POs
+  // within the OVERDUE_GRACE_DAYS window — overdue stock that hasn't
+  // been auto-received yet is real expected inventory, and silently
+  // dropping it caused Scott's 2026-05-09 "I thought we were tight"
+  // false alarm. Beyond the grace window we exclude them (probably
+  // canceled or already accounted for) and surface a count via
+  // excludedOverdue so operators can clean up on /incoming.
+  // Already-received POs are filtered out below — those units are in
+  // stock_snapshots so we don't double-count.
+  const graceCutoff = addDays(opts.today, -OVERDUE_GRACE_DAYS);
   const shipmentRowsRaw = await db
     .select({
       sku: incomingShipments.sku,
@@ -168,22 +194,36 @@ export async function getSustainabilityTimeline(opts: {
       quantity: incomingShipments.quantity,
     })
     .from(incomingShipments)
-    .where(
-      and(
-        eq(incomingShipments.destination, opts.location),
-        gte(incomingShipments.expectedArrival, opts.today),
-      ),
-    )
+    .where(eq(incomingShipments.destination, opts.location))
     .orderBy(asc(incomingShipments.expectedArrival), asc(incomingShipments.shipmentName));
   const receivedKeys = await getReceivedShipmentKeys();
-  const shipmentRows = shipmentRowsRaw.filter((r) => {
+  // Partition by grace window. Already-received rows drop out of both
+  // buckets — they're satisfied by stock_snapshots.
+  type ShipmentRow = (typeof shipmentRowsRaw)[number];
+  const shipmentRows: ShipmentRow[] = [];
+  const excludedOverdueGroups = new Map<string, number>(); // key=shipmentName|eta, value=qty
+  for (const r of shipmentRowsRaw) {
     const k = shipmentReceiptKey({
       shipmentName: r.shipmentName,
       destination: r.destination,
       expectedArrival: r.expectedArrival,
     });
-    return !receivedKeys.has(k);
-  });
+    if (receivedKeys.has(k)) continue;
+    if (r.expectedArrival < graceCutoff) {
+      // Older than grace cutoff — exclude from projection, surface in banner.
+      const groupKey = `${r.shipmentName}|${r.expectedArrival}`;
+      excludedOverdueGroups.set(
+        groupKey,
+        (excludedOverdueGroups.get(groupKey) ?? 0) + r.quantity,
+      );
+      continue;
+    }
+    shipmentRows.push(r);
+  }
+  const excludedOverdue = {
+    count: excludedOverdueGroups.size,
+    totalQuantity: Array.from(excludedOverdueGroups.values()).reduce((a, b) => a + b, 0),
+  };
 
   // Velocity overrides for this location. Sorted by startDate ASC so
   // resolution prefers earlier-starting windows when multiple overrides
@@ -229,11 +269,17 @@ export async function getSustainabilityTimeline(opts: {
       }
       continue;
     }
+    // For overdue shipments, daysFromToday carries the SIGNED days
+    // (negative = N days late). Future shipments stay non-negative as
+    // before. UI uses the sign to switch between "Nd" and "Nd late".
+    const rawDaysFrom = daysBetween(opts.today, r.expectedArrival);
+    const isOverdue = r.expectedArrival < opts.today;
     globalShipmentMap.set(k, {
       shipmentName: r.shipmentName,
       eta: r.expectedArrival,
-      daysFromToday: Math.max(0, daysBetween(opts.today, r.expectedArrival)),
+      daysFromToday: isOverdue ? rawDaysFrom : Math.max(0, rawDaysFrom),
       kind: "shipment",
+      ...(isOverdue ? { isOverdue: true } : {}),
     });
   }
   const shipmentColumns = Array.from(globalShipmentMap.values()).sort((a, b) =>
@@ -353,5 +399,6 @@ export async function getSustainabilityTimeline(opts: {
     shipmentColumns,
     rows,
     overrides: overridesWithMeta,
+    excludedOverdue,
   };
 }

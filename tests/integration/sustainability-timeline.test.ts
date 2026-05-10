@@ -368,4 +368,57 @@ describe("getSustainabilityTimeline (integration)", () => {
     expect(proj.shipmentQty).toBe(0);
     expect(proj.afterReceiptStock).toBe(proj.stockLeftAtEta);
   });
+
+  it("includes overdue POs within the 14-day grace window with isOverdue flag", async () => {
+    await seedSku({ sku: "ev-a-l", productName: "Style A" });
+    await seedStock({ sku: "ev-a-l", location: "US", onHand: 100, date: "2026-04-28" });
+    // 5 days late — within the 14-day grace
+    await seedShipment({
+      sku: "ev-a-l",
+      destination: "US",
+      shipmentName: "Late-PO",
+      eta: "2026-04-23",
+      qty: 50,
+    });
+
+    const result = await getSustainabilityTimeline({
+      location: "US",
+      today: "2026-04-28",
+    });
+
+    // Late-PO appears as the first column (sorted by ETA ASC), terminal +30d after.
+    expect(result.shipmentColumns).toHaveLength(2);
+    expect(result.shipmentColumns[0]).toMatchObject({
+      shipmentName: "Late-PO",
+      eta: "2026-04-23",
+      isOverdue: true,
+    });
+    expect(result.shipmentColumns[0].daysFromToday).toBeLessThan(0);
+    expect(result.excludedOverdue).toEqual({ count: 0, totalQuantity: 0 });
+    // The qty still credits the projection — 50 units land at the overdue
+    // column, walkProjection clamps past ETAs to today's window.
+    expect(result.rows[0].projections[0].shipmentQty).toBe(50);
+  });
+
+  it("excludes overdue POs beyond grace and surfaces them in excludedOverdue", async () => {
+    await seedSku({ sku: "ev-a-l", productName: "Style A" });
+    await seedStock({ sku: "ev-a-l", location: "US", onHand: 100, date: "2026-04-28" });
+    // 20 days late — past the 14-day grace cutoff
+    await seedShipment({
+      sku: "ev-a-l",
+      destination: "US",
+      shipmentName: "Stale-PO",
+      eta: "2026-04-08",
+      qty: 200,
+    });
+
+    const result = await getSustainabilityTimeline({
+      location: "US",
+      today: "2026-04-28",
+    });
+
+    // No projection columns (only stock, no in-grace shipments).
+    expect(result.shipmentColumns).toHaveLength(0);
+    expect(result.excludedOverdue).toEqual({ count: 1, totalQuantity: 200 });
+  });
 });
