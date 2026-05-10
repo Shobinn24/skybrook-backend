@@ -29,6 +29,9 @@ importers:
       date-fns-tz:
         specifier: ^3.2.0
         version: 3.2.0(date-fns@4.1.0)
+      drizzle-kit:
+        specifier: ^0.28.0
+        version: 0.28.1
       drizzle-orm:
         specifier: ^0.36.0
         version: 0.36.4(@types/react@19.2.14)(postgres@3.4.9)(react@19.2.5)
@@ -75,9 +78,6 @@ importers:
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
-      drizzle-kit:
-        specifier: ^0.28.0
-        version: 0.28.1
       eslint:
         specifier: ^9.13.0
         version: 9.39.4(jiti@1.21.7)
