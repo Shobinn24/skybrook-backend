@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { and, eq, like, or, sql } from "drizzle-orm";
+import { and, eq, gte, like, lte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { dailySales } from "@/lib/db/schema";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { decomposePackSku, PACK_SKU_DB_PATTERNS } from "@/lib/domain/sku-pack";
 import { getShopifyAccessToken } from "@/lib/sources/shopify-auth";
+import { toEstDate } from "@/lib/tz";
 
 // Shopify Admin GraphQL API version — bump when needed.
 const API_VERSION = "2025-01";
@@ -181,7 +182,14 @@ async function* iterateOrderPages(
 export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
   const agg = new Map<string, { units: number; net: number }>();
   for (const order of orders) {
-    const day = order.createdAt.slice(0, 10); // YYYY-MM-DD
+    // Bucket by EST calendar date — matches Shopify's `created_at:>=YYYY-MM-DD`
+    // filter (which Shopify interprets in shop timezone) and aligns with
+    // the rest of Skybrook's reporting cadence (10am-ET cron, EST as_of
+    // dates, Scott's velocity sheet). Pre-fix this used createdAt UTC date,
+    // which split orders near the EST midnight boundary into different
+    // buckets than the live Shopify filter pulled — root cause of the
+    // persistent ~$695 May-6 INTL DB-vs-live divergence (issue #6).
+    const day = toEstDate(new Date(order.createdAt)); // YYYY-MM-DD in EST
 
     // Pass 1: collect tracked SKU rows for this order. We need the full
     // set before allocating ancillary because share = lineNet / orderRev.
@@ -317,28 +325,43 @@ function makeRunner(channel: Channel): SourceRunner {
       rawPayload,
       schemaFingerprint: fingerprint,
       async normalize(rawId) {
-        for (const s of sales) {
-          await db
-            .insert(dailySales)
-            .values({
-              channel,
-              sku: s.sku,
-              salesDate: s.salesDate,
-              unitsSold: s.unitsSold,
-              netSalesUsd: String(s.netSalesUsd),
-              sourcePullId: rawId,
-            })
-            .onConflictDoUpdate({
-              target: [dailySales.channel, dailySales.sku, dailySales.salesDate],
-              set: {
-                unitsSold: sql`excluded.units_sold`,
-                netSalesUsd: sql`excluded.net_sales_usd`,
+        // Delete-and-replace inside a transaction over the cron's date
+        // window. Replaces the previous upsert pattern, which left rows
+        // from prior aggregation logic untouched whenever a SKU's
+        // canonical key changed (the upsert key never matched, so old
+        // rows persisted forever). Concrete bug it fixes: the EST-vs-UTC
+        // bucketing migration would otherwise leave UTC-bucketed rows
+        // alongside the new EST-bucketed rows for the same orders.
+        //
+        // Atomic: if the insert fails, the existing data stays. Idempotent
+        // on re-runs — subsequent runs delete the rows they just wrote and
+        // re-insert identical values.
+        await db.transaction(async (tx) => {
+          await tx
+            .delete(dailySales)
+            .where(
+              and(
+                eq(dailySales.channel, channel),
+                gte(dailySales.salesDate, since),
+                lte(dailySales.salesDate, today),
+              ),
+            );
+          if (sales.length > 0) {
+            await tx.insert(dailySales).values(
+              sales.map((s) => ({
+                channel,
+                sku: s.sku,
+                salesDate: s.salesDate,
+                unitsSold: s.unitsSold,
+                netSalesUsd: String(s.netSalesUsd),
                 sourcePullId: rawId,
-              },
-            });
-        }
-        // Purge legacy rows for this channel that the current ingest
-        // would have eliminated:
+              })),
+            );
+          }
+        });
+        // Belt-and-suspenders purge of legacy rows OUTSIDE the cron's
+        // window (e.g. salesDate < since) that earlier ingests may have
+        // written under aggregation rules that no longer apply:
         //   - mixed-case SKUs       (now lowercased at aggregation)
         //   - non-`ev-` SKUs        (now skipped at aggregation — gift
         //                            cards, ebooks, custom items)

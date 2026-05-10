@@ -56,10 +56,27 @@ describe("aggregateToDailySales", () => {
     ]);
   });
 
-  it("slices createdAt to YYYY-MM-DD (UTC) for salesDate", () => {
+  it("buckets createdAt by EST calendar date for salesDate", () => {
+    // EST is UTC-5 (EST) or UTC-4 (EDT). Both UTCs below fall on
+    // April 22 in EST/EDT, so they should aggregate to one row.
+    // Pre-fix this used UTC date and split them across days,
+    // which caused the May-6 INTL DB-vs-live divergence (#6).
     const orders = [
-      order("2026-04-22T23:59:59Z", [li("ev-a", 1, "10.00")]),
-      order("2026-04-23T00:00:01Z", [li("ev-a", 1, "10.00")]),
+      order("2026-04-22T23:59:59Z", [li("ev-a", 1, "10.00")]), // 19:59 EDT Apr 22
+      order("2026-04-23T00:00:01Z", [li("ev-a", 1, "10.00")]), // 20:00 EDT Apr 22
+    ];
+    const result = aggregateToDailySales(orders);
+    expect(result).toEqual([
+      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 20 },
+    ]);
+  });
+
+  it("EST midnight boundary splits orders correctly", () => {
+    // April 23 04:01 UTC = 00:01 EDT April 23 (across the boundary).
+    // April 23 03:59 UTC = 23:59 EDT April 22 (just before).
+    const orders = [
+      order("2026-04-23T03:59:00Z", [li("ev-a", 1, "10.00")]), // EDT Apr 22
+      order("2026-04-23T04:01:00Z", [li("ev-a", 1, "10.00")]), // EDT Apr 23
     ];
     const result = aggregateToDailySales(orders);
     expect(result).toEqual([
