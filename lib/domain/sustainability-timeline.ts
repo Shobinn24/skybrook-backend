@@ -113,9 +113,12 @@ export function walkProjection(
     if (dailyRate > 0 && stock > 0) {
       if (useMultiplier && multiplierAt) {
         // Walk day-by-day until stock crosses 0. Bound the search to
-        // 365 days past the window to avoid an infinite loop if every
-        // future day carries a 0-multiplier (no demand).
-        const maxDaysAhead = daysFromPrevious + 365;
+        // avoid an infinite loop if every future day carries a
+        // 0-multiplier (no demand). The floor of ~3 years (1095d)
+        // matters for overdue columns where daysFromPrevious is 0 —
+        // with the old `+365` cap, high-stock SKUs whose runOut sat
+        // 366+ days out would silently render as "—".
+        const maxDaysAhead = Math.max(daysFromPrevious + 365, 1095);
         let runningStock = stock;
         for (let d = 0; d < maxDaysAhead; d++) {
           const m = Math.max(0, multiplierAt(daysToYmd(pivotDays + d)));
