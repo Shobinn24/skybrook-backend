@@ -71,6 +71,8 @@ export function SustainabilityTimelineTable({
   const rawRows = data?.rows ?? [];
   const shipmentCols = data?.shipmentColumns ?? [];
 
+  const filterActive = searchQuery.trim() !== "" || productLineFilter !== "";
+
   const rows = useMemo(() => {
     const dir = sort.direction === "asc" ? 1 : -1;
     const cmp = (a: typeof rawRows[number], b: typeof rawRows[number]): number => {
@@ -97,6 +99,22 @@ export function SustainabilityTimelineTable({
     });
     return [...filtered].sort(cmp);
   }, [rawRows, sort, searchQuery, productLineFilter]);
+
+  // Totals only when a filter narrows the table — Scott wants a quick "what
+  // does the current view add up to?" while searching. Forecast columns stay
+  // blank (per Scott: actuals only, summing future projections is meaningless).
+  const totals = useMemo(() => {
+    if (!filterActive || rows.length === 0) return null;
+    return rows.reduce(
+      (acc, r) => ({
+        sales: acc.sales + r.salesInWindow,
+        salesDollars: acc.salesDollars + r.salesDollarsInWindow,
+        prorated: acc.prorated + r.proratedThirtyD,
+        stock: acc.stock + r.currentStock,
+      }),
+      { sales: 0, salesDollars: 0, prorated: 0, stock: 0 },
+    );
+  }, [rows, filterActive]);
 
   return (
     <section className="space-y-2">
@@ -336,6 +354,43 @@ export function SustainabilityTimelineTable({
                 </tr>
               )}
             </tbody>
+            {totals && (
+              <tfoot className="sticky bottom-0 z-20 bg-neutral-100 text-neutral-900 shadow-[0_-1px_0_0_rgba(0,0,0,0.08)]">
+                <tr className="border-t-2 border-neutral-300 font-semibold">
+                  <td className="sticky left-0 z-10 border-r border-neutral-200 bg-neutral-100 px-3 py-1.5 text-[11px] uppercase tracking-wide text-neutral-600">
+                    Total
+                  </td>
+                  <td className="px-3 py-1.5 text-[11px] uppercase tracking-wide text-neutral-600">
+                    {rows.length} SKU{rows.length === 1 ? "" : "s"}
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">
+                    {fmtNum(totals.sales)}
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">
+                    {totals.salesDollars > 0 ? fmtMoney(totals.salesDollars) : "—"}
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">
+                    {fmtNum(totals.prorated)}
+                  </td>
+                  <td className="border-r border-neutral-200 px-3 py-1.5 text-right tabular-nums">
+                    {fmtNum(totals.stock)}
+                  </td>
+                  {/* Forecast columns intentionally blank — summing future
+                      projections (especially stock-after-receipt) would mix
+                      cumulative arithmetic with projected ones, which Scott
+                      explicitly didn't want. */}
+                  {shipmentCols.map((col) => (
+                    <Fragment key={`total|${col.eta}|${col.shipmentName}`}>
+                      <td className="border-l-2 border-neutral-300 px-2 py-1.5 text-right text-neutral-400">—</td>
+                      <td className="border-l border-neutral-200 px-2 py-1.5 text-right text-neutral-400">—</td>
+                      <td className="border-l border-neutral-200 px-2 py-1.5 text-right text-neutral-400">—</td>
+                      <td className="border-l border-neutral-200 px-2 py-1.5 text-right text-neutral-400">—</td>
+                      <td className="border-l border-neutral-200 px-2 py-1.5 text-right text-neutral-400">—</td>
+                    </Fragment>
+                  ))}
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>
