@@ -143,7 +143,12 @@ export function walkProjection(
       afterReceiptStock: Number(afterReceiptStock.toFixed(2)),
     });
 
-    pivotDays = etaDays;
+    // Don't let past ETAs rewind the pivot — that would invent phantom
+    // sales between two overdue shipments (the time between their ETAs
+    // has already passed in real life). For overdue rows daysFromPrevious
+    // already clamps to 0; this preserves the same property for the
+    // NEXT iteration's window.
+    pivotDays = Math.max(pivotDays, etaDays);
     stock = afterReceiptStock;
   }
 

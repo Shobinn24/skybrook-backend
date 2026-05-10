@@ -179,6 +179,31 @@ describe("walkProjection", () => {
     ], { multiplierAt });
     expect(out[0].runOutDate).toBe("2026-05-06");
   });
+
+  it("two overdue shipments: pivot doesn't rewind, no phantom sales between them", () => {
+    // Today = 2026-05-10. Both shipments have ETAs in the past.
+    // The fix: pivot stays at "today" across past ETAs so we don't
+    // invent sales for days that already happened.
+    // Pre-fix bug: pivot would rewind to 2026-05-03 after the first
+    // overdue, then invent 5 days × 2 = 10 phantom sales between the
+    // two overdue shipments.
+    const out = walkProjection(100, 2, "2026-05-10", [
+      { shipmentName: "Late-A", eta: "2026-05-03", quantity: 50 },  // 7d late
+      { shipmentName: "Late-B", eta: "2026-05-08", quantity: 30 },  // 2d late
+      { shipmentName: "Future", eta: "2026-05-15", quantity: 20 },  // 5d future
+    ]);
+    // Both overdue rows: 0 sales-in-window, stock unchanged before adding qty.
+    expect(out[0].salesInWindow).toBe(0);
+    expect(out[0].stockLeftAtEta).toBe(100);
+    expect(out[0].afterReceiptStock).toBe(150);
+    expect(out[1].salesInWindow).toBe(0);             // would be 10 pre-fix
+    expect(out[1].stockLeftAtEta).toBe(150);          // would be 140 pre-fix
+    expect(out[1].afterReceiptStock).toBe(180);
+    // Future row: 5 days × 2 = 10 sales between today and 2026-05-15.
+    expect(out[2].salesInWindow).toBe(10);
+    expect(out[2].stockLeftAtEta).toBe(170);
+    expect(out[2].afterReceiptStock).toBe(190);
+  });
 });
 
 describe("resolveMultiplier", () => {
