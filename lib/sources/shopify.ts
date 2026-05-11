@@ -347,16 +347,27 @@ function makeRunner(channel: Channel): SourceRunner {
               ),
             );
           if (sales.length > 0) {
-            await tx.insert(dailySales).values(
-              sales.map((s) => ({
-                channel,
-                sku: s.sku,
-                salesDate: s.salesDate,
-                unitsSold: s.unitsSold,
-                netSalesUsd: String(s.netSalesUsd),
-                sourcePullId: rawId,
-              })),
-            );
+            // Chunk inserts to stay under Postgres' MAX_PARAMETERS limit
+            // (65,534 per parameterized statement). daily_sales has 6
+            // columns per row, so the single-shot insert blew up at
+            // ~10,920 rows. shopify_us crossed that threshold on
+            // 2026-05-10 (~12,800 rows for the trailing-N-day window),
+            // and the entire normalize transaction rolled back, so
+            // /performance under-reported US revenue for 2 days.
+            // 1,000-row chunks = 6,000 params, well under the cap with
+            // room for future schema growth.
+            const CHUNK = 1000;
+            const rows = sales.map((s) => ({
+              channel,
+              sku: s.sku,
+              salesDate: s.salesDate,
+              unitsSold: s.unitsSold,
+              netSalesUsd: String(s.netSalesUsd),
+              sourcePullId: rawId,
+            }));
+            for (let i = 0; i < rows.length; i += CHUNK) {
+              await tx.insert(dailySales).values(rows.slice(i, i + CHUNK));
+            }
           }
         });
         // Belt-and-suspenders purge of legacy rows OUTSIDE the cron's
