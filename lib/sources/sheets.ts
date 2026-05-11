@@ -738,6 +738,49 @@ export function parseAdSpendTab(
   return { rows, skipped };
 }
 
+/** Collapse rows that share a (product, spendDate) key into a single
+ * last-write-wins row, returning the deduped rows alongside metadata
+ * about which collisions were collapsed. Supermetrics occasionally
+ * emits the same date twice in a single tab (observed 2026-05-10 in
+ * SuperHW: rows 7 and 9 both 2026-05-09 = 310.82). Before deduping,
+ * the second INSERT collided on the PK (product, spend_date) and the
+ * whole truncate-replace transaction rolled back, leaving the table
+ * empty and breaking the Performance tab. Last-write-wins matches
+ * PostgreSQL's natural ON CONFLICT DO UPDATE semantics; the collapsed
+ * dupes flow into rawPayload.dupesCollapsed for diagnostic visibility.
+ */
+export function dedupeAdSpendRows(rows: ReadonlyArray<AdSpendRow>): {
+  dedupedRows: AdSpendRow[];
+  dupesCollapsed: Array<{
+    product: string;
+    spendDate: string;
+    firstRowRef: string;
+    secondRowRef: string;
+  }>;
+} {
+  const map = new Map<string, AdSpendRow>();
+  const dupesCollapsed: Array<{
+    product: string;
+    spendDate: string;
+    firstRowRef: string;
+    secondRowRef: string;
+  }> = [];
+  for (const r of rows) {
+    const key = `${r.product}!${r.spendDate}`;
+    const prior = map.get(key);
+    if (prior) {
+      dupesCollapsed.push({
+        product: r.product,
+        spendDate: r.spendDate,
+        firstRowRef: prior.sourceRowRef,
+        secondRowRef: r.sourceRowRef,
+      });
+    }
+    map.set(key, r);
+  }
+  return { dedupedRows: Array.from(map.values()), dupesCollapsed };
+}
+
 export const sheetsAdSpendRunner: SourceRunner = async (_batchId) => {
   const sheetId = process.env.AD_SPEND_SHEET_ID;
   if (!sheetId) throw new Error("sheets_ad_spend: missing AD_SPEND_SHEET_ID");
@@ -763,11 +806,13 @@ export const sheetsAdSpendRunner: SourceRunner = async (_batchId) => {
     for (const s of skipped) allSkipped.push({ tab, ...s });
   }
 
+  const { dedupedRows, dupesCollapsed } = dedupeAdSpendRows(allRows);
+
   const fingerprint = createHash("sha256")
     .update(
       JSON.stringify({
         tabs: AD_SPEND_TABS,
-        rowCount: allRows.length,
+        rowCount: dedupedRows.length,
       }),
     )
     .digest("hex")
@@ -775,11 +820,12 @@ export const sheetsAdSpendRunner: SourceRunner = async (_batchId) => {
 
   return {
     ok: true,
-    rowCount: allRows.length,
+    rowCount: dedupedRows.length,
     rawPayload: {
       tabs: AD_SPEND_TABS,
-      sample: allRows.slice(0, 5),
+      sample: dedupedRows.slice(0, 5),
       skipped: allSkipped,
+      dupesCollapsed,
     },
     schemaFingerprint: fingerprint,
     async normalize(rawId) {
@@ -788,8 +834,8 @@ export const sheetsAdSpendRunner: SourceRunner = async (_batchId) => {
       // keeps us aligned without needing change-detection.
       await db.transaction(async (tx) => {
         await tx.delete(adSpendDaily);
-        if (allRows.length === 0) return;
-        for (const r of allRows) {
+        if (dedupedRows.length === 0) return;
+        for (const r of dedupedRows) {
           await tx.insert(adSpendDaily).values({
             product: r.product,
             spendDate: r.spendDate,

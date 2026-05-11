@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   colIndexToA1,
+  dedupeAdSpendRows,
   extractArrivalDates,
   findIntlBoundary,
   parseAdSpendTab,
@@ -706,5 +707,40 @@ describe("parseFbAdsSheet", () => {
       { spendDate: "2026-01-01", costUsd: 10 },
       { spendDate: "2026-01-03", costUsd: 30 },
     ]);
+  });
+});
+
+describe("dedupeAdSpendRows", () => {
+  // Regression test for the 2026-05-10 incident: Supermetrics duplicated
+  // 2026-05-09 in the SuperHW tab. Without dedupe the second INSERT
+  // collided on PK and the whole transaction rolled back, leaving
+  // ad_spend_daily empty and breaking the Performance tab.
+  it("collapses duplicate (product, spendDate) rows last-write-wins", () => {
+    const { dedupedRows, dupesCollapsed } = dedupeAdSpendRows([
+      { product: "SuperHW", spendDate: "2026-05-08", costUsd: 100, sourceRowRef: "SuperHW!A6" },
+      { product: "SuperHW", spendDate: "2026-05-09", costUsd: 310.82, sourceRowRef: "SuperHW!A7" },
+      { product: "SuperHW", spendDate: "2026-05-09", costUsd: 310.82, sourceRowRef: "SuperHW!A9" },
+      { product: "Men", spendDate: "2026-05-09", costUsd: 50, sourceRowRef: "Men!A7" },
+    ]);
+    expect(dedupedRows).toHaveLength(3);
+    expect(dedupedRows.find((r) => r.product === "SuperHW" && r.spendDate === "2026-05-09")!.sourceRowRef).toBe("SuperHW!A9");
+    expect(dupesCollapsed).toEqual([
+      {
+        product: "SuperHW",
+        spendDate: "2026-05-09",
+        firstRowRef: "SuperHW!A7",
+        secondRowRef: "SuperHW!A9",
+      },
+    ]);
+  });
+
+  it("returns input unchanged when no dupes", () => {
+    const input = [
+      { product: "Men", spendDate: "2026-05-08", costUsd: 1, sourceRowRef: "Men!A6" },
+      { product: "Men", spendDate: "2026-05-09", costUsd: 2, sourceRowRef: "Men!A7" },
+    ];
+    const { dedupedRows, dupesCollapsed } = dedupeAdSpendRows(input);
+    expect(dedupedRows).toEqual(input);
+    expect(dupesCollapsed).toEqual([]);
   });
 });
