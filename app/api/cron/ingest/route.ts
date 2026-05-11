@@ -7,6 +7,7 @@ import { runPhase2 } from "@/lib/jobs/reconcile";
 import { syncUnitCosts } from "@/lib/jobs/unit-costs";
 import {
   sheetsAdSpendRunner,
+  sheetsFbAdsRunner,
   sheetsIncomingRunner,
   sheetsInventoryRunner,
 } from "@/lib/sources/sheets";
@@ -22,6 +23,7 @@ const SOURCES: Partial<Record<SourceKey, SourceRunner>> = {
   sheets_inventory: sheetsInventoryRunner,
   sheets_incoming: sheetsIncomingRunner,
   sheets_ad_spend: sheetsAdSpendRunner,
+  sheets_fb_ads: sheetsFbAdsRunner,
   shopify_us: shopifyUsRunner,
   shopify_intl: shopifyIntlRunner,
 };

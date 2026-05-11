@@ -15,6 +15,7 @@ import {
   getDistinctShipmentNames,
   getLaunches,
 } from "@/lib/queries/launches";
+import { getFbAdsRollup } from "@/lib/queries/fb-ads";
 import { getPerformanceRollup } from "@/lib/queries/performance";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getOverstockRows } from "@/lib/queries/overstock";
@@ -411,5 +412,26 @@ export const inventoryRouter = router({
     .mutation(async ({ input }) => {
       await db.delete(productLaunches).where(eq(productLaunches.id, input.id));
       return { ok: true as const };
+    }),
+
+  // /fb-ads — top-spending FB ads, pivoted by ad number, for an
+  // arbitrary [rangeStart, rangeEnd] window. Sorted desc by spend.
+  getFbAdsRollup: publicProcedure
+    .input(
+      z.object({
+        rangeStart: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "rangeStart must be YYYY-MM-DD"),
+        rangeEnd: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "rangeEnd must be YYYY-MM-DD"),
+      }),
+    )
+    .query(({ input }) => {
+      const { rangeStart, rangeEnd } = input;
+      if (rangeStart > rangeEnd) {
+        return getFbAdsRollup({ rangeStart: rangeEnd, rangeEnd: rangeStart });
+      }
+      return getFbAdsRollup({ rangeStart, rangeEnd });
     }),
 });

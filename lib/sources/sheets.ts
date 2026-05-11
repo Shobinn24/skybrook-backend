@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import { google, type sheets_v4 } from "googleapis";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { adSpendDaily, incomingShipments, skus, stockSnapshots } from "@/lib/db/schema";
+import {
+  adSpendDaily,
+  fbAdSpendDaily,
+  incomingShipments,
+  skus,
+  stockSnapshots,
+} from "@/lib/db/schema";
 import { decomposePackSku } from "@/lib/domain/sku-pack";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { toEstDate } from "@/lib/tz";
@@ -790,6 +796,251 @@ export const sheetsAdSpendRunner: SourceRunner = async (_batchId) => {
             costUsd: r.costUsd.toString(),
             sourcePullId: rawId,
           });
+        }
+      });
+    },
+  };
+};
+
+// ============================================================================
+// FB Ads Tracker — per-ad daily spend
+// ============================================================================
+// Source: standalone "FB Ads Tracker" sheet (id in FB_ADS_SHEET_ID), tab
+// defaults to "Sheet7" (the linked gid 773835769). Layout:
+//   Row 1: ["Ad name", "Link to promoted post", "YYYY-MM-DD", ...dates]
+//   Row N: [<raw ad name>,                 <fb url>,             spend...]
+//
+// Naming convention has drifted; Scott's instruction is "for the most
+// part, the ad number comes after 'Ad ' or 'DCA '". We extract the
+// first match of /\b(?:Ad|DCA)\s+(\d+)\b/ (case-sensitive — avoids
+// matching the lowercase "ad" inside e.g. "AIad"). Same ad number can
+// be launched into multiple campaigns (e.g. "(OG Lav CC) Ad 537" and
+// "(LAV ASC) DCA 537" are both ad 537), so we aggregate spend by
+// (ad_number, spend_date).
+//
+// Display name & link: pick the variant with the highest TOTAL spend
+// across the full date window as the canonical row — that's the most
+// representative creative for that ad number.
+// ============================================================================
+
+const FB_ADS_DEFAULT_TAB = "Sheet7";
+
+export type FbAdSheetVariant = {
+  /** Verbatim col A. */
+  rawName: string;
+  /** Trimmed descriptive portion — what follows "Ad NNN - " / "DCA NNN - ".
+   * Falls back to rawName when there is no separator after the marker. */
+  displayName: string;
+  link: string | null;
+  /** Per-day cost. Sparse — only non-zero/non-empty days included. */
+  dailySpend: Array<{ spendDate: string; costUsd: number }>;
+};
+
+export type FbAdAggregated = {
+  adNumber: string;
+  adName: string;
+  adNameRaw: string;
+  adLink: string | null;
+  /** Aggregated (already summed across variants). */
+  dailySpend: Array<{ spendDate: string; costUsd: number }>;
+};
+
+const FB_ADS_NUMBER_REGEX = /\b(?:Ad|DCA)\s+(\d+)\b/;
+
+/** Pull the descriptive tail from a raw name. Example:
+ *   "(OG Lav CC) Ad 537 - OG Lavender images" → "OG Lavender images"
+ *   "(HW ASC) 4 Jul25 - Ad 1026 - Elie Long Copy Static 1" → "Elie Long Copy Static 1"
+ * If no " - " follows the marker we fall back to the trimmed rawName. */
+export function trimFbAdDisplayName(rawName: string): string {
+  const m = rawName.match(/\b(?:Ad|DCA)\s+\d+\s*-\s*(.+)$/);
+  if (m && m[1].trim()) return m[1].trim();
+  return rawName.trim();
+}
+
+export function parseFbAdsSheet(
+  grid: ReadonlyArray<ReadonlyArray<unknown>>,
+): {
+  variants: FbAdSheetVariant[];
+  aggregated: FbAdAggregated[];
+  skipped: Array<{ rowIdx: number; reason: string }>;
+} {
+  const skipped: Array<{ rowIdx: number; reason: string }> = [];
+  const variants: FbAdSheetVariant[] = [];
+
+  const header = (grid[0] ?? []).map((c) => String(c ?? "").trim());
+  if (
+    header[0]?.toLowerCase() !== "ad name" ||
+    !/promoted post/i.test(header[1] ?? "")
+  ) {
+    skipped.push({
+      rowIdx: 0,
+      reason: `unexpected header: ${JSON.stringify(grid[0] ?? [])}`,
+    });
+    return { variants, aggregated: [], skipped };
+  }
+
+  // Identify date columns (header position → YYYY-MM-DD). Anything that
+  // doesn't parse as ISO date is skipped from the iteration.
+  const dateCols: Array<{ colIdx: number; date: string }> = [];
+  for (let c = 2; c < header.length; c++) {
+    const h = header[c];
+    if (/^\d{4}-\d{2}-\d{2}$/.test(h)) dateCols.push({ colIdx: c, date: h });
+  }
+  if (dateCols.length === 0) {
+    skipped.push({ rowIdx: 0, reason: "no date columns found in header" });
+    return { variants, aggregated: [], skipped };
+  }
+
+  // Per-ad-number aggregation. Maps ad_number → date → summed cost.
+  const sumByAdAndDate = new Map<string, Map<string, number>>();
+  // Per-ad-number → array of {variant, totalSpend} so we can pick the
+  // canonical (highest-total-spend) raw name + link after aggregation.
+  const variantsByAd = new Map<
+    string,
+    Array<{ variant: FbAdSheetVariant; totalSpend: number }>
+  >();
+
+  for (let r = 1; r < grid.length; r++) {
+    const row = grid[r] ?? [];
+    const rawName = String(row[0] ?? "").trim();
+    if (!rawName) continue; // blank row
+    const linkRaw = String(row[1] ?? "").trim();
+    const link = linkRaw || null;
+
+    const m = rawName.match(FB_ADS_NUMBER_REGEX);
+    if (!m) {
+      skipped.push({
+        rowIdx: r,
+        reason: `no Ad/DCA number in "${rawName.slice(0, 60)}"`,
+      });
+      continue;
+    }
+    const adNumber = m[1];
+    const displayName = trimFbAdDisplayName(rawName);
+
+    const variantDaily: Array<{ spendDate: string; costUsd: number }> = [];
+    let variantTotal = 0;
+    for (const { colIdx, date } of dateCols) {
+      const cellRaw = String(row[colIdx] ?? "").trim();
+      if (!cellRaw) continue;
+      const cleaned = cellRaw.replace(/[$,]/g, "");
+      const cost = Number(cleaned);
+      if (!Number.isFinite(cost) || cost === 0) continue;
+      variantDaily.push({ spendDate: date, costUsd: cost });
+      variantTotal += cost;
+
+      const byDate = sumByAdAndDate.get(adNumber) ?? new Map<string, number>();
+      byDate.set(date, (byDate.get(date) ?? 0) + cost);
+      sumByAdAndDate.set(adNumber, byDate);
+    }
+
+    const variant: FbAdSheetVariant = {
+      rawName,
+      displayName,
+      link,
+      dailySpend: variantDaily,
+    };
+    variants.push(variant);
+    const arr = variantsByAd.get(adNumber) ?? [];
+    arr.push({ variant, totalSpend: variantTotal });
+    variantsByAd.set(adNumber, arr);
+  }
+
+  const aggregated: FbAdAggregated[] = [];
+  for (const [adNumber, byDate] of sumByAdAndDate) {
+    // Canonical variant = highest total spend; ties broken by first
+    // occurrence (Map preserves insertion order).
+    const arr = variantsByAd.get(adNumber) ?? [];
+    let best = arr[0];
+    for (const v of arr) {
+      if (v.totalSpend > best.totalSpend) best = v;
+    }
+    const daily = Array.from(byDate.entries())
+      .map(([spendDate, costUsd]) => ({ spendDate, costUsd }))
+      .sort((a, b) => a.spendDate.localeCompare(b.spendDate));
+    aggregated.push({
+      adNumber,
+      adName: best.variant.displayName,
+      adNameRaw: best.variant.rawName,
+      adLink: best.variant.link,
+      dailySpend: daily,
+    });
+  }
+
+  return { variants, aggregated, skipped };
+}
+
+export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
+  const sheetId = process.env.FB_ADS_SHEET_ID;
+  if (!sheetId) throw new Error("sheets_fb_ads: missing FB_ADS_SHEET_ID");
+  const tab = process.env.FB_ADS_TAB_NAME?.trim() || FB_ADS_DEFAULT_TAB;
+
+  const sheets = buildSheetsClient();
+
+  // 3015 rows × 132 cols ≈ 400K cells — well within Sheets API range
+  // limits. Pull A:EZ (col 156) to cover future date columns without
+  // needing to re-check the schema every pull.
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `'${tab}'!A1:EZ`,
+  });
+  const grid = (resp.data.values ?? []) as unknown[][];
+
+  const { variants, aggregated, skipped } = parseFbAdsSheet(grid);
+
+  const fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify({
+        tab,
+        variantCount: variants.length,
+        adCount: aggregated.length,
+      }),
+    )
+    .digest("hex")
+    .slice(0, 16);
+
+  const rowCount = aggregated.reduce((s, a) => s + a.dailySpend.length, 0);
+
+  return {
+    ok: true,
+    rowCount,
+    rawPayload: {
+      tab,
+      variantCount: variants.length,
+      adCount: aggregated.length,
+      sample: aggregated.slice(0, 5).map((a) => ({
+        adNumber: a.adNumber,
+        adName: a.adName,
+        days: a.dailySpend.length,
+      })),
+      skipped: skipped.slice(0, 50),
+      skippedTotal: skipped.length,
+    },
+    schemaFingerprint: fingerprint,
+    async normalize(rawId) {
+      await db.transaction(async (tx) => {
+        await tx.delete(fbAdSpendDaily);
+        if (aggregated.length === 0) return;
+        // Insert in chunks to keep the parameterized query within
+        // Postgres' parameter limit. 7 cols × 1000 rows ≈ 7K params,
+        // well under the 65k cap.
+        const flat: Array<typeof fbAdSpendDaily.$inferInsert> = [];
+        for (const ad of aggregated) {
+          for (const d of ad.dailySpend) {
+            flat.push({
+              adNumber: ad.adNumber,
+              adName: ad.adName,
+              adNameRaw: ad.adNameRaw,
+              adLink: ad.adLink,
+              spendDate: d.spendDate,
+              costUsd: d.costUsd.toString(),
+              sourcePullId: rawId,
+            });
+          }
+        }
+        const CHUNK = 1000;
+        for (let i = 0; i < flat.length; i += CHUNK) {
+          await tx.insert(fbAdSpendDaily).values(flat.slice(i, i + CHUNK));
         }
       });
     },

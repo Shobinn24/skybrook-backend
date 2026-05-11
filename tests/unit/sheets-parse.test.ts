@@ -5,10 +5,12 @@ import {
   findIntlBoundary,
   parseAdSpendTab,
   parseDayMonth,
+  parseFbAdsSheet,
   parseIncomingGrid,
   parseQty,
   pickArrivalDate,
   pickLatestColumn,
+  trimFbAdDisplayName,
   walkDateHeaders,
 } from "@/lib/sources/sheets";
 
@@ -562,5 +564,147 @@ describe("parseAdSpendTab", () => {
     const { rows, skipped } = parseAdSpendTab("Men AL", grid);
     expect(skipped).toEqual([]);
     expect(rows.map((r) => r.costUsd)).toEqual([88.11, 105.47]);
+  });
+});
+
+describe("trimFbAdDisplayName", () => {
+  it("extracts descriptive tail after 'Ad NNN - '", () => {
+    expect(
+      trimFbAdDisplayName("(OG Lav CC) Ad 537 - OG Lavender images"),
+    ).toBe("OG Lavender images");
+  });
+
+  it("extracts descriptive tail after 'DCA NNN - '", () => {
+    expect(trimFbAdDisplayName("(LAV ASC) DCA 537 - OG Lavender images")).toBe(
+      "OG Lavender images",
+    );
+  });
+
+  it("strips the date prefix before the marker too", () => {
+    expect(
+      trimFbAdDisplayName(
+        "(HW ASC) 4 Jul25 - Ad 1026 - Elie Long Copy Static 1",
+      ),
+    ).toBe("Elie Long Copy Static 1");
+  });
+
+  it("falls back to raw name when no separator after marker", () => {
+    expect(trimFbAdDisplayName("Ad 999")).toBe("Ad 999");
+  });
+});
+
+describe("parseFbAdsSheet", () => {
+  const header = [
+    "Ad name",
+    "Link to promoted post",
+    "2026-01-01",
+    "2026-01-02",
+    "2026-01-03",
+  ];
+
+  it("flags unexpected header and returns nothing", () => {
+    const { aggregated, skipped } = parseFbAdsSheet([["wat", "wut"]]);
+    expect(aggregated).toEqual([]);
+    expect(skipped[0]?.reason).toMatch(/unexpected header/);
+  });
+
+  it("parses a single ad row across date columns", () => {
+    const grid = [
+      header,
+      ["(OG Lav CC) Ad 537 - OG Lavender images", "https://fb.com/1", "10", "20", "30"],
+    ];
+    const { aggregated, skipped } = parseFbAdsSheet(grid);
+    expect(skipped).toEqual([]);
+    expect(aggregated).toHaveLength(1);
+    expect(aggregated[0]).toMatchObject({
+      adNumber: "537",
+      adName: "OG Lavender images",
+      adNameRaw: "(OG Lav CC) Ad 537 - OG Lavender images",
+      adLink: "https://fb.com/1",
+    });
+    expect(aggregated[0].dailySpend).toEqual([
+      { spendDate: "2026-01-01", costUsd: 10 },
+      { spendDate: "2026-01-02", costUsd: 20 },
+      { spendDate: "2026-01-03", costUsd: 30 },
+    ]);
+  });
+
+  it("pivots same ad number across multiple campaign variants", () => {
+    const grid = [
+      header,
+      ["(OG Lav CC) Ad 537 - OG Lavender images", "https://fb.com/cc", "10", "20", ""],
+      ["(LAV ASC) DCA 537 - OG Lavender images", "https://fb.com/asc", "", "5", "100"],
+    ];
+    const { aggregated } = parseFbAdsSheet(grid);
+    expect(aggregated).toHaveLength(1);
+    expect(aggregated[0].adNumber).toBe("537");
+    expect(aggregated[0].dailySpend).toEqual([
+      { spendDate: "2026-01-01", costUsd: 10 },
+      { spendDate: "2026-01-02", costUsd: 25 },
+      { spendDate: "2026-01-03", costUsd: 100 },
+    ]);
+    // Canonical link = highest-total-spend variant (ASC total 105 > CC 30)
+    expect(aggregated[0].adLink).toBe("https://fb.com/asc");
+  });
+
+  it("skips lowercase 'ad' inside other tokens like 'AIad'", () => {
+    const grid = [
+      header,
+      ["(Mens CC) Ad 2077 - AIad - SR - Craig Men's Product AI Ad", "https://fb.com/x", "5", "", ""],
+    ];
+    const { aggregated, skipped } = parseFbAdsSheet(grid);
+    expect(skipped).toEqual([]);
+    // Only ONE ad number — the legit "Ad 2077" — not "ad" inside "AIad"
+    expect(aggregated).toHaveLength(1);
+    expect(aggregated[0].adNumber).toBe("2077");
+  });
+
+  it("flags rows with no Ad/DCA number", () => {
+    const grid = [
+      header,
+      ["A random name with no number", "https://fb.com/x", "5", "", ""],
+    ];
+    const { aggregated, skipped } = parseFbAdsSheet(grid);
+    expect(aggregated).toEqual([]);
+    expect(skipped[0]?.reason).toMatch(/no Ad\/DCA number/);
+  });
+
+  it("strips $ and commas from cost cells", () => {
+    const grid = [
+      header,
+      ["(BS) Ad 100 - X", "https://fb.com/x", "$1,234.56", "", ""],
+    ];
+    const { aggregated } = parseFbAdsSheet(grid);
+    expect(aggregated[0].dailySpend[0].costUsd).toBeCloseTo(1234.56);
+  });
+
+  it("skips empty and zero spend cells", () => {
+    const grid = [
+      header,
+      ["(BS) Ad 100 - X", "https://fb.com/x", "", "0", "1.5"],
+    ];
+    const { aggregated } = parseFbAdsSheet(grid);
+    expect(aggregated[0].dailySpend).toEqual([
+      { spendDate: "2026-01-03", costUsd: 1.5 },
+    ]);
+  });
+
+  it("ignores non-date columns in the header", () => {
+    const weirdHeader = [
+      "Ad name",
+      "Link to promoted post",
+      "2026-01-01",
+      "garbage col",
+      "2026-01-03",
+    ];
+    const grid = [
+      weirdHeader,
+      ["(BS) Ad 100 - X", "https://fb.com/x", "10", "999", "30"],
+    ];
+    const { aggregated } = parseFbAdsSheet(grid);
+    expect(aggregated[0].dailySpend).toEqual([
+      { spendDate: "2026-01-01", costUsd: 10 },
+      { spendDate: "2026-01-03", costUsd: 30 },
+    ]);
   });
 });

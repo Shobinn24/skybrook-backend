@@ -71,6 +71,13 @@
       "when": 1778346872981,
       "tag": "0009_seed_cottonhip_flybrief",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1778513096883,
+      "tag": "0010_goofy_newton_destine",
+      "breakpoints": true
     }
   ]
 }

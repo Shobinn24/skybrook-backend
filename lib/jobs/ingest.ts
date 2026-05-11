@@ -7,6 +7,7 @@ export type SourceKey =
   | "sheets_inventory"
   | "sheets_incoming"
   | "sheets_ad_spend"
+  | "sheets_fb_ads"
   | "shopify_us"
   | "shopify_intl";
 

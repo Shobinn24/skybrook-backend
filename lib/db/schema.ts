@@ -18,6 +18,7 @@ export const sourceEnum = pgEnum("source", [
   "sheets_inventory",
   "sheets_incoming",
   "sheets_ad_spend",
+  "sheets_fb_ads",
   "shopify_us",
   "shopify_intl",
 ]);
@@ -121,6 +122,31 @@ export const adSpendDaily = pgTable(
     sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
   },
   (t) => ({ pk: primaryKey({ columns: [t.product, t.spendDate] }) })
+);
+
+// Per-ad daily spend from the standalone "FB Ads Tracker" sheet (Sheet7
+// of spreadsheet id `1lya_...`). Distinct from `ad_spend_daily` which
+// pivots by product category — this table pivots by individual ad ID.
+// The source sheet's column A has names like "(OG Lav CC) Ad 537 -
+// OG Lavender images" or "(LAV ASC) DCA 537 - …"; the trailing number
+// after "Ad " or "DCA " is the canonical ad identifier and the same
+// number can run inside multiple campaigns, so we aggregate to
+// (ad_number, spend_date) at ingest. The "canonical" ad_name + ad_link
+// shown to operators is taken from the highest-spending source row for
+// each ad_number. Truncate-replace per pull like the rest of the sheet
+// pipeline.
+export const fbAdSpendDaily = pgTable(
+  "fb_ad_spend_daily",
+  {
+    adNumber: text("ad_number").notNull(),
+    adName: text("ad_name").notNull(),
+    adNameRaw: text("ad_name_raw").notNull(),
+    adLink: text("ad_link"),
+    spendDate: date("spend_date").notNull(),
+    costUsd: numeric("cost_usd", { precision: 14, scale: 4 }).notNull(),
+    sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.adNumber, t.spendDate] }) }),
 );
 
 // Per-location scaling factors that adjust sales velocity inside a date
