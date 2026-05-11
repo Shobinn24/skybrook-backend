@@ -123,16 +123,28 @@ export async function getDistinctShipmentNames(): Promise<string[]> {
   return rows.map((r) => r.shipmentName);
 }
 
-/** Distinct productNames in the SKU catalog — feeds the "Product"
- * dropdown when adding a launch. Excludes the SKU-as-name fallback
- * rows (where productName starts with "ev-") so operators only see
- * named products. */
+/** Distinct launch names derived from the SKU catalog — feeds the
+ * "Product" dropdown when adding a launch.
+ *
+ * Returns colorway-suffixed names ("Shapewear Black", "Super High-Waist
+ * 5-Pack Multi Color") rather than base productNames ("Shapewear",
+ * "Super High-Waist 5-Pack") so that what the operator picks matches
+ * what they see in the launches table after save. The auto-populate
+ * job already inserts launches under derived names; without this, the
+ * manual-add path would silently insert a name that no SKU bucket
+ * resolves to, producing null ETAs.
+ *
+ * Excludes "ev-" placeholder fallback rows. */
 export async function getDistinctProductNames(): Promise<string[]> {
   const rows = await db
-    .selectDistinct({ productName: skus.productName })
-    .from(skus)
-    .orderBy(asc(skus.productName));
-  return rows
-    .map((r) => r.productName)
-    .filter((p) => p && !p.startsWith("ev-"));
+    .select({ sku: skus.sku, productName: skus.productName })
+    .from(skus);
+  const derived = new Set<string>();
+  for (const r of rows) {
+    const name = deriveLaunchName(r.sku, r.productName);
+    if (name && !name.startsWith("ev-")) {
+      derived.add(name);
+    }
+  }
+  return Array.from(derived).sort((a, b) => a.localeCompare(b));
 }

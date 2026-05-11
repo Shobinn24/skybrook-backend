@@ -7,7 +7,7 @@ import {
   rawPulls,
   skus,
 } from "@/lib/db/schema";
-import { getLaunches } from "@/lib/queries/launches";
+import { getDistinctProductNames, getLaunches } from "@/lib/queries/launches";
 import { resetDb } from "@/tests/fixtures/seed";
 
 async function seedRawPull(): Promise<string> {
@@ -121,5 +121,109 @@ describe("getLaunches", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].etaAnt).toBe("2026-07-15");
     expect(rows[0].etaPd).toBeNull();
+  });
+});
+
+describe("getDistinctProductNames", () => {
+  beforeAll(() => {
+    if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL not set in test env");
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  // The dropdown feeds productLaunches.productName, which must match the
+  // launchName getLaunches buckets SKUs into. Returning raw skus.productName
+  // ("Shapewear") caused manual launches to insert under a name no SKU
+  // resolves to, producing null ETAs.
+  it("returns colorway-derived launchNames, not raw productName values", async () => {
+    await db.insert(skus).values([
+      {
+        sku: "ev-sw-black-5x-l",
+        productName: "Shapewear",
+        productLine: "Core",
+        firstSeenAt: "2026-05-07",
+        active: true,
+      },
+      {
+        sku: "ev-sw-beige-5x-l",
+        productName: "Shapewear",
+        productLine: "Core",
+        firstSeenAt: "2026-05-07",
+        active: true,
+      },
+    ]);
+
+    const names = await getDistinctProductNames();
+    expect(names).toEqual(["Shapewear Beige", "Shapewear Black"]);
+    expect(names).not.toContain("Shapewear");
+  });
+
+  it("falls back to base name when a SKU has no colorway token", async () => {
+    await db.insert(skus).values([
+      {
+        sku: "ev-hrshort-5x-l",
+        productName: "High Rise Short",
+        productLine: "Core",
+        firstSeenAt: "2026-05-07",
+        active: true,
+      },
+    ]);
+
+    const names = await getDistinctProductNames();
+    expect(names).toEqual(["High Rise Short"]);
+  });
+
+  it("dedupes when multiple SKUs derive the same launchName", async () => {
+    await db.insert(skus).values([
+      {
+        sku: "ev-sw-black-5x-s",
+        productName: "Shapewear",
+        productLine: "Core",
+        firstSeenAt: "2026-05-07",
+        active: true,
+      },
+      {
+        sku: "ev-sw-black-5x-m",
+        productName: "Shapewear",
+        productLine: "Core",
+        firstSeenAt: "2026-05-07",
+        active: true,
+      },
+      {
+        sku: "ev-sw-black-5x-l",
+        productName: "Shapewear",
+        productLine: "Core",
+        firstSeenAt: "2026-05-07",
+        active: true,
+      },
+    ]);
+
+    const names = await getDistinctProductNames();
+    expect(names).toEqual(["Shapewear Black"]);
+  });
+
+  it("excludes 'ev-' placeholder rows where productName matches the sku", async () => {
+    await db.insert(skus).values([
+      {
+        sku: "ev-newproduct-1x-l",
+        productName: "ev-newproduct-1x-l",
+        productLine: null,
+        firstSeenAt: "2026-05-07",
+        active: true,
+      },
+      {
+        sku: "ev-sw-black-5x-l",
+        productName: "Shapewear",
+        productLine: "Core",
+        firstSeenAt: "2026-05-07",
+        active: true,
+      },
+    ]);
+
+    const names = await getDistinctProductNames();
+    expect(names).toEqual(["Shapewear Black"]);
+    expect(names.some((n) => n.startsWith("ev-"))).toBe(false);
   });
 });
