@@ -204,6 +204,33 @@ export function deriveProductName(
 // colorways aren't independently advertised.
 const ALT_COLOR_FAMILIES = new Set(["og", "hw", "9055"]);
 
+// Scott 2026-05-08 (extended 2026-05-11 from name-scoped to family-scoped):
+// "HW and OG are not launched, those are old products." Originally the
+// blocklist matched bare productName values ("HW", "OG", "Style 9055"),
+// so pack/HF variants ("HW 1-Pack", "OG 5-Pack HF") slipped through and
+// surfaced as launches. The family-scoped check below covers every
+// derived launchName a blocklisted family can produce.
+//
+// "mixed" is included because deriveProductName routes ev-mixed-* to
+// "OG 5-Pack" (a name in the OG family).
+const LAUNCH_BLOCKLISTED_FAMILIES = new Set(["og", "hw", "9055", "mixed"]);
+
+// Friendly labels (FAMILY_LABELS entries) corresponding to the
+// blocklisted families. Used by cleanupStaleDefaultLaunches to find
+// existing rows in product_launches whose name was produced by a
+// blocklisted family. Single source of truth: derived at module load
+// from LAUNCH_BLOCKLISTED_FAMILIES so the SQL cleanup stays in sync.
+export const LAUNCH_BLOCKED_NAME_PREFIXES: readonly string[] = (() => {
+  const labels = new Set<string>();
+  for (const f of LAUNCH_BLOCKLISTED_FAMILIES) {
+    const label = FAMILY_LABELS[f];
+    if (label) labels.add(label);
+  }
+  // ev-mixed-* is special-cased to "OG 5-Pack" by deriveProductName —
+  // already covered by the "OG" prefix.
+  return Array.from(labels);
+})();
+
 // Display labels for color tokens, used by deriveLaunchName so that a
 // new colorway of an advertised product surfaces as e.g. "Shapewear
 // Black" rather than collapsing under the parent productName.
@@ -257,6 +284,40 @@ export function isMainColor(sku: string): boolean {
     if (COLOR_TOKENS.has(t)) return false;
   }
   return true;
+}
+
+/**
+ * Resolves a SKU to its canonical family token. Follows FAMILY_ALIAS
+ * rewrites so e.g. `ev-pp-hw-1x-l` returns `"hw"`. Returns null when
+ * the SKU doesn't parse (anything not starting with `ev-` or shorter
+ * than 3 segments).
+ *
+ * Does NOT consult DB overrides — matches the design of isMainColor,
+ * which reads the constant maps only.
+ */
+export function getSkuFamily(sku: string): string | null {
+  const lower = sku.toLowerCase();
+  const parts = lower.split("-");
+  if (parts[0] !== "ev" || parts.length < 3) return null;
+  const twoSeg = `${parts[1]}-${parts[2]}`;
+  if (FAMILY_ALIAS[twoSeg]) return FAMILY_ALIAS[twoSeg];
+  if (MULTI_FAMILY_LABELS[twoSeg]) return twoSeg;
+  return parts[1];
+}
+
+/**
+ * True when the SKU's canonical family is in the launch blocklist
+ * (hw, og, 9055, mixed). Used to filter the add-launch dropdown and
+ * to prevent the auto-populate job from creating launch rows for
+ * these families. Scott 2026-05-08: "HW and OG are not launched,
+ * those are old products."
+ *
+ * Returns false for SKUs that don't parse — defensive default,
+ * matching isMainColor's "surface unknown SKUs" stance.
+ */
+export function isLaunchBlockedFamily(sku: string): boolean {
+  const family = getSkuFamily(sku);
+  return family !== null && LAUNCH_BLOCKLISTED_FAMILIES.has(family);
 }
 
 /**

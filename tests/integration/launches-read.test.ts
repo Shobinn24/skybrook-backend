@@ -226,4 +226,32 @@ describe("getDistinctProductNames", () => {
     expect(names).toEqual(["Shapewear Black"]);
     expect(names.some((n) => n.startsWith("ev-"))).toBe(false);
   });
+
+  // Scott 2026-05-08 + 2026-05-11: dropdown should not offer HW/OG/9055
+  // launches because those products are mature. Earlier the dropdown
+  // raw-listed every productName in the catalog, so "HW 1-Pack" etc.
+  // surfaced and an operator could insert a launch row that the
+  // auto-populate path would never produce (and that the cleanup pass
+  // would then delete on its next tick).
+  it("excludes SKUs in launch-blocklisted families (hw / og / 9055 / mixed)", async () => {
+    await db.insert(skus).values([
+      // Blocklisted families — should be filtered out:
+      { sku: "ev-hw-1x-l", productName: "HW", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-hw-5x-hf-l", productName: "HW", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-pp-hw-l", productName: "HW", productLine: "Core", firstSeenAt: "2026-05-07", active: true }, // alias → hw
+      { sku: "ev-og-5x-l", productName: "OG", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-9055-1x-l", productName: "Style 9055", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-mixed-l", productName: "OG", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      // Allowed — should appear:
+      { sku: "ev-bshort-5x-l", productName: "Boyshort", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-suphw-5x-l", productName: "Super High-Waist", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-hrshort-5x-l", productName: "High Rise Short", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+    ]);
+
+    const names = await getDistinctProductNames();
+    expect(names).toEqual(["Boyshort", "High Rise Short", "Super High-Waist"]);
+    expect(names).not.toContain("HW");
+    expect(names).not.toContain("OG");
+    expect(names).not.toContain("Style 9055");
+  });
 });

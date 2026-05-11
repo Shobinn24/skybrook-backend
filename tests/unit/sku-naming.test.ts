@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { deriveProductName, snapshotKnownFamilies } from "@/lib/domain/sku-naming";
+import {
+  deriveProductName,
+  getSkuFamily,
+  isLaunchBlockedFamily,
+  LAUNCH_BLOCKED_NAME_PREFIXES,
+  snapshotKnownFamilies,
+} from "@/lib/domain/sku-naming";
 import type { FamilyOverrideMap } from "@/lib/domain/sku-naming-overrides";
 
 describe("deriveProductName — color-consolidated rollup names", () => {
@@ -379,5 +385,77 @@ describe("snapshotKnownFamilies", () => {
       aliasOf: "og",
       source: "FAMILY_ALIAS",
     });
+  });
+});
+
+describe("getSkuFamily — canonical family resolution", () => {
+  it("returns the single-segment family for plain SKUs", () => {
+    expect(getSkuFamily("ev-hw-1x-l")).toBe("hw");
+    expect(getSkuFamily("ev-og-5x-l")).toBe("og");
+    expect(getSkuFamily("ev-9055-5x-l")).toBe("9055");
+    expect(getSkuFamily("ev-bshort-5x-l")).toBe("bshort");
+    expect(getSkuFamily("ev-hrshort-5x-l")).toBe("hrshort");
+  });
+
+  it("follows FAMILY_ALIAS rewrites so pp-hw → hw, new-og → og, bp-9055 → 9055", () => {
+    expect(getSkuFamily("ev-pp-hw-1x-l")).toBe("hw");
+    expect(getSkuFamily("ev-pp-og-l")).toBe("og");
+    expect(getSkuFamily("ev-new-og-l")).toBe("og");
+    expect(getSkuFamily("ev-bp-9055-5x-l")).toBe("9055");
+  });
+
+  it("returns the multi-segment family for MULTI_FAMILY_LABELS entries", () => {
+    expect(getSkuFamily("ev-sl-bik-5x-l")).toBe("sl-bik");
+    expect(getSkuFamily("ev-sl-hw-5x-l")).toBe("sl-hw");
+  });
+
+  it("returns null for malformed SKUs", () => {
+    expect(getSkuFamily("not-an-ev-sku")).toBeNull();
+    expect(getSkuFamily("ev-only-two")).toBe("only"); // still parses if 3 segments
+    expect(getSkuFamily("ev")).toBeNull();
+    expect(getSkuFamily("")).toBeNull();
+  });
+});
+
+describe("isLaunchBlockedFamily — Scott's HW/OG/9055 launch filter", () => {
+  it("returns true for SKUs in the blocklisted families (hw, og, 9055, mixed)", () => {
+    expect(isLaunchBlockedFamily("ev-hw-1x-l")).toBe(true);
+    expect(isLaunchBlockedFamily("ev-hw-5x-hf-l")).toBe(true);
+    expect(isLaunchBlockedFamily("ev-og-5x-l")).toBe(true);
+    expect(isLaunchBlockedFamily("ev-9055-1x-l")).toBe(true);
+    expect(isLaunchBlockedFamily("ev-mixed-l")).toBe(true);
+  });
+
+  it("returns true for alias-rewritten SKUs (pp-hw, pp-og, bp-9055)", () => {
+    expect(isLaunchBlockedFamily("ev-pp-hw-1x-l")).toBe(true);
+    expect(isLaunchBlockedFamily("ev-pp-og-l")).toBe(true);
+    expect(isLaunchBlockedFamily("ev-bp-9055-5x-l")).toBe(true);
+  });
+
+  it("returns false for non-blocklisted families (bshort, suphw, sw, hrshort, etc.)", () => {
+    expect(isLaunchBlockedFamily("ev-bshort-5x-l")).toBe(false);
+    expect(isLaunchBlockedFamily("ev-suphw-5x-l")).toBe(false);
+    expect(isLaunchBlockedFamily("ev-sw-black-5x-l")).toBe(false);
+    expect(isLaunchBlockedFamily("ev-hrshort-5x-l")).toBe(false);
+    expect(isLaunchBlockedFamily("ev-sl-bik-5x-l")).toBe(false);
+  });
+
+  it("returns false for malformed SKUs (defensive default — don't silently hide)", () => {
+    expect(isLaunchBlockedFamily("not-an-ev-sku")).toBe(false);
+    expect(isLaunchBlockedFamily("")).toBe(false);
+  });
+});
+
+describe("LAUNCH_BLOCKED_NAME_PREFIXES — cleanup-query source of truth", () => {
+  it("contains the friendly labels of every blocklisted family", () => {
+    expect(LAUNCH_BLOCKED_NAME_PREFIXES).toContain("HW");
+    expect(LAUNCH_BLOCKED_NAME_PREFIXES).toContain("OG");
+    expect(LAUNCH_BLOCKED_NAME_PREFIXES).toContain("Style 9055");
+  });
+
+  it("does not include unrelated labels", () => {
+    expect(LAUNCH_BLOCKED_NAME_PREFIXES).not.toContain("Boyshort");
+    expect(LAUNCH_BLOCKED_NAME_PREFIXES).not.toContain("Shapewear");
+    expect(LAUNCH_BLOCKED_NAME_PREFIXES).not.toContain("Super High-Waist");
   });
 });

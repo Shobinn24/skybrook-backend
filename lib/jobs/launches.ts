@@ -26,7 +26,7 @@
 // Runs after syncProductNames so productNames in the SKU join reflect
 // the latest sku-naming pass.
 
-import { and, desc, eq, gte, inArray, like, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, like, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   dailySales,
@@ -36,22 +36,23 @@ import {
   stockSnapshots,
 } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
-import { deriveLaunchName, isMainColor } from "@/lib/domain/sku-naming";
+import {
+  deriveLaunchName,
+  isLaunchBlockedFamily,
+  isMainColor,
+  LAUNCH_BLOCKED_NAME_PREFIXES,
+} from "@/lib/domain/sku-naming";
 
 /** Sales lookback window. A SKU with any sales in this window is
  *  treated as "currently selling" and not flagged as a new launch. */
 const SALES_LOOKBACK_DAYS = 60;
-
-/** Parent product names that are alt-color buckets per Scott 2026-05-08
- *  ("HW and OG are not launched, those are old products"). Auto-added
- *  launches under these labels are always stale and get cleaned up. */
-const ALT_COLOR_LAUNCH_BLOCKLIST = ["HW", "OG", "Style 9055"];
 
 const AUTO_ADDED_NOTE = "Auto-added: new variant detected in incoming shipment";
 
 export type LaunchAutoPopulateResult = {
   candidatePairs: number;
   skippedAltColor: number;
+  skippedLaunchBlockedFamily: number;
   skippedHasStock: number;
   skippedHasSales: number;
   skippedAlreadyLaunched: number;
@@ -67,12 +68,13 @@ export type LaunchAutoPopulateResult = {
  *      `skus.productName` has since been resolved to a friendly label
  *      (FAMILY_LABELS / FAMILY_ALIAS in lib/domain/sku-naming.ts).
  *
- *   2. Auto-added launches under one of ALT_COLOR_LAUNCH_BLOCKLIST.
- *      These appear when alt-color SKUs of OG / HW / 9055 (e.g.
- *      ev-pp-hw-*, ev-pp-og-*) pass through FAMILY_ALIAS and produce
- *      launch rows under the parent label. Scott 2026-05-08: those
- *      parent products are old and shouldn't ever be in the launches
- *      table.
+ *   2. Auto-added launches in a LAUNCH_BLOCKLISTED_FAMILIES family
+ *      (hw / og / 9055 / mixed). Originally only the bare names ("HW",
+ *      "OG", "Style 9055") were matched, but pack/HF variants like
+ *      "HW 1-Pack" and "OG 5-Pack HF" slipped through (Scott 2026-05-11).
+ *      Now we match any auto-added row whose productName equals or
+ *      starts with one of the blocklisted family labels. Scott
+ *      2026-05-08: "HW and OG are not launched, those are old products."
  *
  * Idempotent. Manual launch rows (note != AUTO_ADDED_NOTE) are
  * preserved.
@@ -92,17 +94,25 @@ export async function cleanupStaleDefaultLaunches(): Promise<number> {
     )
     .returning({ id: productLaunches.id });
 
-  const altColorResult = await db
-    .delete(productLaunches)
-    .where(
-      and(
-        inArray(productLaunches.productName, ALT_COLOR_LAUNCH_BLOCKLIST),
-        eq(productLaunches.note, AUTO_ADDED_NOTE),
-      ),
-    )
-    .returning({ id: productLaunches.id });
+  // Match each blocklisted family label as either the exact productName
+  // ("HW") or as a prefix followed by a space ("HW 1-Pack",
+  // "OG 5-Pack HF"). The trailing-space guard prevents matching
+  // unrelated labels that happen to share a prefix.
+  const blockedPatterns = LAUNCH_BLOCKED_NAME_PREFIXES.flatMap((label) => [
+    eq(productLaunches.productName, label),
+    like(productLaunches.productName, `${label} %`),
+  ]);
+  const blockedFamilyResult =
+    blockedPatterns.length > 0
+      ? await db
+          .delete(productLaunches)
+          .where(
+            and(eq(productLaunches.note, AUTO_ADDED_NOTE), or(...blockedPatterns)),
+          )
+          .returning({ id: productLaunches.id })
+      : [];
 
-  return stalePlaceholderResult.length + altColorResult.length;
+  return stalePlaceholderResult.length + blockedFamilyResult.length;
 }
 
 /**
@@ -231,6 +241,7 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
     return {
       candidatePairs: 0,
       skippedAltColor: 0,
+      skippedLaunchBlockedFamily: 0,
       skippedHasStock: 0,
       skippedHasSales: 0,
       skippedAlreadyLaunched: 0,
@@ -287,13 +298,23 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
   // 5. Apply filter chain. Group surviving candidates by launchName and
   //    keep the one with the earliest expected_arrival per launchName.
   let skippedAltColor = 0;
+  let skippedLaunchBlockedFamily = 0;
   let skippedHasStock = 0;
   let skippedHasSales = 0;
   const skippedAlreadyLaunchedNames = new Set<string>();
   const earliestPerLaunch = new Map<string, { shipmentName: string; expectedArrival: string }>();
   for (const t of tuples) {
+    // Filter 1: drop alt-color variants within og/hw/9055 (existing rule).
     if (!isMainColor(t.sku)) {
       skippedAltColor++;
+      continue;
+    }
+    // Filter 1b: drop all SKUs in launch-blocklisted families regardless
+    //   of colorway. Closes the gap where bare-name HW/OG/9055 launches
+    //   were blocked but pack/HF variants ("HW 1-Pack", "OG 5-Pack")
+    //   slipped through. Scott 2026-05-08 + 2026-05-11.
+    if (isLaunchBlockedFamily(t.sku)) {
+      skippedLaunchBlockedFamily++;
       continue;
     }
     const stock = latestStock.get(`${t.sku}|${t.destination}`) ?? 0;
@@ -343,6 +364,7 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
   logger.info("launches.auto.done", {
     candidatePairs: tuples.length,
     skippedAltColor,
+    skippedLaunchBlockedFamily,
     skippedHasStock,
     skippedHasSales,
     skippedAlreadyLaunched,
@@ -355,6 +377,7 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
   return {
     candidatePairs: tuples.length,
     skippedAltColor,
+    skippedLaunchBlockedFamily,
     skippedHasStock,
     skippedHasSales,
     skippedAlreadyLaunched,

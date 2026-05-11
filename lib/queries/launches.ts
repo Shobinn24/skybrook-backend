@@ -1,7 +1,7 @@
 import { and, asc, inArray, min } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { incomingShipments, productLaunches, skus } from "@/lib/db/schema";
-import { deriveLaunchName } from "@/lib/domain/sku-naming";
+import { deriveLaunchName, isLaunchBlockedFamily } from "@/lib/domain/sku-naming";
 
 /** Single launch row as the /launches page consumes it. ETA Ant + ETA
  * PD are derived live from `incoming_shipments` so they stay in sync
@@ -134,13 +134,18 @@ export async function getDistinctShipmentNames(): Promise<string[]> {
  * manual-add path would silently insert a name that no SKU bucket
  * resolves to, producing null ETAs.
  *
- * Excludes "ev-" placeholder fallback rows. */
+ * Excludes:
+ *   - "ev-" placeholder fallback rows
+ *   - SKUs in LAUNCH_BLOCKLISTED_FAMILIES (hw/og/9055/mixed). Scott
+ *     2026-05-08: "HW and OG are not launched, those are old products."
+ *     Hiding them from the dropdown matches the auto-populate filter. */
 export async function getDistinctProductNames(): Promise<string[]> {
   const rows = await db
     .select({ sku: skus.sku, productName: skus.productName })
     .from(skus);
   const derived = new Set<string>();
   for (const r of rows) {
+    if (isLaunchBlockedFamily(r.sku)) continue;
     const name = deriveLaunchName(r.sku, r.productName);
     if (name && !name.startsWith("ev-")) {
       derived.add(name);

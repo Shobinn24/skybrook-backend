@@ -320,6 +320,74 @@ describe("runLaunchAutoPopulate", () => {
     expect(names).toEqual(["Boyshort|KAI Apr26", "HW|KAI 27"]);
   });
 
+  // Scott 2026-05-11: extending the blocklist from name-scoped to
+  // family-scoped. The original cleanup only matched bare "HW" / "OG" /
+  // "Style 9055" rows; pack and HF variants ("HW 1-Pack", "OG 5-Pack HF")
+  // slipped through and surfaced as launches. Cleanup now treats any
+  // auto-added row whose name starts with a blocklisted family label as
+  // stale.
+  it("cleanupStaleDefaultLaunches also drops pack/HF variants in blocklisted families", async () => {
+    await db.insert(productLaunches).values([
+      { productName: "HW 1-Pack", shipmentName: "KAI 24", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "HW 5-Pack HF", shipmentName: "KAI 25", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "OG 5-Pack", shipmentName: "KAI 24", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "OG 3-Pack HF", shipmentName: "KAI 26", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "Style 9055 1-Pack", shipmentName: "KAI 25", note: "Auto-added: new variant detected in incoming shipment" },
+      // Look-alikes that should NOT be deleted:
+      //   - "Super High-Waist 5-Pack" — distinct family (suphw), not HW.
+      //   - "Boyshort" — unrelated.
+      //   - Manually-added "HW 1-Pack" — preserved (operator override).
+      { productName: "Super High-Waist 5-Pack", shipmentName: "KAI Sec Feb26", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "Boyshort", shipmentName: "KAI Apr26", note: "Auto-added: new variant detected in incoming shipment" },
+      { productName: "HW 1-Pack", shipmentName: "KAI 27", note: "Manually overridden by Scott" },
+    ]);
+
+    const deleted = await cleanupStaleDefaultLaunches();
+    expect(deleted).toBe(5);
+
+    const remaining = await db
+      .select()
+      .from(productLaunches)
+      .orderBy(productLaunches.productName, productLaunches.shipmentName);
+    expect(remaining.map((r) => `${r.productName}|${r.shipmentName}|${r.note}`)).toEqual([
+      "Boyshort|KAI Apr26|Auto-added: new variant detected in incoming shipment",
+      "HW 1-Pack|KAI 27|Manually overridden by Scott",
+      "Super High-Waist 5-Pack|KAI Sec Feb26|Auto-added: new variant detected in incoming shipment",
+    ]);
+  });
+
+  // Scott 2026-05-08 + 2026-05-11: the auto-populate insert path also
+  // refuses to create new launches for hw / og / 9055 / mixed family
+  // SKUs — even main-color ones that previously passed isMainColor.
+  // Closes the gap where bare ev-hw-1x-l etc. would have produced an
+  // "HW 1-Pack" launch.
+  it("runLaunchAutoPopulate skips main-color SKUs in blocklisted families (hw/og/9055/mixed)", async () => {
+    const rawId = await seedRawPull();
+    await db.insert(skus).values([
+      { sku: "ev-hw-1x-l", productName: "HW", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-og-5x-l", productName: "OG", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-9055-1x-l", productName: "Style 9055", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-mixed-l", productName: "OG", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      // Control: a non-blocklisted family that SHOULD still produce a launch.
+      { sku: "ev-hrshort-5x-l", productName: "High Rise Short", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+    ]);
+    await db.insert(incomingShipments).values([
+      { sku: "ev-hw-1x-l", shipmentName: "KAI 26", destination: "CN", expectedArrival: "2026-06-01", quantity: 100, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
+      { sku: "ev-og-5x-l", shipmentName: "KAI 26", destination: "CN", expectedArrival: "2026-06-01", quantity: 100, status: "po", sourcePullId: rawId, sourceRowRef: "row-2" },
+      { sku: "ev-9055-1x-l", shipmentName: "KAI 26", destination: "CN", expectedArrival: "2026-06-01", quantity: 100, status: "po", sourcePullId: rawId, sourceRowRef: "row-3" },
+      { sku: "ev-mixed-l", shipmentName: "KAI 26", destination: "CN", expectedArrival: "2026-06-01", quantity: 100, status: "po", sourcePullId: rawId, sourceRowRef: "row-4" },
+      { sku: "ev-hrshort-5x-l", shipmentName: "KAI Sec Mar26", destination: "CN", expectedArrival: "2026-06-10", quantity: 200, status: "po", sourcePullId: rawId, sourceRowRef: "row-5" },
+    ]);
+
+    const result = await runLaunchAutoPopulate();
+    expect(result.inserted).toBe(1);
+    expect(result.skippedLaunchBlockedFamily).toBe(4);
+
+    const launches = await db.select().from(productLaunches);
+    expect(launches).toHaveLength(1);
+    expect(launches[0].productName).toBe("High Rise Short");
+  });
+
   it("cleanupStaleDefaultLaunches is idempotent (running twice deletes nothing the second time)", async () => {
     await db.insert(skus).values([
       { sku: "ev-hrshort-5x-l", productName: "High Rise Short", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
