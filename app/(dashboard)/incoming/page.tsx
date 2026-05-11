@@ -1,7 +1,8 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { KpiCard } from "@/components/inventory/KpiCard";
 import { StatusPill } from "@/components/shell/StatusPill";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
@@ -96,14 +97,43 @@ type Group = {
 };
 
 export default function IncomingShipmentsPage() {
+  // useSearchParams must be wrapped in Suspense (Next 15 requirement) —
+  // the rest of the page lives in IncomingShipmentsPageInner.
+  return (
+    <Suspense fallback={<div className="text-sm text-neutral-500">Loading…</div>}>
+      <IncomingShipmentsPageInner />
+    </Suspense>
+  );
+}
+
+function IncomingShipmentsPageInner() {
+  // URL ?q=... pre-populates the search filter so debugging / sharing
+  // filtered views works via the URL bar. Typing in the search box updates
+  // the URL via router.replace (no history push, debounced 250ms).
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [location, setLocation] = useState<LocationFilter>("all");
   const [includeReceived, setIncludeReceived] = useState(false);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [sort, setSort] = useState<SortConfig<GroupSortKey>>({
     key: "expectedArrival",
     direction: "asc",
   });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  // Sync search → URL. Debounced so typing doesn't spam history.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      const trimmed = search.trim();
+      if (trimmed) params.set("q", trimmed);
+      else params.delete("q");
+      const qs = params.toString();
+      router.replace(qs ? `/incoming?${qs}` : "/incoming", { scroll: false });
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [search, router]);
 
   const utils = trpc.useUtils();
   const { data, isLoading, error } = trpc.inventory.getIncomingShipmentsView.useQuery({
