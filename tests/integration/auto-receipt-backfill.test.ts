@@ -149,6 +149,7 @@ describe("runAutoReceiptBackfill", () => {
         sku: "ev-mens-l",
         salesDate: "2026-04-21",
         channel: "shopify_us",
+        routedLocation: "US",
         unitsSold: 30,
         netSalesUsd: "0",
         sourcePullId: pullId,

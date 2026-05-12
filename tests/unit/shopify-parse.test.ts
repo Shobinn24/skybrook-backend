@@ -13,7 +13,20 @@ type Order = {
   totalTaxSet?: MoneySet;
   totalShippingPriceSet?: MoneySet;
   totalTipReceivedSet?: MoneySet;
+  shippingAddress?: { countryCode: string | null } | null;
 };
+
+function orderShippedTo(
+  createdAt: string,
+  lines: LineItem[],
+  shipToCountry: string | null,
+): Order {
+  return {
+    createdAt,
+    lineItems: { nodes: lines },
+    shippingAddress: shipToCountry === null ? null : { countryCode: shipToCountry },
+  };
+}
 
 function order(createdAt: string, lines: LineItem[]): Order {
   return { createdAt, lineItems: { nodes: lines } };
@@ -49,10 +62,10 @@ describe("aggregateToDailySales", () => {
       order("2026-04-22T14:30:00Z", [li("ev-bshort-5x-m", 3, "20.00")]),
       order("2026-04-22T18:00:00Z", [li("ev-bshort-5x-l", 1, "22.00")]),
     ];
-    const result = aggregateToDailySales(orders);
+    const result = aggregateToDailySales(orders, "shopify_us");
     expect(result).toEqual([
-      { sku: "ev-bshort-5x-l", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 22 },
-      { sku: "ev-bshort-5x-m", salesDate: "2026-04-22", unitsSold: 5, netSalesUsd: 100 },
+      { sku: "ev-bshort-5x-l", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 22 },
+      { sku: "ev-bshort-5x-m", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 5, netSalesUsd: 100 },
     ]);
   });
 
@@ -65,9 +78,9 @@ describe("aggregateToDailySales", () => {
       order("2026-04-22T23:59:59Z", [li("ev-a", 1, "10.00")]), // 19:59 EDT Apr 22
       order("2026-04-23T00:00:01Z", [li("ev-a", 1, "10.00")]), // 20:00 EDT Apr 22
     ];
-    const result = aggregateToDailySales(orders);
+    const result = aggregateToDailySales(orders, "shopify_us");
     expect(result).toEqual([
-      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 20 },
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 20 },
     ]);
   });
 
@@ -78,10 +91,10 @@ describe("aggregateToDailySales", () => {
       order("2026-04-23T03:59:00Z", [li("ev-a", 1, "10.00")]), // EDT Apr 22
       order("2026-04-23T04:01:00Z", [li("ev-a", 1, "10.00")]), // EDT Apr 23
     ];
-    const result = aggregateToDailySales(orders);
+    const result = aggregateToDailySales(orders, "shopify_us");
     expect(result).toEqual([
-      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 10 },
-      { sku: "ev-a", salesDate: "2026-04-23", unitsSold: 1, netSalesUsd: 10 },
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 10 },
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-23", unitsSold: 1, netSalesUsd: 10 },
     ]);
   });
 
@@ -92,8 +105,8 @@ describe("aggregateToDailySales", () => {
         li("ev-real", 2, "20.00"),
       ]),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-real", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 40 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-real", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 40 },
     ]);
   });
 
@@ -105,8 +118,8 @@ describe("aggregateToDailySales", () => {
         li("ev-ok", 3, "20.00"),
       ]),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-ok", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 60 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-ok", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 60 },
     ]);
   });
 
@@ -114,8 +127,8 @@ describe("aggregateToDailySales", () => {
     const orders = [
       order("2026-04-22T10:00:00Z", [li("ev-free", 4, null)]),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-free", salesDate: "2026-04-22", unitsSold: 4, netSalesUsd: 0 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-free", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 4, netSalesUsd: 0 },
     ]);
   });
 
@@ -126,8 +139,8 @@ describe("aggregateToDailySales", () => {
       order("2026-04-22T10:00:00Z", [li("ev-x", 5, "20.00")]),
       order("2026-04-22T11:00:00Z", [li("ev-x", 2, "20.00")]), // imagine this one got refunded
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-x", salesDate: "2026-04-22", unitsSold: 7, netSalesUsd: 140 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-x", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 7, netSalesUsd: 140 },
     ]);
   });
 
@@ -137,7 +150,7 @@ describe("aggregateToDailySales", () => {
       order("2026-04-22T10:00:00Z", [li("ev-b", 1, "20.00")]),
       order("2026-04-22T10:00:00Z", [li("ev-a", 1, "20.00")]),
     ];
-    const result = aggregateToDailySales(orders);
+    const result = aggregateToDailySales(orders, "shopify_us");
     expect(result.map((r) => `${r.salesDate}|${r.sku}`)).toEqual([
       "2026-04-22|ev-a",
       "2026-04-22|ev-b",
@@ -149,22 +162,22 @@ describe("aggregateToDailySales", () => {
     const orders = [
       order("2026-04-22T10:00:00Z", [li("ev-a", 3, "19.995")]), // 59.985
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 59.985 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 59.985 },
     ]);
   });
 
   it("returns empty for empty orders input", () => {
-    expect(aggregateToDailySales([])).toEqual([]);
+    expect(aggregateToDailySales([], "shopify_us")).toEqual([]);
   });
 
   it("decomposes 10-pack SKUs into 5-pack equivalents (units × 2, net unchanged)", () => {
     const orders = [
       order("2026-04-22T10:00:00Z", [li("ev-9055-10x-l", 1, "200.00")]),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
       // 1 ten-pack sold = 2 five-pack equivalents depleted; revenue stays at $200.
-      { sku: "ev-9055-5x-l", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
+      { sku: "ev-9055-5x-l", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
     ]);
   });
 
@@ -172,8 +185,8 @@ describe("aggregateToDailySales", () => {
     const orders = [
       order("2026-04-22T10:00:00Z", [li("ev-9055-15x-l", 1, "300.00")]),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-9055-5x-l", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 300 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-9055-5x-l", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 300 },
     ]);
   });
 
@@ -182,9 +195,9 @@ describe("aggregateToDailySales", () => {
       order("2026-04-22T10:00:00Z", [li("ev-9055-5x-l", 4, "100.00")]),  //  4 units
       order("2026-04-22T11:00:00Z", [li("ev-9055-10x-l", 2, "200.00")]), // 2 × 2 = 4 units
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
       // 4 + 4 = 8 five-pack-equivalents, $400 + $400 = $800 revenue.
-      { sku: "ev-9055-5x-l", salesDate: "2026-04-22", unitsSold: 8, netSalesUsd: 800 },
+      { sku: "ev-9055-5x-l", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 8, netSalesUsd: 800 },
     ]);
   });
 
@@ -192,8 +205,8 @@ describe("aggregateToDailySales", () => {
     const orders = [
       order("2026-04-22T10:00:00Z", [li("ev-og-1x-beige-l", 3, "30.00")]),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-og-1x-beige-l", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 90 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-og-1x-beige-l", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 3, netSalesUsd: 90 },
     ]);
   });
 
@@ -206,8 +219,8 @@ describe("aggregateToDailySales", () => {
         li("EV-HW-L", 3, "20.00"),
       ]),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-hw-l", salesDate: "2026-04-22", unitsSold: 6, netSalesUsd: 120 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-hw-l", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 6, netSalesUsd: 120 },
     ]);
   });
 
@@ -218,8 +231,8 @@ describe("aggregateToDailySales", () => {
     const orders = [
       order("2026-04-22T10:00:00Z", [li("EV-hw-10-l", 1, "200.00")]),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-hw-l", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-hw-l", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
     ]);
   });
 
@@ -227,8 +240,8 @@ describe("aggregateToDailySales", () => {
     const orders = [
       order("2026-04-22T10:00:00Z", [li("EV-9055-HF-10-xl", 1, "200.00")]),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-9055-hf-5x-xl", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-9055-hf-5x-xl", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 200 },
     ]);
   });
 
@@ -242,9 +255,9 @@ describe("aggregateToDailySales", () => {
         { tax: "8.00", shipping: "5.00", tip: "2.00" },
       ),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
       // 100 line + (8+5+2) ancillary = 115
-      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 115 },
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 115 },
     ]);
   });
 
@@ -259,11 +272,11 @@ describe("aggregateToDailySales", () => {
         { tax: "10.00", shipping: "10.00" }, // 20 total ancillary
       ),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
       // ev-a: 75 + 0.75 * 20 = 90
-      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 90 },
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 90 },
       // ev-b: 25 + 0.25 * 20 = 30
-      { sku: "ev-b", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 30 },
+      { sku: "ev-b", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 30 },
     ]);
   });
 
@@ -275,9 +288,9 @@ describe("aggregateToDailySales", () => {
         { shipping: "10.00" },
       ),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 5 },
-      { sku: "ev-b", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 5 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 5 },
+      { sku: "ev-b", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 5 },
     ]);
   });
 
@@ -296,8 +309,8 @@ describe("aggregateToDailySales", () => {
         { tax: "5.00" },
       ),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-real", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 55 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-real", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 55 },
     ]);
   });
 
@@ -306,8 +319,8 @@ describe("aggregateToDailySales", () => {
     const orders = [
       orderWith("2026-04-22T10:00:00Z", [li("ev-a", 1, "100.00")], {}),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-a", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 100 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 100 },
     ]);
   });
 
@@ -327,8 +340,8 @@ describe("aggregateToDailySales", () => {
         { tax: "30.00" },
       ),
     ];
-    expect(aggregateToDailySales(orders)).toEqual([
-      { sku: "ev-bshort-5x-m", salesDate: "2026-04-22", unitsSold: 7, netSalesUsd: 330 },
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-bshort-5x-m", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 7, netSalesUsd: 330 },
     ]);
   });
 
@@ -341,6 +354,86 @@ describe("aggregateToDailySales", () => {
       ),
     ];
     // No ev- SKUs → entire order skipped, ancillary disappears (no row to host it).
-    expect(aggregateToDailySales(orders)).toEqual([]);
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([]);
+  });
+
+  // ---- US-store international order routing (Scott 2026-05-12) ------------
+
+  it("routes US-store + US ship-to to the US warehouse", () => {
+    const orders = [orderShippedTo("2026-04-22T10:00:00Z", [li("ev-a", 1, "20.00")], "US")];
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 20 },
+    ]);
+  });
+
+  it("routes US-store + non-US ship-to to the CN warehouse (the bug Scott reported)", () => {
+    // Pre-fix this row would have rolled up under routedLocation=US,
+    // inflating US velocity and under-counting CN.
+    const orders = [orderShippedTo("2026-04-22T10:00:00Z", [li("ev-a", 1, "20.00")], "GB")];
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-a", routedLocation: "CN", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 20 },
+    ]);
+  });
+
+  it("routes INTL-store to the CN warehouse regardless of ship-to", () => {
+    // The INTL store is 100% non-US by design; ship-to country doesn't
+    // matter on that channel. Sanity-check this doesn't accidentally
+    // start routing intl orders to US just because ship-to happens to
+    // be "US" (vanishingly rare but worth the guard).
+    const orders = [
+      orderShippedTo("2026-04-22T10:00:00Z", [li("ev-a", 1, "20.00")], "DE"),
+      orderShippedTo("2026-04-22T11:00:00Z", [li("ev-b", 1, "20.00")], "US"),
+    ];
+    expect(aggregateToDailySales(orders, "shopify_intl")).toEqual([
+      { sku: "ev-a", routedLocation: "CN", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 20 },
+      { sku: "ev-b", routedLocation: "CN", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 20 },
+    ]);
+  });
+
+  it("splits a mixed-routing day for the same SKU into two rows", () => {
+    // Same SKU sold twice on the US store: one shipped to US, one to GB.
+    // Each row needs its own routedLocation bucket so per-warehouse
+    // velocity is correct.
+    const orders = [
+      orderShippedTo("2026-04-22T10:00:00Z", [li("ev-a", 2, "20.00")], "US"),
+      orderShippedTo("2026-04-22T11:00:00Z", [li("ev-a", 1, "20.00")], "GB"),
+    ];
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-a", routedLocation: "CN", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 20 },
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 2, netSalesUsd: 40 },
+    ]);
+  });
+
+  it("falls back to channel default when shippingAddress is missing", () => {
+    // Digital-only / pickup / vault-tokenized legacy orders may not have
+    // a shippingAddress. Falling back to the channel's typical destination
+    // preserves prior `channelToLocation` semantics for these edge cases.
+    const orders = [
+      order("2026-04-22T10:00:00Z", [li("ev-a", 1, "20.00")]), // no shippingAddress
+    ];
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 20 },
+    ]);
+    expect(aggregateToDailySales(orders, "shopify_intl")).toEqual([
+      { sku: "ev-a", routedLocation: "CN", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 20 },
+    ]);
+  });
+
+  it("falls back to channel default when shippingAddress is present but countryCode is null", () => {
+    const orders = [
+      orderShippedTo("2026-04-22T10:00:00Z", [li("ev-a", 1, "20.00")], null),
+    ];
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 20 },
+    ]);
+  });
+
+  it("is case-insensitive on the country code", () => {
+    const orders = [
+      orderShippedTo("2026-04-22T10:00:00Z", [li("ev-a", 1, "20.00")], "us"),
+    ];
+    expect(aggregateToDailySales(orders, "shopify_us")).toEqual([
+      { sku: "ev-a", routedLocation: "US", salesDate: "2026-04-22", unitsSold: 1, netSalesUsd: 20 },
+    ]);
   });
 });

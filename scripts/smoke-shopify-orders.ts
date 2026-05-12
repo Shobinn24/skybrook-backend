@@ -82,7 +82,7 @@ async function main() {
   console.log(`\n✓ Fetched ${allOrders.length} orders across ${pages} page(s) in ${elapsed}s`);
   console.log(`  throttle bucket at end: ${lastAvailable}`);
 
-  const rows = aggregateToDailySales(allOrders);
+  const rows = aggregateToDailySales(allOrders, "shopify_us");
   console.log(`✓ Aggregated to ${rows.length} (sku × day) rows`);
 
   // Top 10 SKUs by units

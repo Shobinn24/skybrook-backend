@@ -74,6 +74,7 @@ async function seedSale(opts: {
   await db.insert(dailySales).values({
     sku: opts.sku,
     channel: opts.channel,
+    routedLocation: opts.channel === "shopify_us" ? "US" : "CN",
     salesDate: opts.date,
     unitsSold: opts.units,
     netSalesUsd: opts.netSalesUsd ?? "0",

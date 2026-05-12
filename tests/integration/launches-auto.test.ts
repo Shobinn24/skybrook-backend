@@ -92,7 +92,7 @@ describe("runLaunchAutoPopulate", () => {
     ]);
     // 0 stock at CN but recent INTL sales → established product, no launch.
     await db.insert(dailySales).values([
-      { channel: "shopify_intl", sku: "ev-bshort-5x-l", salesDate: ymdDaysAgo(7), unitsSold: 50, netSalesUsd: "1000.00", sourcePullId: rawId },
+      { channel: "shopify_intl", routedLocation: "CN", sku: "ev-bshort-5x-l", salesDate: ymdDaysAgo(7), unitsSold: 50, netSalesUsd: "1000.00", sourcePullId: rawId },
     ]);
     await db.insert(incomingShipments).values([
       { sku: "ev-bshort-5x-l", shipmentName: "KAI Bshort May", destination: "CN", expectedArrival: "2026-06-01", quantity: 1000, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },
@@ -206,7 +206,7 @@ describe("runLaunchAutoPopulate", () => {
       { sku: "ev-sw-5x-l", location: "CN", snapshotDate: "2026-04-15", onHand: 200, sourcePullId: rawId },
     ]);
     await db.insert(dailySales).values([
-      { channel: "shopify_intl", sku: "ev-sw-5x-l", salesDate: ymdDaysAgo(5), unitsSold: 30, netSalesUsd: "600.00", sourcePullId: rawId },
+      { channel: "shopify_intl", routedLocation: "CN", sku: "ev-sw-5x-l", salesDate: ymdDaysAgo(5), unitsSold: 30, netSalesUsd: "600.00", sourcePullId: rawId },
     ]);
     await db.insert(incomingShipments).values([
       { sku: "ev-sw-5x-l", shipmentName: "KAI Apr26", destination: "CN", expectedArrival: "2026-06-01", quantity: 1000, status: "po", sourcePullId: rawId, sourceRowRef: "row-1" },

@@ -73,11 +73,17 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
       )
     );
 
+  // Trust the row's stored `routedLocation` (Scott 2026-05-12 — US-
+  // store orders with non-US ship-to now route to CN). Legacy rows
+  // that pre-date the column got backfilled with `channelToLocation`
+  // semantics, which keeps pre-fix data equivalent to its previous
+  // behavior. The channel→location fallback below covers any future
+  // rows where the column is unexpectedly missing.
   const saleEvents: SaleEvent[] = sales.map((s) => ({
     sku: s.sku,
     quantity: s.unitsSold,
     orderDateEst: s.salesDate,
-    routedLocation: channelToLocation(s.channel),
+    routedLocation: s.routedLocation ?? channelToLocation(s.channel),
   }));
 
   // Pull every incoming shipment (filtered per SKU × location below).

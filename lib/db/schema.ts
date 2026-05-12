@@ -223,20 +223,38 @@ export const salesLineItems = pgTable(
   (t) => ({ unq: uniqueIndex("sales_line_items_channel_src_uq").on(t.channel, t.sourceLineId) })
 );
 
-// Aggregated daily sales per SKU per channel — output of the Shopify Reports API via ShopifyQL.
-// Scope `read_reports` returns this shape; order-level detail (line items) would require
-// `read_all_orders` which Scott opted not to grant.
+// Aggregated daily sales per SKU per (channel × routed warehouse).
+//
+// `routedLocation` is the WAREHOUSE the order shipped from, determined
+// by `routeOrder({ channel, shipToCountry })`:
+//   - shopify_us + ship-to US        → US warehouse
+//   - shopify_us + ship-to non-US    → CN warehouse  (was mis-routed pre-2026-05-12)
+//   - shopify_intl + any ship-to     → CN warehouse
+//
+// Pre-2026-05-12 ingest didn't pull `shippingAddress.countryCode` from
+// the Shopify orders query, so every shopify_us row was attributed to
+// the US warehouse regardless of where it shipped. After Scott approved
+// the fix (5/12), the column was added with a default backfill of
+// `channelToLocation(channel)` (preserves pre-fix behavior on historical
+// rows), then a one-shot backfill re-pulled the trailing 30 days from
+// Shopify with the new query so velocity rebases correctly. Going
+// forward each ingest cycle bucketed by the real ship-to country.
 export const dailySales = pgTable(
   "daily_sales",
   {
     channel: channelEnum("channel").notNull(),
+    routedLocation: locationEnum("routed_location").notNull(),
     sku: text("sku").notNull(),
     salesDate: date("sales_date").notNull(),
     unitsSold: integer("units_sold").notNull(),
     netSalesUsd: numeric("net_sales_usd", { precision: 14, scale: 4 }).notNull().default("0"),
     sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
   },
-  (t) => ({ pk: primaryKey({ columns: [t.channel, t.sku, t.salesDate] }) })
+  (t) => ({
+    pk: primaryKey({
+      columns: [t.channel, t.routedLocation, t.sku, t.salesDate],
+    }),
+  }),
 );
 
 // --- Derived layer ---

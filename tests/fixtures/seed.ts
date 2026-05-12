@@ -73,6 +73,7 @@ export async function seedBasic() {
   const start = new Date("2026-04-17T00:00:00Z");
   const rows: Array<{
     channel: "shopify_us" | "shopify_intl";
+    routedLocation: "US" | "CN";
     sku: string;
     salesDate: string;
     unitsSold: number;
@@ -83,9 +84,9 @@ export async function seedBasic() {
     const d = new Date(start);
     d.setUTCDate(d.getUTCDate() + i);
     const ymd = d.toISOString().slice(0, 10);
-    rows.push({ channel: "shopify_us", sku: "EV-A", salesDate: ymd, unitsSold: 5, netSalesUsd: "100", sourcePullId: raw.id });
-    rows.push({ channel: "shopify_us", sku: "EV-B", salesDate: ymd, unitsSold: 3, netSalesUsd: "60", sourcePullId: raw.id });
-    rows.push({ channel: "shopify_intl", sku: "EV-A", salesDate: ymd, unitsSold: 2, netSalesUsd: "40", sourcePullId: raw.id });
+    rows.push({ channel: "shopify_us", routedLocation: "US", sku: "EV-A", salesDate: ymd, unitsSold: 5, netSalesUsd: "100", sourcePullId: raw.id });
+    rows.push({ channel: "shopify_us", routedLocation: "US", sku: "EV-B", salesDate: ymd, unitsSold: 3, netSalesUsd: "60", sourcePullId: raw.id });
+    rows.push({ channel: "shopify_intl", routedLocation: "CN", sku: "EV-A", salesDate: ymd, unitsSold: 2, netSalesUsd: "40", sourcePullId: raw.id });
   }
   await db.insert(dailySales).values(rows);
 

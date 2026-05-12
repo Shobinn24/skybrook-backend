@@ -6,6 +6,7 @@ import type { SourceRunner } from "@/lib/jobs/ingest";
 import { decomposePackSku, PACK_SKU_DB_PATTERNS } from "@/lib/domain/sku-pack";
 import { getShopifyAccessToken } from "@/lib/sources/shopify-auth";
 import { toEstDate } from "@/lib/tz";
+import { routeOrder, type Location } from "@/lib/domain/warehouse-routing";
 
 // Shopify Admin GraphQL API version — bump when needed.
 const API_VERSION = "2025-01";
@@ -48,6 +49,13 @@ type OrderNode = {
   totalTaxSet?: MoneySet;
   totalShippingPriceSet?: MoneySet;
   totalTipReceivedSet?: MoneySet;
+  // ISO-3166 alpha-2 country code from the order's shipping address
+  // (Scott 2026-05-12). Used to route US-store orders that shipped
+  // outside the US into the CN warehouse bucket. Optional because
+  // legacy / minimal OrderNode test fixtures may omit it — missing or
+  // null falls back to the store's default routing (US store → US,
+  // INTL store → CN) via `routeOrder`.
+  shippingAddress?: { countryCode: string | null } | null;
 };
 
 type OrdersPageResponse = {
@@ -67,7 +75,12 @@ type OrdersPageResponse = {
 
 export type ShopifyDailySale = {
   sku: string;
-  salesDate: string; // YYYY-MM-DD (UTC slice of order createdAt)
+  // Warehouse the order shipped from. Derived from (channel, ship-to
+  // country) via `routeOrder`. US-store orders with non-US ship-to
+  // get bucketed as "CN" so per-warehouse velocity reflects what
+  // actually leaves each warehouse (Scott 2026-05-12).
+  routedLocation: Location;
+  salesDate: string; // YYYY-MM-DD in EST (matches Shopify's created_at filter)
   unitsSold: number;
   netSalesUsd: number;
 };
@@ -112,6 +125,7 @@ async function* iterateOrderPages(
               totalTaxSet { shopMoney { amount } }
               totalShippingPriceSet { shopMoney { amount } }
               totalTipReceivedSet { shopMoney { amount } }
+              shippingAddress { countryCode }
             }
           }
         }
@@ -179,7 +193,10 @@ async function* iterateOrderPages(
  * Shop currency is USD on both stores (verified live 2026-04-24), so
  * shopMoney is directly comparable across channels.
  */
-export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
+export function aggregateToDailySales(
+  orders: OrderNode[],
+  channel: Channel,
+): ShopifyDailySale[] {
   const agg = new Map<string, { units: number; net: number }>();
   for (const order of orders) {
     // Bucket by EST calendar date — matches Shopify's `created_at:>=YYYY-MM-DD`
@@ -190,6 +207,17 @@ export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
     // buckets than the live Shopify filter pulled — root cause of the
     // persistent ~$695 May-6 INTL DB-vs-live divergence (issue #6).
     const day = toEstDate(new Date(order.createdAt)); // YYYY-MM-DD in EST
+
+    // Resolve ship-to country → warehouse. Default to the store's
+    // implied location when the shippingAddress is missing or has no
+    // country code (digital-only / pickup orders, vault-tokenized
+    // legacy orders). Matches `routeOrder` semantics: US store → US,
+    // INTL store → CN, but US store + non-US ship-to → CN.
+    const shipToCountry = order.shippingAddress?.countryCode ?? "";
+    const routedLocation: Location = routeOrder({
+      channel,
+      shipToCountry,
+    });
 
     // Pass 1: collect tracked SKU rows for this order. We need the full
     // set before allocating ancillary because share = lineNet / orderRev.
@@ -242,7 +270,7 @@ export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
         share = 1 / tracked.length;
       }
       const itemTotal = t.lineNet + share * ancillary;
-      const key = `${t.skuKey}|${day}`;
+      const key = `${t.skuKey}|${day}|${routedLocation}`;
       const prev = agg.get(key) ?? { units: 0, net: 0 };
       prev.units += t.units;
       prev.net += itemTotal;
@@ -251,13 +279,22 @@ export function aggregateToDailySales(orders: OrderNode[]): ShopifyDailySale[] {
   }
   const out: ShopifyDailySale[] = [];
   for (const [key, { units, net }] of agg) {
-    const [sku, salesDate] = key.split("|");
-    out.push({ sku, salesDate, unitsSold: units, netSalesUsd: Number(net.toFixed(4)) });
+    const [sku, salesDate, routedLocation] = key.split("|");
+    out.push({
+      sku,
+      routedLocation: routedLocation as Location,
+      salesDate,
+      unitsSold: units,
+      netSalesUsd: Number(net.toFixed(4)),
+    });
   }
   // Deterministic ordering for snapshot-friendliness and easier diffs.
-  out.sort((a, b) =>
-    a.salesDate === b.salesDate ? a.sku.localeCompare(b.sku) : a.salesDate.localeCompare(b.salesDate),
-  );
+  out.sort((a, b) => {
+    if (a.salesDate !== b.salesDate) return a.salesDate.localeCompare(b.salesDate);
+    if (a.routedLocation !== b.routedLocation)
+      return a.routedLocation.localeCompare(b.routedLocation);
+    return a.sku.localeCompare(b.sku);
+  });
   return out;
 }
 
@@ -292,7 +329,7 @@ function makeRunner(channel: Channel): SourceRunner {
       allOrders.push(...page);
       pageCount++;
     }
-    const sales = aggregateToDailySales(allOrders);
+    const sales = aggregateToDailySales(allOrders, channel);
 
     // Stable fingerprint reflects the QUERY SHAPE — channel + API
     // version + entity. The since/today window is intentionally NOT
@@ -359,6 +396,7 @@ function makeRunner(channel: Channel): SourceRunner {
             const CHUNK = 1000;
             const rows = sales.map((s) => ({
               channel,
+              routedLocation: s.routedLocation,
               sku: s.sku,
               salesDate: s.salesDate,
               unitsSold: s.unitsSold,
