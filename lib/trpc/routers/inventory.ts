@@ -416,6 +416,9 @@ export const inventoryRouter = router({
 
   // /fb-ads — top-spending FB ads, pivoted by ad number, for an
   // arbitrary [rangeStart, rangeEnd] window. Sorted desc by spend.
+  // Optional `marketers` filter narrows to ads attributed to any of
+  // the selected names; passing "Unassigned" includes ads whose
+  // ad_name_raw didn't match the 8-marketer roster at ingest.
   getFbAdsRollup: publicProcedure
     .input(
       z.object({
@@ -425,13 +428,19 @@ export const inventoryRouter = router({
         rangeEnd: z
           .string()
           .regex(/^\d{4}-\d{2}-\d{2}$/, "rangeEnd must be YYYY-MM-DD"),
+        marketers: z.array(z.string()).optional(),
       }),
     )
     .query(({ input }) => {
-      const { rangeStart, rangeEnd } = input;
+      const { rangeStart, rangeEnd, marketers } = input;
+      const norm = marketers && marketers.length > 0 ? marketers : undefined;
       if (rangeStart > rangeEnd) {
-        return getFbAdsRollup({ rangeStart: rangeEnd, rangeEnd: rangeStart });
+        return getFbAdsRollup({
+          rangeStart: rangeEnd,
+          rangeEnd: rangeStart,
+          marketers: norm,
+        });
       }
-      return getFbAdsRollup({ rangeStart, rangeEnd });
+      return getFbAdsRollup({ rangeStart, rangeEnd, marketers: norm });
     }),
 });

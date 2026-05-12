@@ -10,6 +10,7 @@ import {
   stockSnapshots,
 } from "@/lib/db/schema";
 import { decomposePackSku } from "@/lib/domain/sku-pack";
+import { extractMarketers } from "@/lib/domain/fb-marketers";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { toEstDate } from "@/lib/tz";
 
@@ -1072,12 +1073,14 @@ export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
         // well under the 65k cap.
         const flat: Array<typeof fbAdSpendDaily.$inferInsert> = [];
         for (const ad of aggregated) {
+          const marketers = extractMarketers(ad.adNameRaw);
           for (const d of ad.dailySpend) {
             flat.push({
               adNumber: ad.adNumber,
               adName: ad.adName,
               adNameRaw: ad.adNameRaw,
               adLink: ad.adLink,
+              marketers,
               spendDate: d.spendDate,
               costUsd: d.costUsd.toString(),
               sourcePullId: rawId,

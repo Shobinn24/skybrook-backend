@@ -1,0 +1,1 @@
+ALTER TABLE "fb_ad_spend_daily" ADD COLUMN "marketers" text[] DEFAULT '{}' NOT NULL;

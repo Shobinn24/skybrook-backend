@@ -1,12 +1,19 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc/client";
+import {
+  FB_MARKETERS,
+  FB_MARKETER_UNASSIGNED,
+} from "@/lib/domain/fb-marketers";
 
 const PRESETS = [
   { days: 7, label: "7d" },
   { days: 14, label: "14d" },
   { days: 30, label: "30d" },
 ] as const;
+
+const MARKETER_FILTER_OPTIONS = [...FB_MARKETERS, FB_MARKETER_UNASSIGNED] as const;
+type MarketerFilterOption = (typeof MARKETER_FILTER_OPTIONS)[number];
 
 function fmtMoney(n: number): string {
   return n.toLocaleString("en-US", {
@@ -53,9 +60,38 @@ export default function FbAdsPage() {
   const [rangeStart, setRangeStart] = useState<string>(() =>
     addDaysYmd(yesterday, -29),
   );
+  const [selectedMarketers, setSelectedMarketers] = useState<
+    ReadonlySet<MarketerFilterOption>
+  >(() => new Set());
+  const [marketerMenuOpen, setMarketerMenuOpen] = useState(false);
+  const marketerMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close the marketer dropdown on outside click.
+  useEffect(() => {
+    if (!marketerMenuOpen) return;
+    function onClickAway(e: MouseEvent) {
+      if (
+        marketerMenuRef.current &&
+        !marketerMenuRef.current.contains(e.target as Node)
+      ) {
+        setMarketerMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onClickAway);
+    return () => document.removeEventListener("mousedown", onClickAway);
+  }, [marketerMenuOpen]);
+
+  const marketerFilterArray = useMemo(
+    () => Array.from(selectedMarketers),
+    [selectedMarketers],
+  );
 
   const { data, isLoading, error } = trpc.inventory.getFbAdsRollup.useQuery(
-    { rangeStart, rangeEnd },
+    {
+      rangeStart,
+      rangeEnd,
+      marketers: marketerFilterArray.length > 0 ? marketerFilterArray : undefined,
+    },
     { refetchOnWindowFocus: false },
   );
 
@@ -65,6 +101,26 @@ export default function FbAdsPage() {
     setRangeEnd(yesterday);
     setRangeStart(addDaysYmd(yesterday, -(days - 1)));
   }
+
+  function toggleMarketer(name: MarketerFilterOption) {
+    setSelectedMarketers((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
+  function clearMarketers() {
+    setSelectedMarketers(new Set());
+  }
+
+  const marketerButtonLabel =
+    selectedMarketers.size === 0
+      ? "All marketers"
+      : selectedMarketers.size === 1
+        ? Array.from(selectedMarketers)[0]
+        : `${selectedMarketers.size} marketers`;
 
   return (
     <div className="space-y-6">
@@ -115,6 +171,56 @@ export default function FbAdsPage() {
               </button>
             ))}
           </div>
+          <div className="relative" ref={marketerMenuRef}>
+            <button
+              type="button"
+              onClick={() => setMarketerMenuOpen((v) => !v)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100"
+            >
+              {marketerButtonLabel}
+              <span aria-hidden className="text-neutral-400">
+                ▾
+              </span>
+            </button>
+            {marketerMenuOpen && (
+              <div className="absolute right-0 z-10 mt-1 w-52 rounded-md border border-neutral-200 bg-white py-1 text-sm shadow-lg">
+                <div className="flex items-center justify-between border-b border-neutral-100 px-3 py-1.5 text-xs uppercase tracking-wide text-neutral-500">
+                  <span>Filter by marketer</span>
+                  {selectedMarketers.size > 0 && (
+                    <button
+                      type="button"
+                      onClick={clearMarketers}
+                      className="text-blue-600 hover:underline"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                {MARKETER_FILTER_OPTIONS.map((name) => (
+                  <label
+                    key={name}
+                    className="flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-neutral-50"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedMarketers.has(name)}
+                      onChange={() => toggleMarketer(name)}
+                      className="rounded border-neutral-300"
+                    />
+                    <span
+                      className={
+                        name === FB_MARKETER_UNASSIGNED
+                          ? "italic text-neutral-500"
+                          : "text-neutral-700"
+                      }
+                    >
+                      {name}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -147,6 +253,7 @@ export default function FbAdsPage() {
                   <th className="w-16 px-3 py-2 font-medium">#</th>
                   <th className="w-24 px-3 py-2 font-medium">Ad #</th>
                   <th className="px-3 py-2 font-medium">Ad name</th>
+                  <th className="w-40 px-3 py-2 font-medium">Marketer</th>
                   <th className="w-24 px-3 py-2 font-medium">Link</th>
                   <th className="w-32 px-3 py-2 text-right font-medium">
                     Spend
@@ -173,6 +280,22 @@ export default function FbAdsPage() {
                       >
                         {r.adNameRaw}
                       </div>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-neutral-700">
+                      {r.marketers.length === 0 ? (
+                        <span className="italic text-neutral-400">Unassigned</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {r.marketers.map((m) => (
+                            <span
+                              key={m}
+                              className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-0.5 font-medium text-neutral-700"
+                            >
+                              {m}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </td>
                     <td className="px-3 py-2">
                       {r.adLink ? (

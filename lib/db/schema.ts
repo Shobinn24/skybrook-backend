@@ -142,6 +142,12 @@ export const fbAdSpendDaily = pgTable(
     adName: text("ad_name").notNull(),
     adNameRaw: text("ad_name_raw").notNull(),
     adLink: text("ad_link"),
+    // Marketer names extracted from ad_name_raw via word-boundary
+    // substring match against the 8-marketer roster (Craig, Nate, Raul,
+    // Tyler, Scotty, Jacob, Dan, JW). Multi-marketer ads carry every
+    // matched name and show up in each marketer's filtered view.
+    // Empty array → "Unassigned" bucket in the UI filter.
+    marketers: text("marketers").array().notNull().default([]),
     spendDate: date("spend_date").notNull(),
     costUsd: numeric("cost_usd", { precision: 14, scale: 4 }).notNull(),
     sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
