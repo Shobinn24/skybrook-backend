@@ -79,7 +79,7 @@ export async function getLaunches(): Promise<LaunchRow[]> {
 
   // For each launch, find the earliest US ETA + earliest CN ETA across
   // its product's SKUs for this shipmentName.
-  return launchRows.map((r) => {
+  const resolved = launchRows.map((r) => {
     const productSkus = skusByProduct.get(r.productName) ?? [];
     const skuSet = new Set(productSkus);
     let etaAnt: string | null = null;
@@ -110,6 +110,19 @@ export async function getLaunches(): Promise<LaunchRow[]> {
       createdAt: r.createdAt.toISOString(),
     };
   });
+
+  // Sort by ETA Ant ascending with nulls last so launches with known
+  // CN arrivals come first, ordered earliest → latest. createdAt is the
+  // tiebreaker (preserves stable order when two launches share an ETA
+  // or both have no ETA yet).
+  resolved.sort((a, b) => {
+    if (a.etaAnt === b.etaAnt) return a.createdAt.localeCompare(b.createdAt);
+    if (a.etaAnt === null) return 1;
+    if (b.etaAnt === null) return -1;
+    return a.etaAnt.localeCompare(b.etaAnt);
+  });
+
+  return resolved;
 }
 
 /** Distinct shipmentNames present in `incoming_shipments` — feeds the
