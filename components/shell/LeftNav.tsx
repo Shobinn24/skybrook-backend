@@ -35,12 +35,6 @@ export function LeftNav() {
         Stock value
       </Link>
       <Link
-        href="/pipeline"
-        className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
-      >
-        Pipeline
-      </Link>
-      <Link
         href="/performance"
         className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
       >
@@ -67,6 +61,12 @@ export function LeftNav() {
           className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
         >
           Product names
+        </Link>
+        <Link
+          href="/pipeline"
+          className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
+        >
+          Pipeline
         </Link>
       </div>
     </aside>
