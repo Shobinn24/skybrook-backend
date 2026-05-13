@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { runAutoReceiptDetection } from "@/lib/jobs/auto-receipt";
+import { detectAndInsertBonusCrossings } from "@/lib/jobs/bonus-crossings";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { runLaunchAutoPopulate } from "@/lib/jobs/launches";
 import { syncProductNames } from "@/lib/jobs/product-names";
@@ -51,6 +52,11 @@ export async function POST(req: Request) {
   // block downstream metrics.
   const autoLaunches = await runLaunchAutoPopulate();
   const phase2 = await runPhase2({ asOfDate, pullBatchId: batchId });
+  // Bonus crossing detection runs after the FB ads sheet ingest has
+  // landed today's spend rows. New (ad × marketer × tier) crossings
+  // become `pending` rows in bonus_awards for Jasper to triage.
+  // Idempotent — won't double-insert if cron re-runs.
+  const bonusCrossings = await detectAndInsertBonusCrossings({ asOfDate });
 
   logger.info("cron.ingest.done", {
     batchId,
@@ -59,6 +65,7 @@ export async function POST(req: Request) {
     unitCosts,
     autoReceipts,
     autoLaunches,
+    bonusCrossings,
     ...phase2,
   });
   return NextResponse.json({
@@ -69,6 +76,7 @@ export async function POST(req: Request) {
     unitCosts,
     autoReceipts,
     autoLaunches,
+    bonusCrossings,
     phase2,
   });
 }

@@ -28,6 +28,11 @@ export const orderStatusEnum = pgEnum("order_status", ["open", "fulfilled", "can
 export const incomingStatusEnum = pgEnum("incoming_status", ["po", "dispatched", "in_transit", "arrived"]);
 export const flagEnum = pgEnum("flag", ["healthy", "watch", "at_risk", "overstocked"]);
 export const pullStatusEnum = pgEnum("pull_status", ["success", "failed", "partial"]);
+export const bonusTierEnum = pgEnum("bonus_tier", ["tier1", "tier2"]);
+export const bonusStatusEnum = pgEnum(
+  "bonus_status",
+  ["pending", "approved_full", "approved_half", "rejected"],
+);
 
 // --- Raw layer ---
 export const rawPulls = pgTable("raw_pulls", {
@@ -326,4 +331,67 @@ export const skuFamilyOverrides = pgTable("sku_family_overrides", {
   aliasOf: text("alias_of"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   updatedBy: text("updated_by").notNull(),
+});
+
+// One row per (ad × marketer × tier) bonus eligibility event. Inserted as
+// `pending` when a marketer's lifetime FB ad spend on a given ad first
+// crosses $13k or $65k (Jasper 2026-05-13). Status flips to
+// `approved_full` / `approved_half` / `rejected` when Jasper reviews
+// the pending queue in /bonus-tracker. `notification_batch_id` is
+// stamped when the monthly WhatsApp goes out, marking the bonus as
+// "paid" by Jasper's convention (notification == payment trigger).
+//
+// `marketer` is stored as text rather than an enum so the bonus roster
+// stays a domain-layer concept — easy to add/remove names without a
+// schema migration. The set of valid values is enforced at the tRPC
+// boundary against BONUS_MARKETERS in lib/domain/bonus-tiers.ts.
+//
+// `amount_usd` is frozen at approval time: $500 / $3000 for main
+// (Craig, Raul, Tyler), $250 / $1500 for secondary (Jacob, JW, Dan).
+// The 50% modifier is encoded by the approved_half status rather than
+// halving the amount post-hoc, so the audit trail reads cleanly.
+export const bonusAwards = pgTable(
+  "bonus_awards",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    adNumber: text("ad_number").notNull(),
+    marketer: text("marketer").notNull(),
+    tier: bonusTierEnum("tier").notNull(),
+    crossedAt: date("crossed_at").notNull(),
+    status: bonusStatusEnum("status").notNull().default("pending"),
+    amountUsd: numeric("amount_usd", { precision: 10, scale: 2 }).notNull(),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    approvedBy: text("approved_by"),
+    notificationBatchId: uuid("notification_batch_id"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // One award per (ad, marketer, tier) — prevents duplicate pending
+    // rows if the crossing detector runs more than once per day.
+    uniq: uniqueIndex("bonus_awards_ad_marketer_tier_uq").on(
+      t.adNumber,
+      t.marketer,
+      t.tier,
+    ),
+  }),
+);
+
+// One row per "Generate notification" button-press. Locks the set of
+// approved bonuses included in the WhatsApp message so re-runs are
+// idempotent and the audit trail shows what was paid when.
+export const bonusNotificationBatches = pgTable("bonus_notification_batches", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  periodLabel: text("period_label").notNull(), // e.g. "April 2026"
+  // Renders the actual WhatsApp message body. Stored so the UI can show
+  // exactly what was sent without recomputing from awards (which may
+  // have changed since).
+  messageBody: text("message_body").notNull(),
+  // Aggregated totals per marketer at send time. Lets the UI show a
+  // historic ledger without re-querying awards.
+  totalsJson: jsonb("totals_json").notNull(),
+  sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+  sentBy: text("sent_by").notNull(),
+  whatsappStatus: text("whatsapp_status"), // "sent" | "skipped" | "failed:<reason>"
 });
