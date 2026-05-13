@@ -15,6 +15,55 @@ import {
 } from "@/lib/domain/at-risk-window";
 import { isMainColor } from "@/lib/domain/sku-naming";
 
+// Velocity window picker — defaults to the pre-computed 7d rollup.
+// Switching to any other state triggers an on-demand query against
+// daily_sales so operators can cross-check velocity against external
+// spreadsheets. DOS / weeks-of-stock / sustainability flags continue
+// to use the 7d-based pre-computation either way (out of scope for
+// this picker).
+const VELOCITY_PRESETS = [
+  { days: 7, label: "7d (default)" },
+  { days: 14, label: "14d" },
+  { days: 30, label: "30d" },
+  { days: 60, label: "60d" },
+  { days: 90, label: "90d" },
+] as const;
+
+type VelocityPreset = (typeof VELOCITY_PRESETS)[number]["days"];
+
+type VelocitySelection =
+  | { kind: "default" }
+  | { kind: "preset"; days: Exclude<VelocityPreset, 7> }
+  | { kind: "custom"; rangeStart: string; rangeEnd: string };
+
+// Yesterday in EST as YYYY-MM-DD — matches the cron's data convention
+// (today's data is still accumulating). Same logic as /fb-ads.
+function yesterdayEstYmd(): string {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const todayEst = fmt.format(new Date());
+  const [y, m, d] = todayEst.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
+}
+
+function addDaysYmd(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+function fmtDate(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  if (!y || !m || !d) return ymd;
+  return new Date(y, m - 1, d).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 function moneyCompact(n: number): string {
   if (n === 0) return "$0";
   if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
@@ -61,6 +110,64 @@ export default function InventoryPage() {
       enabled: isAll || selection === "CN",
     },
   );
+
+  // Velocity window picker state. Default = pre-computed 7d (no extra
+  // query). Anything else fires getVelocityForRange below.
+  const [velocitySel, setVelocitySel] = useState<VelocitySelection>({
+    kind: "default",
+  });
+  const yesterday = useMemo(() => yesterdayEstYmd(), []);
+
+  const resolvedRange = useMemo(() => {
+    if (velocitySel.kind === "default") return null;
+    if (velocitySel.kind === "preset") {
+      return {
+        rangeStart: addDaysYmd(yesterday, -(velocitySel.days - 1)),
+        rangeEnd: yesterday,
+      };
+    }
+    return {
+      rangeStart: velocitySel.rangeStart,
+      rangeEnd: velocitySel.rangeEnd,
+    };
+  }, [velocitySel, yesterday]);
+
+  const usVelQuery = trpc.inventory.getVelocityForRange.useQuery(
+    {
+      location: "US",
+      rangeStart: resolvedRange?.rangeStart ?? yesterday,
+      rangeEnd: resolvedRange?.rangeEnd ?? yesterday,
+    },
+    {
+      refetchOnWindowFocus: false,
+      enabled: !!resolvedRange && (isAll || selection === "US"),
+    },
+  );
+  const cnVelQuery = trpc.inventory.getVelocityForRange.useQuery(
+    {
+      location: "CN",
+      rangeStart: resolvedRange?.rangeStart ?? yesterday,
+      rangeEnd: resolvedRange?.rangeEnd ?? yesterday,
+    },
+    {
+      refetchOnWindowFocus: false,
+      enabled: !!resolvedRange && (isAll || selection === "CN"),
+    },
+  );
+
+  const velocityOverride = useMemo(() => {
+    if (!resolvedRange) return null;
+    const m = new Map<string, number>();
+    for (const r of usVelQuery.data?.rows ?? []) m.set(`US:${r.sku}`, r.unitsPerDay);
+    for (const r of cnVelQuery.data?.rows ?? []) m.set(`CN:${r.sku}`, r.unitsPerDay);
+    return m;
+  }, [resolvedRange, usVelQuery.data, cnVelQuery.data]);
+
+  const velocityLabel = useMemo(() => {
+    if (velocitySel.kind === "default") return "7d";
+    if (velocitySel.kind === "preset") return `${velocitySel.days}d`;
+    return `${fmtDate(velocitySel.rangeStart)} – ${fmtDate(velocitySel.rangeEnd)}`;
+  }, [velocitySel]);
 
   const rows = useMemo(() => {
     const raw = isAll
@@ -221,38 +328,159 @@ export default function InventoryPage() {
         />
       </div>
 
-      <div className="flex items-center justify-end gap-4">
-        <label
-          className="inline-flex items-center gap-2 text-xs text-neutral-700"
-          title="Hide alt colorways of OG / HW / 9055 (clearance / aging stock). Boyshort + Super HW colors all count as main."
-        >
-          <input
-            type="checkbox"
-            checked={mainColorOnly}
-            onChange={(e) => setMainColorOnly(e.target.checked)}
-            className="h-3.5 w-3.5"
-          />
-          Main colors only
-        </label>
-        <label className="inline-flex items-center gap-2 text-xs text-neutral-700">
-          <input
-            type="checkbox"
-            checked={groupByProduct}
-            onChange={(e) => setGroupByProduct(e.target.checked)}
-            className="h-3.5 w-3.5"
-          />
-          Group by product
-        </label>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-700">
+          <span className="font-medium text-neutral-600">Velocity window</span>
+          <div className="inline-flex overflow-hidden rounded-md border border-neutral-300 bg-white">
+            {VELOCITY_PRESETS.map((p) => {
+              const isActive =
+                p.days === 7
+                  ? velocitySel.kind === "default"
+                  : velocitySel.kind === "preset" && velocitySel.days === p.days;
+              return (
+                <button
+                  key={p.days}
+                  type="button"
+                  onClick={() =>
+                    setVelocitySel(
+                      p.days === 7
+                        ? { kind: "default" }
+                        : {
+                            kind: "preset",
+                            days: p.days as Exclude<VelocityPreset, 7>,
+                          },
+                    )
+                  }
+                  className={
+                    "px-3 py-1.5 font-medium " +
+                    (isActive
+                      ? "bg-neutral-900 text-white"
+                      : "text-neutral-700 hover:bg-neutral-100")
+                  }
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-2">
+            <label htmlFor="vel-start" className="text-neutral-600">
+              From
+            </label>
+            <input
+              id="vel-start"
+              type="date"
+              value={
+                velocitySel.kind === "custom"
+                  ? velocitySel.rangeStart
+                  : resolvedRange?.rangeStart ?? addDaysYmd(yesterday, -29)
+              }
+              max={
+                velocitySel.kind === "custom" ? velocitySel.rangeEnd : yesterday
+              }
+              onChange={(e) =>
+                setVelocitySel({
+                  kind: "custom",
+                  rangeStart: e.target.value,
+                  rangeEnd:
+                    velocitySel.kind === "custom"
+                      ? velocitySel.rangeEnd
+                      : yesterday,
+                })
+              }
+              className="rounded-md border border-neutral-300 bg-white px-2 py-1 focus:outline-none focus:ring-1 focus:ring-neutral-400"
+            />
+            <label htmlFor="vel-end" className="text-neutral-600">
+              To
+            </label>
+            <input
+              id="vel-end"
+              type="date"
+              value={
+                velocitySel.kind === "custom"
+                  ? velocitySel.rangeEnd
+                  : resolvedRange?.rangeEnd ?? yesterday
+              }
+              max={yesterday}
+              min={
+                velocitySel.kind === "custom" ? velocitySel.rangeStart : undefined
+              }
+              onChange={(e) =>
+                setVelocitySel({
+                  kind: "custom",
+                  rangeStart:
+                    velocitySel.kind === "custom"
+                      ? velocitySel.rangeStart
+                      : addDaysYmd(yesterday, -29),
+                  rangeEnd: e.target.value,
+                })
+              }
+              className="rounded-md border border-neutral-300 bg-white px-2 py-1 focus:outline-none focus:ring-1 focus:ring-neutral-400"
+            />
+          </div>
+          {velocitySel.kind !== "default" && (
+            <button
+              type="button"
+              onClick={() => setVelocitySel({ kind: "default" })}
+              className="text-blue-600 hover:underline"
+            >
+              Reset to 7d
+            </button>
+          )}
+        </div>
+        <div className="flex items-center gap-4">
+          <label
+            className="inline-flex items-center gap-2 text-xs text-neutral-700"
+            title="Hide alt colorways of OG / HW / 9055 (clearance / aging stock). Boyshort + Super HW colors all count as main."
+          >
+            <input
+              type="checkbox"
+              checked={mainColorOnly}
+              onChange={(e) => setMainColorOnly(e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            Main colors only
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs text-neutral-700">
+            <input
+              type="checkbox"
+              checked={groupByProduct}
+              onChange={(e) => setGroupByProduct(e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            Group by product
+          </label>
+        </div>
       </div>
+
+      {velocitySel.kind !== "default" && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <strong>Velocity ({velocityLabel})</strong> reflects the chosen
+          window — sum of units sold ÷ days, computed on demand from
+          daily_sales. SKUs with no sales in the window display 0.
+          Weeks-of-stock and run-out projection still use the 7d-based
+          rollup; only the velocity column is affected by this picker.
+        </div>
+      )}
 
       {error ? (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">
           Failed to load inventory: {error.message}
         </div>
       ) : groupByProduct ? (
-        <ProductRollupTable warehouse={selection} rows={rows} />
+        <ProductRollupTable
+          warehouse={selection}
+          rows={rows}
+          velocityLabel={velocityLabel}
+          velocityOverride={velocityOverride}
+        />
       ) : (
-        <InventoryTable warehouse={selection} rows={rows} />
+        <InventoryTable
+          warehouse={selection}
+          rows={rows}
+          velocityLabel={velocityLabel}
+          velocityOverride={velocityOverride}
+        />
       )}
     </div>
   );

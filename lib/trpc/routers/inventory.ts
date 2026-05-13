@@ -18,6 +18,7 @@ import {
 import { getFbAdsRollup } from "@/lib/queries/fb-ads";
 import { getPerformanceRollup } from "@/lib/queries/performance";
 import { getInventoryRows } from "@/lib/queries/inventory";
+import { getVelocityForRange } from "@/lib/queries/velocity-range";
 import { getOverstockRows } from "@/lib/queries/overstock";
 import {
   getStockLevels,
@@ -42,6 +43,25 @@ export const inventoryRouter = router({
   getInventoryRows: publicProcedure
     .input(z.object({ location: locationSchema }))
     .query(({ input }) => getInventoryRows(input.location)),
+
+  // On-demand per-SKU velocity over an arbitrary date range. Used by
+  // /inventory when an operator opens the date picker to cross-check
+  // velocity against an external spreadsheet over a chosen window.
+  // The default 7-day velocity still comes from the pre-computed
+  // sales_velocity table via getInventoryRows.
+  getVelocityForRange: publicProcedure
+    .input(
+      z.object({
+        location: locationSchema,
+        rangeStart: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "rangeStart must be YYYY-MM-DD"),
+        rangeEnd: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "rangeEnd must be YYYY-MM-DD"),
+      }),
+    )
+    .query(({ input }) => getVelocityForRange(input)),
 
   getStockLevels: publicProcedure
     .input(z.object({ sku: z.string().optional(), location: locationSchema.optional() }).optional())

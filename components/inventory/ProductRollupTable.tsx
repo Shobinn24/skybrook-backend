@@ -34,9 +34,10 @@ type Group = {
   incomingUnits: number;
   futureStock: number;
   stockValueUsd: number;
-  velocityPerDay7d: number; // sum across SKUs
-  weeksOfStock: number | null; // computed: onHand / (sum velocity × 7); null if velocity = 0
-  futureWeeksOfStock: number | null; // computed: futureStock / (sum velocity × 7); null if velocity = 0
+  velocityPerDay7d: number; // sum across SKUs — drives WoS math
+  velocityDisplay: number; // velocity shown in the cell + used for sort
+  weeksOfStock: number | null; // computed: onHand / (7d velocity × 7); null if 0
+  futureWeeksOfStock: number | null; // computed: futureStock / (7d velocity × 7); null if 0
   worstFlag: "healthy" | "watch" | "at_risk" | "overstocked" | null;
   earliestRunOutDate: string | null;
 };
@@ -58,10 +59,23 @@ function weeksDisplay(w: number | null): string {
 export function ProductRollupTable({
   warehouse,
   rows,
+  velocityLabel,
+  velocityOverride,
 }: {
   warehouse: WarehouseSelection;
   rows: InventoryRow[];
+  velocityLabel?: string;
+  /** Per-`${location}:${sku}` override for the displayed velocity. WoS
+   * math intentionally still uses the row's 7d-based velocity so the
+   * picker only changes the velocity column. */
+  velocityOverride?: Map<string, number> | null;
 }) {
+  function rowVelocityDisplay(r: InventoryRow): number {
+    if (velocityOverride) {
+      return velocityOverride.get(`${r.location}:${r.sku}`) ?? 0;
+    }
+    return r.velocityPerDay7d ?? 0;
+  }
   const [sort, setSort] = useState<SortConfig<SortKey>>({ key: "velocity", direction: "desc" });
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -91,6 +105,7 @@ export function ProductRollupTable({
         existing.futureStock += r.futureStock;
         existing.stockValueUsd += r.stockValueUsd;
         existing.velocityPerDay7d += r.velocityPerDay7d ?? 0;
+        existing.velocityDisplay += rowVelocityDisplay(r);
         if (
           r.flag &&
           (existing.worstFlag === null ||
@@ -115,6 +130,7 @@ export function ProductRollupTable({
         futureStock: r.futureStock,
         stockValueUsd: r.stockValueUsd,
         velocityPerDay7d: r.velocityPerDay7d ?? 0,
+        velocityDisplay: rowVelocityDisplay(r),
         weeksOfStock: null, // computed below
         futureWeeksOfStock: null, // computed below
         worstFlag: r.flag,
@@ -152,7 +168,7 @@ export function ProductRollupTable({
         case "futureStock":
           return (a.futureStock - b.futureStock) * dir;
         case "velocity":
-          return (a.velocityPerDay7d - b.velocityPerDay7d) * dir;
+          return (a.velocityDisplay - b.velocityDisplay) * dir;
         case "weeksOfStock":
           return (nullish(a.weeksOfStock) - nullish(b.weeksOfStock)) * dir;
         case "futureWeeksOfStock":
@@ -169,7 +185,7 @@ export function ProductRollupTable({
       }
     });
     return arr;
-  }, [rows, sort, filter]);
+  }, [rows, sort, filter, velocityOverride]);
 
   const isOpen = (name: string) => expanded.has(name);
   const toggle = (name: string) =>
@@ -212,7 +228,7 @@ export function ProductRollupTable({
               <SortableHeader label="Stock" sortKey="onHand" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Incoming" sortKey="incoming" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Future stock" sortKey="futureStock" config={sort} onChange={setSort} align="right" />
-              <SortableHeader label="Velocity/day" sortKey="velocity" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label={`Velocity/day${velocityLabel ? ` (${velocityLabel})` : ""}`} sortKey="velocity" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="WOS" sortKey="weeksOfStock" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="FUT WOS" sortKey="futureWeeksOfStock" config={sort} onChange={setSort} align="right" />
               <th className="px-4 py-2 text-left text-xs uppercase tracking-wide text-neutral-600">Runs out</th>
@@ -251,7 +267,7 @@ export function ProductRollupTable({
                       {g.futureStock.toLocaleString()}
                     </td>
                     <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums">
-                      {g.velocityPerDay7d > 0 ? g.velocityPerDay7d.toFixed(2) : "—"}
+                      {g.velocityDisplay > 0 ? g.velocityDisplay.toFixed(2) : "—"}
                     </td>
                     <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums">
                       {weeksDisplay(g.weeksOfStock)}

@@ -49,10 +49,23 @@ function unitCostDisplay(n: number | null): string {
 export function InventoryTable({
   warehouse,
   rows,
+  velocityLabel,
+  velocityOverride,
 }: {
   warehouse: WarehouseSelection;
   rows: InventoryRow[];
+  velocityLabel?: string;
+  /** Per-`${location}:${sku}` override for the displayed velocity value
+   * (and its sort). Leaves WoS / DOS / runOutDate untouched — those
+   * stay 7d-based so the picker only changes the velocity column. */
+  velocityOverride?: Map<string, number> | null;
 }) {
+  function velocityFor(r: InventoryRow): number | null {
+    if (velocityOverride) {
+      return velocityOverride.get(`${r.location}:${r.sku}`) ?? 0;
+    }
+    return r.velocityPerDay7d;
+  }
   // In "All" mode, surface a Location column so operators can tell
   // which warehouse a row belongs to. Hidden for single-warehouse
   // views to keep the existing layout untouched.
@@ -84,7 +97,7 @@ export function InventoryTable({
         case "futureStock":
           return (a.futureStock - b.futureStock) * dir;
         case "velocity":
-          return (nullish(a.velocityPerDay7d) - nullish(b.velocityPerDay7d)) * dir;
+          return (nullish(velocityFor(a)) - nullish(velocityFor(b))) * dir;
         case "weeksOfStock":
           return (nullish(a.weeksOfStock) - nullish(b.weeksOfStock)) * dir;
         case "futureWeeksOfStock":
@@ -191,7 +204,7 @@ export function InventoryTable({
               <SortableHeader label="Stock" sortKey="onHand" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Incoming" sortKey="incoming" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Future stock" sortKey="futureStock" config={sort} onChange={setSort} align="right" />
-              <SortableHeader label="Velocity/day" sortKey="velocity" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label={`Velocity/day${velocityLabel ? ` (${velocityLabel})` : ""}`} sortKey="velocity" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="WOS" sortKey="weeksOfStock" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="FUT WOS" sortKey="futureWeeksOfStock" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Status" sortKey="flag" config={sort} onChange={setSort} />
@@ -230,13 +243,22 @@ export function InventoryTable({
                   </TracedNumber>
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums">
-                  {r.velocityPerDay7d !== null ? (
-                    <TracedNumber trace={r.trace.velocity}>
-                      {r.velocityPerDay7d.toFixed(2)}
-                    </TracedNumber>
-                  ) : (
-                    "—"
-                  )}
+                  {(() => {
+                    const v = velocityFor(r);
+                    if (v === null) return "—";
+                    // When override is active, the row's `trace.velocity`
+                    // describes the 7d source — hide the popover to avoid
+                    // misleading numbers next to a custom-window value.
+                    return velocityOverride ? (
+                      <span>{v.toFixed(2)}</span>
+                    ) : r.trace.velocity ? (
+                      <TracedNumber trace={r.trace.velocity}>
+                        {v.toFixed(2)}
+                      </TracedNumber>
+                    ) : (
+                      v.toFixed(2)
+                    );
+                  })()}
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums">
                   {r.trace.weeksOfStock ? (
