@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { runAutoReceiptDetection } from "@/lib/jobs/auto-receipt";
+import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { runLaunchAutoPopulate } from "@/lib/jobs/launches";
 import { syncProductNames } from "@/lib/jobs/product-names";
@@ -51,6 +52,26 @@ export async function POST(req: Request) {
   // block downstream metrics.
   const autoLaunches = await runLaunchAutoPopulate();
   const phase2 = await runPhase2({ asOfDate, pullBatchId: batchId });
+  // Freshness sweep runs LAST so its checks see the post-phase2 state of
+  // every table. Catches silent emptiness that per-source ingest alerts
+  // miss (e.g. May-6 cross-channel skew, partial sheet refreshes).
+  // Failures here never block the cron response — postAlert is internal.
+  const freshness = await runFreshnessCheck();
+
+  // Dead-man ping to healthchecks.io — confirms the cron itself ran, no
+  // matter what the freshness sweep found. Substantive failures
+  // (per-source / per-table / skew) fire their own Slack alerts above.
+  // HC's role is purely "did the heartbeat arrive on schedule?" — when
+  // it doesn't, HC pings #skybrook-alerts directly via its native Slack
+  // integration. Fire-and-forget; never block the cron response.
+  const hcPing = process.env.HEALTHCHECK_PING_URL;
+  if (hcPing) {
+    void fetch(hcPing).catch((e) => {
+      logger.warn("healthcheck.ping.failed", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    });
+  }
 
   logger.info("cron.ingest.done", {
     batchId,
@@ -60,6 +81,9 @@ export async function POST(req: Request) {
     autoReceipts,
     autoLaunches,
     ...phase2,
+    freshnessFails: freshness.checks.filter((c) => c.status === "fail").length,
+    freshnessAlertsFired: freshness.alertsFired,
+    freshnessAlertsResolved: freshness.alertsResolved,
   });
   return NextResponse.json({
     ok: true,
@@ -70,6 +94,7 @@ export async function POST(req: Request) {
     autoReceipts,
     autoLaunches,
     phase2,
+    freshness,
   });
 }
 

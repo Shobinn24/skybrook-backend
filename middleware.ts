@@ -9,6 +9,11 @@ const PUBLIC_PATHS = [
   // Safe to list here unconditionally because the handler itself returns 404
   // in production.
   "/api/auth/dev-login",
+  // Health endpoint is read-only ops state for external pingers
+  // (healthchecks.io, Slack integrations) and on-demand operators. Must
+  // be reachable without a session cookie. Surfaces only non-sensitive
+  // freshness state (per-source last status + table max-dates).
+  "/api/health",
 ];
 
 export async function middleware(req: NextRequest) {

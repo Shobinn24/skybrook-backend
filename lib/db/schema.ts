@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   text,
@@ -28,6 +29,7 @@ export const orderStatusEnum = pgEnum("order_status", ["open", "fulfilled", "can
 export const incomingStatusEnum = pgEnum("incoming_status", ["po", "dispatched", "in_transit", "arrived"]);
 export const flagEnum = pgEnum("flag", ["healthy", "watch", "at_risk", "overstocked"]);
 export const pullStatusEnum = pgEnum("pull_status", ["success", "failed", "partial"]);
+export const alertSeverityEnum = pgEnum("alert_severity", ["p0", "p1", "p2", "p3"]);
 
 // --- Raw layer ---
 export const rawPulls = pgTable("raw_pulls", {
@@ -327,3 +329,29 @@ export const skuFamilyOverrides = pgTable("sku_family_overrides", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   updatedBy: text("updated_by").notNull(),
 });
+
+// Slack-fanout alerts. Each row is one "incident": a unique problem
+// identified by `dedupKey` (e.g. "ingest.source.failed:shopify_intl",
+// "freshness:daily_sales:shopify_intl"). While an alert is open
+// (`resolvedAt IS NULL`), repeat fires within the dedup window are
+// suppressed — preventing every cron tick from re-paging the channel
+// about the same stale source. When the underlying check passes again,
+// the open row is marked resolved and a thread reply is posted.
+// `slackMessageTs` is the Slack-returned message timestamp, used to
+// thread the resolve reply onto the original alert.
+export const alertEvents = pgTable("alert_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  dedupKey: text("dedup_key").notNull(),
+  severity: alertSeverityEnum("severity").notNull(),
+  title: text("title").notNull(),
+  payload: jsonb("payload").notNull(),
+  channel: text("channel").notNull(),
+  firedAt: timestamp("fired_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  slackMessageTs: text("slack_message_ts"),
+}, (t) => ({
+  // Fast lookup for dedup check: "is there an open alert with this key?"
+  openByKey: uniqueIndex("alert_events_open_by_key_uq")
+    .on(t.dedupKey)
+    .where(sql`${t.resolvedAt} IS NULL`),
+}));
