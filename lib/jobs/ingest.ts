@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import { dataPulls, rawPulls } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
+import { runSourceWithRetry } from "./ingest-retry";
 
 export type SourceKey =
   | "sheets_inventory"
@@ -32,7 +33,7 @@ export async function runIngest(input: {
     entries.map(async ([source, runner]) => {
       const startedAt = new Date();
       try {
-        const result = await runner(batchId);
+        const result = await runSourceWithRetry({ source, runner, batchId });
         const [raw] = await db
           .insert(rawPulls)
           .values({
