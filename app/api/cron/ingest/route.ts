@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { runAutoReceiptDetection } from "@/lib/jobs/auto-receipt";
+import { detectAndInsertBonusCrossings } from "@/lib/jobs/bonus-crossings";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { runLaunchAutoPopulate } from "@/lib/jobs/launches";
@@ -52,6 +53,11 @@ export async function POST(req: Request) {
   // block downstream metrics.
   const autoLaunches = await runLaunchAutoPopulate();
   const phase2 = await runPhase2({ asOfDate, pullBatchId: batchId });
+  // Bonus crossing detection runs after the FB ads sheet ingest has
+  // landed today's spend rows. New (ad × marketer × tier) crossings
+  // become `pending` rows in bonus_awards for Jasper to triage.
+  // Idempotent — won't double-insert if cron re-runs.
+  const bonusCrossings = await detectAndInsertBonusCrossings({ asOfDate });
   // Freshness sweep runs LAST so its checks see the post-phase2 state of
   // every table. Catches silent emptiness that per-source ingest alerts
   // miss (e.g. May-6 cross-channel skew, partial sheet refreshes).
@@ -80,6 +86,7 @@ export async function POST(req: Request) {
     unitCosts,
     autoReceipts,
     autoLaunches,
+    bonusCrossings,
     ...phase2,
     freshnessFails: freshness.checks.filter((c) => c.status === "fail").length,
     freshnessAlertsFired: freshness.alertsFired,
@@ -93,6 +100,7 @@ export async function POST(req: Request) {
     unitCosts,
     autoReceipts,
     autoLaunches,
+    bonusCrossings,
     phase2,
     freshness,
   });

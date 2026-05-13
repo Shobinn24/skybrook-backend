@@ -52,6 +52,12 @@ export function LeftNav() {
       >
         FB Ads Tracker
       </Link>
+      <Link
+        href="/bonus-tracker"
+        className="block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100"
+      >
+        Bonus Tracker
+      </Link>
       <div className="!mt-4 border-t border-neutral-200 pt-3">
         <div className="mb-1 px-2 text-[11px] uppercase tracking-wide text-neutral-400">
           Admin

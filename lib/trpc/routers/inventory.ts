@@ -16,6 +16,18 @@ import {
   getLaunches,
 } from "@/lib/queries/launches";
 import { getFbAdsRollup } from "@/lib/queries/fb-ads";
+import {
+  getBonusTracker,
+  getNotificationHistory,
+  getPendingApprovals,
+  previewNotification,
+} from "@/lib/queries/bonus-tracker";
+import {
+  approveBonus,
+  bulkApprovePending,
+  rejectBonus,
+  sendNotification,
+} from "@/lib/jobs/bonus-mutations";
 import { getPerformanceRollup } from "@/lib/queries/performance";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getVelocityForRange } from "@/lib/queries/velocity-range";
@@ -463,4 +475,69 @@ export const inventoryRouter = router({
       }
       return getFbAdsRollup({ rangeStart, rangeEnd, marketers: norm });
     }),
+
+  // Lifetime FB ad spend per bonus-eligible marketer. No date filter —
+  // bonus tiers are cumulative. Spec: §Bonus Tracker, Jasper 2026-05-11.
+  // Returns each row with its (T1, T2) bonus_award status so the UI
+  // colors by approval state (Phase B+, Jasper 2026-05-13).
+  getBonusTracker: publicProcedure.query(() => getBonusTracker()),
+
+  // Pending bonuses awaiting Jasper's per-ad approval decision.
+  getPendingBonusApprovals: publicProcedure.query(() => getPendingApprovals()),
+
+  // Approve a single pending award at full or half rate.
+  approveBonus: publicProcedure
+    .input(
+      z.object({
+        awardId: z.string().uuid(),
+        approval: z.enum(["approved_full", "approved_half"]),
+        notes: z.string().max(500).optional(),
+      }),
+    )
+    .mutation(({ input, ctx }) => {
+      const approvedBy = ctx.email ?? "unknown";
+      return approveBonus({ ...input, approvedBy });
+    }),
+
+  // Reject a pending or approved award — won't ship in the notification.
+  rejectBonus: publicProcedure
+    .input(
+      z.object({
+        awardId: z.string().uuid(),
+        notes: z.string().max(500).optional(),
+      }),
+    )
+    .mutation(({ input, ctx }) => {
+      const approvedBy = ctx.email ?? "unknown";
+      return rejectBonus({ ...input, approvedBy });
+    }),
+
+  // One-click triage: flip every still-pending award to approved_full.
+  // Use case = historical backlog on first deploy of the bonus workflow.
+  bulkApprovePending: publicProcedure.mutation(({ ctx }) =>
+    bulkApprovePending({ approvedBy: ctx.email ?? "unknown" }),
+  ),
+
+  // Render the WhatsApp message body + per-marketer totals from every
+  // unsent approved award. Pure read — doesn't mutate anything.
+  previewBonusNotification: publicProcedure
+    .input(z.object({ periodLabel: z.string().max(60).optional() }).optional())
+    .query(({ input }) => previewNotification(input ?? {})),
+
+  // Materialize the notification batch + stamp awards as sent. The
+  // WhatsApp send itself is wired up by the caller when we have a
+  // configured MCP channel; until then the batch is recorded with
+  // `whatsapp_status='failed:...'` so the operator can copy / re-send.
+  sendBonusNotification: publicProcedure
+    .input(z.object({ periodLabel: z.string().max(60).optional() }).optional())
+    .mutation(({ input, ctx }) =>
+      sendNotification({
+        sentBy: ctx.email ?? "unknown",
+        periodLabel: input?.periodLabel,
+      }),
+    ),
+
+  getBonusNotificationHistory: publicProcedure.query(() =>
+    getNotificationHistory(),
+  ),
 });
