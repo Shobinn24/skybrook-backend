@@ -16,6 +16,7 @@ import {
   getLaunches,
 } from "@/lib/queries/launches";
 import { getFbAdsRollup } from "@/lib/queries/fb-ads";
+import { getBonusTracker } from "@/lib/queries/bonus-tracker";
 import { getPerformanceRollup } from "@/lib/queries/performance";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getVelocityForRange } from "@/lib/queries/velocity-range";
@@ -463,4 +464,8 @@ export const inventoryRouter = router({
       }
       return getFbAdsRollup({ rangeStart, rangeEnd, marketers: norm });
     }),
+
+  // Lifetime FB ad spend per bonus-eligible marketer. No date filter —
+  // bonus tiers are cumulative. Spec: §Bonus Tracker, Jasper 2026-05-11.
+  getBonusTracker: publicProcedure.query(() => getBonusTracker()),
 });
