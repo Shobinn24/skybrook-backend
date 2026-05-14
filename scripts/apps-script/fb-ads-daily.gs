@@ -266,3 +266,116 @@ function formatDateCell_(v) {
   }
   return String(v || "").trim();
 }
+
+// =========================================================================
+// ONE-OFF: backfill a missing date from `30D Check` into `2026`.
+//
+// Use when Supermetrics didn't write a given date into `Daily` (e.g. a
+// missed trigger). `30D Check` is a parallel Supermetrics query that
+// always carries the trailing 30 days, so a missed day usually still
+// lives there. Idempotent — re-running the same date overwrites that
+// column on `2026` (any rows present on `2026` but missing from
+// `30D Check` for that date are left unchanged).
+//
+// Run from the Apps Script editor: pick `backfillFromCheck30` in the
+// function dropdown, then either click ▶ after editing the YMD literal
+// in one of the wrappers below, or paste a one-liner into the editor:
+//   backfillFromCheck30("2026-05-11")
+// =========================================================================
+function backfillFromCheck30(ymd) {
+  if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+    throw new Error("backfillFromCheck30: pass YYYY-MM-DD, got: " + ymd);
+  }
+  const ss = SpreadsheetApp.getActive();
+  const check = ss.getSheetByName(SHEET_30D);
+  const main = ss.getSheetByName(SHEET_2026);
+  if (!check) throw new Error("Tab not found: " + SHEET_30D);
+  if (!main) throw new Error("Tab not found: " + SHEET_2026);
+
+  const checkData = check.getDataRange().getValues();
+  const checkHeader = checkData[0];
+
+  // Find the source date column on `30D Check`.
+  let srcCol = -1;
+  for (let c = 2; c < checkHeader.length; c++) {
+    if (formatDateCell_(checkHeader[c]) === ymd) {
+      srcCol = c;
+      break;
+    }
+  }
+  if (srcCol === -1) {
+    throw new Error("Date not found on " + SHEET_30D + ": " + ymd);
+  }
+
+  const mainValues = main.getDataRange().getValues();
+  const mainHeader = mainValues[0];
+
+  // Find or create the destination column on `2026`.
+  let destCol = -1;
+  for (let c = 2; c < mainHeader.length; c++) {
+    if (formatDateCell_(mainHeader[c]) === ymd) {
+      destCol = c;
+      break;
+    }
+  }
+  let appendedNewColumn = false;
+  if (destCol === -1) {
+    destCol = mainHeader.length;
+    main.getRange(1, destCol + 1).setValue(ymd);
+    appendedNewColumn = true;
+  }
+
+  // ad name → row index on `2026`.
+  const adNameToRow = new Map();
+  for (let r = 1; r < mainValues.length; r++) {
+    const name = String(mainValues[r][0] || "").trim();
+    if (name) adNameToRow.set(name, r);
+  }
+
+  const totalRows = mainValues.length;
+  const destColumn = new Array(totalRows);
+  for (let r = 0; r < totalRows; r++) {
+    destColumn[r] = [appendedNewColumn ? "" : (mainValues[r][destCol] ?? "")];
+  }
+  if (appendedNewColumn) destColumn[0] = [ymd];
+
+  let updated = 0;
+  let added = 0;
+  const newRowsToAppend = [];
+  for (let r = 1; r < checkData.length; r++) {
+    const name = String(checkData[r][0] || "").trim();
+    if (!name) continue;
+    const link = String(checkData[r][1] || "").trim();
+    const spendRaw = checkData[r][srcCol];
+    if (spendRaw === "" || spendRaw === null || spendRaw === undefined) continue;
+
+    const rowIdx = adNameToRow.get(name);
+    if (rowIdx === undefined) {
+      const newRow = new Array(Math.max(mainHeader.length, destCol + 1)).fill("");
+      newRow[0] = name;
+      newRow[1] = link;
+      newRow[destCol] = spendRaw;
+      newRowsToAppend.push(newRow);
+      added++;
+    } else {
+      destColumn[rowIdx] = [spendRaw];
+      updated++;
+    }
+  }
+
+  main.getRange(1, destCol + 1, totalRows, 1).setValues(destColumn);
+  if (newRowsToAppend.length > 0) {
+    main
+      .getRange(totalRows + 1, 1, newRowsToAppend.length, newRowsToAppend[0].length)
+      .setValues(newRowsToAppend);
+  }
+
+  Logger.log(
+    "Backfilled " + ymd + " from " + SHEET_30D + ": " +
+    updated + " updated, " + added + " new."
+  );
+  return { ymd, updated, added };
+}
+
+function backfillMay11() { return backfillFromCheck30("2026-05-11"); }
+function backfillMay12() { return backfillFromCheck30("2026-05-12"); }
