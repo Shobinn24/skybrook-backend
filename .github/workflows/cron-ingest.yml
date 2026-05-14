@@ -1,8 +1,8 @@
 name: Daily ingest cron (fallback)
 
 # FALLBACK trigger for the daily ingest. Primary is Railway native cron
-# running scripts/cron_run_ingest.mjs at 14:00 UTC (see scripts/README.md).
-# This workflow runs 1 hour AFTER Railway's scheduled time at 15:00 UTC
+# running scripts/cron_run_ingest.mjs at 09:00 UTC (see scripts/README.md).
+# This workflow runs 1 hour AFTER Railway's scheduled time at 10:00 UTC
 # and skips work if Railway already succeeded.
 #
 # Why fallback: 2026-05-05 GH Actions failed to acquire a hosted runner
@@ -22,7 +22,7 @@ name: Daily ingest cron (fallback)
 
 on:
   schedule:
-    - cron: "0 15 * * *"
+    - cron: "0 10 * * *"
   workflow_dispatch:
 
 jobs:
@@ -52,8 +52,10 @@ jobs:
           fi
           # velocity[].as_of_date is set by Phase 2 derive inside the cron.
           # If it equals today UTC, the cron successfully completed today.
-          # Phase 2 uses ET timezone for as_of_date; at 15:00 UTC, today ET
-          # equals today UTC, so the comparison is straightforward.
+          # Phase 2 uses ET timezone for as_of_date; at 10:00 UTC (= 6am ET
+          # in summer / 5am ET in winter), today ET equals today UTC because
+          # UTC has already rolled past midnight by ET dawn — so the
+          # comparison is straightforward.
           today_utc=$(date -u +%Y-%m-%d)
           max_velocity_date=$(jq -r '[.velocity[].as_of_date] | max // ""' "$response" 2>/dev/null || echo "")
           echo "Max velocity as_of_date: '$max_velocity_date' | today UTC: $today_utc"

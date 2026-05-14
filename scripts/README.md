@@ -15,7 +15,7 @@ Smoke checks and one-off setup that operators are expected to share:
 
 ## Daily ingest cron architecture
 
-**Primary trigger: Railway native cron** (added 2026-05-05). A separate Railway service named `skybrook-cron` is linked to this same repo, with cron schedule `0 14 * * *` and start command `node scripts/cron_run_ingest.mjs`. The cron service deploys, runs the script, exits. Doesn't affect the main `skybrook-backend` web service.
+**Primary trigger: Railway native cron** (added 2026-05-05). A separate Railway service named `skybrook-cron` is linked to this same repo, with cron schedule `0 9 * * *` and start command `node scripts/cron_run_ingest.mjs`. The cron service deploys, runs the script, exits. Doesn't affect the main `skybrook-backend` web service.
 
 **Why this over GH Actions:** Railway native cron eliminates the runner-allocation failure mode. On 2026-05-05 GH Actions failed to acquire a hosted runner for 15 min and gave up, missing that day's ingest. Railway runs in our service container — no external runner needed.
 
@@ -24,19 +24,19 @@ Smoke checks and one-off setup that operators are expected to share:
 **Setup steps** (Railway dashboard, one-time):
 1. In Railway project "Skybrook Backend", click `+ Create` → `Empty Service`. Name it `skybrook-cron`.
 2. Settings → Source → connect to the same GitHub repo (`skybrook-backend`).
-3. Settings → Deploy → Cron Schedule → `0 14 * * *`
+3. Settings → Deploy → Cron Schedule → `0 9 * * *`
 4. Settings → Deploy → Start Command → `node scripts/cron_run_ingest.mjs`
 5. Settings → Networking → disable public networking (cron has no inbound traffic).
 6. Variables → reference shared `CRON_SECRET` from the main service.
 7. Variables → set `APP_URL=https://skybrook-backend-production.up.railway.app` (or the canonical URL).
 
-After setup, manually trigger once to verify; thereafter it runs daily at 14:00 UTC.
+After setup, manually trigger once to verify; thereafter it runs daily at 09:00 UTC (= 5am EDT / 4am EST). Schedule was moved from 14:00 UTC on 2026-05-14 after Scott shifted the upstream Supermetrics refresh from 8am GMT-3 to 4am Asuncion (= 3am EDT / 7am UTC) — see SESSION_HANDOFF Paraguay DST note.
 
 **Monitoring: healthchecks.io** (added 2026-05-05). `cron_run_ingest.mjs` pings a healthchecks.io check on start (`/start`), success (base URL), and failure (`/fail`). If healthchecks.io doesn't see a success ping within the configured period + grace window, it sends an alert via the configured channel (email/Slack/etc.). This catches both runner failures (Railway can't acquire compute) AND silent failures (script runs but never pings, e.g., infinite hang).
 
 **Healthchecks.io setup** (one-time):
 1. Sign up at https://healthchecks.io (free tier covers this — 20 checks).
-2. Create a new check: name `skybrook-daily-ingest`, period 1 day, grace time 1 hour. Pick "Cron" schedule type and use `0 14 * * *` if you want exact-time matching.
+2. Create a new check: name `skybrook-daily-ingest`, period 1 day, grace time 1 hour. Pick "Cron" schedule type and use `0 9 * * *` if you want exact-time matching.
 3. Copy the ping URL (looks like `https://hc-ping.com/<uuid>`).
 4. Configure an alert channel (email is simplest; Slack/Discord also supported).
 5. In Railway → `skybrook-cron` service → Variables → add `HEALTHCHECKS_URL` = the ping URL from step 3.

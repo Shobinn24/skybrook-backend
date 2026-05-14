@@ -660,8 +660,11 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
 
 // ============================================================================
 // Ad spend (Supermetrics FB sheet) — one tab per product, two columns
-// (Date, Cost). Refreshed by Supermetrics at 4am LA time daily; we
-// re-pull at the regular 14:00 UTC cron run.
+// (Date, Cost). Refreshed by Supermetrics at 4am Asuncion time daily
+// (= 3am EDT / 7am UTC); we re-pull at the regular 09:00 UTC cron run,
+// giving Supermetrics a 2h completion buffer. Schedule updated
+// 2026-05-14 — see SESSION_HANDOFF and scripts/README for the
+// rationale + Paraguay DST gotcha.
 //
 // Tab list is intentionally hardcoded so a typo / renamed tab fails
 // loud instead of silently dropping a product. Update here when Scott

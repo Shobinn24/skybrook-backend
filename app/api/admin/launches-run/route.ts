@@ -1,6 +1,6 @@
 // One-shot trigger for runLaunchAutoPopulate. Lets us run the
 // detection + cleanup logic immediately after a code change without
-// waiting for the next cron tick (14:00 UTC daily). Idempotent —
+// waiting for the next cron tick (09:00 UTC daily). Idempotent —
 // re-running won't duplicate launches because (productName,
 // shipmentName) is unique-indexed.
 //
