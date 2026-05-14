@@ -118,6 +118,9 @@ export default function InventoryPage() {
   });
   const yesterday = useMemo(() => yesterdayEstYmd(), []);
 
+  // Range used by the on-demand getVelocityForRange query. Null when the
+  // default 7d is active so we use the pre-computed velocityPerDay7d on
+  // each row instead of refetching.
   const resolvedRange = useMemo(() => {
     if (velocitySel.kind === "default") return null;
     if (velocitySel.kind === "preset") {
@@ -131,6 +134,19 @@ export default function InventoryPage() {
       rangeEnd: velocitySel.rangeEnd,
     };
   }, [velocitySel, yesterday]);
+
+  // Range shown in the From/To inputs. Always non-null so the inputs
+  // reflect the currently-active preset (including default 7d) — the
+  // previous behavior of falling back to a 30d window when default was
+  // active was a UX bug surfaced by Jasper 2026-05-14.
+  const displayRange = useMemo(() => {
+    if (resolvedRange) return resolvedRange;
+    // default 7d
+    return {
+      rangeStart: addDaysYmd(yesterday, -6),
+      rangeEnd: yesterday,
+    };
+  }, [resolvedRange, yesterday]);
 
   const usVelQuery = trpc.inventory.getVelocityForRange.useQuery(
     {
@@ -362,6 +378,24 @@ export default function InventoryPage() {
                 </button>
               );
             })}
+            <button
+              type="button"
+              onClick={() =>
+                setVelocitySel({
+                  kind: "custom",
+                  rangeStart: displayRange.rangeStart,
+                  rangeEnd: displayRange.rangeEnd,
+                })
+              }
+              className={
+                "px-3 py-1.5 font-medium border-l border-neutral-300 " +
+                (velocitySel.kind === "custom"
+                  ? "bg-neutral-900 text-white"
+                  : "text-neutral-700 hover:bg-neutral-100")
+              }
+            >
+              Custom
+            </button>
           </div>
           <div className="flex items-center gap-2">
             <label htmlFor="vel-start" className="text-neutral-600">
@@ -370,22 +404,13 @@ export default function InventoryPage() {
             <input
               id="vel-start"
               type="date"
-              value={
-                velocitySel.kind === "custom"
-                  ? velocitySel.rangeStart
-                  : resolvedRange?.rangeStart ?? addDaysYmd(yesterday, -29)
-              }
-              max={
-                velocitySel.kind === "custom" ? velocitySel.rangeEnd : yesterday
-              }
+              value={displayRange.rangeStart}
+              max={displayRange.rangeEnd}
               onChange={(e) =>
                 setVelocitySel({
                   kind: "custom",
                   rangeStart: e.target.value,
-                  rangeEnd:
-                    velocitySel.kind === "custom"
-                      ? velocitySel.rangeEnd
-                      : yesterday,
+                  rangeEnd: displayRange.rangeEnd,
                 })
               }
               className="rounded-md border border-neutral-300 bg-white px-2 py-1 focus:outline-none focus:ring-1 focus:ring-neutral-400"
@@ -396,22 +421,13 @@ export default function InventoryPage() {
             <input
               id="vel-end"
               type="date"
-              value={
-                velocitySel.kind === "custom"
-                  ? velocitySel.rangeEnd
-                  : resolvedRange?.rangeEnd ?? yesterday
-              }
+              value={displayRange.rangeEnd}
               max={yesterday}
-              min={
-                velocitySel.kind === "custom" ? velocitySel.rangeStart : undefined
-              }
+              min={displayRange.rangeStart}
               onChange={(e) =>
                 setVelocitySel({
                   kind: "custom",
-                  rangeStart:
-                    velocitySel.kind === "custom"
-                      ? velocitySel.rangeStart
-                      : addDaysYmd(yesterday, -29),
+                  rangeStart: displayRange.rangeStart,
                   rangeEnd: e.target.value,
                 })
               }

@@ -314,7 +314,10 @@ export function ProductRollupTable({
                           {s.futureStock.toLocaleString()}
                         </td>
                         <td className="whitespace-nowrap px-4 py-1.5 text-right tabular-nums text-neutral-500">
-                          {s.velocityPerDay7d !== null ? s.velocityPerDay7d.toFixed(2) : "—"}
+                          {(() => {
+                            const v = rowVelocityDisplay(s);
+                            return v > 0 ? v.toFixed(2) : "—";
+                          })()}
                         </td>
                         <td className="whitespace-nowrap px-4 py-1.5 text-right tabular-nums text-neutral-500">
                           {weeksDisplay(s.weeksOfStock)}
