@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { KpiCard } from "@/components/inventory/KpiCard";
+import { ProductRollupTable } from "@/components/inventory/ProductRollupTable";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
 import { trpc } from "@/lib/trpc/client";
 
@@ -42,15 +43,28 @@ export default function OverstockPage() {
   const { data, isLoading, error } = trpc.inventory.getOverstockView.useQuery();
   const [search, setSearch] = useState("");
   const [location, setLocation] = useState<LocationFilter>("all");
+  // Mirrors /inventory's default — Scott 2026-05-05: "make the default
+  // view 1 row per product (not per sku)". Flat per-SKU view stays one
+  // toggle away. Aggregation semantics for products with mixed flags
+  // are pending Scott input (Phase 2).
+  const [groupByProduct, setGroupByProduct] = useState(true);
   const [sort, setSort] = useState<SortConfig<SortKey>>({
     key: "velocity",
     direction: "desc",
   });
 
-  const filteredRows = useMemo(() => {
+  // Rows after only the location filter. Feeds the rollup view, which
+  // owns its own search + sort internally. Computing it separately
+  // from `filteredRows` lets the rollup ignore the page-level search
+  // (hidden in grouped mode anyway).
+  const locationFilteredRows = useMemo(() => {
     const rows = data?.rows ?? [];
-    const matched = rows.filter((r) => {
-      if (location !== "all" && r.location !== location) return false;
+    if (location === "all") return rows;
+    return rows.filter((r) => r.location === location);
+  }, [data?.rows, location]);
+
+  const filteredRows = useMemo(() => {
+    const matched = locationFilteredRows.filter((r) => {
       if (
         search.trim() &&
         !r.sku.toLowerCase().includes(search.toLowerCase()) &&
@@ -75,7 +89,7 @@ export default function OverstockPage() {
           return (a.stockValueUsd - b.stockValueUsd) * dir;
       }
     });
-  }, [data?.rows, search, location, sort]);
+  }, [locationFilteredRows, search, sort]);
 
   if (isLoading) {
     return <div className="text-sm text-neutral-500">Loading overstock view…</div>;
@@ -144,14 +158,41 @@ export default function OverstockPage() {
             </button>
           ))}
         </div>
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Filter SKU or product…"
-          className="rounded border border-neutral-300 px-2 py-1 text-sm"
-        />
+        <div className="flex items-center gap-3">
+          <label className="inline-flex items-center gap-2 text-xs text-neutral-700">
+            <input
+              type="checkbox"
+              checked={groupByProduct}
+              onChange={(e) => setGroupByProduct(e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            Group by product
+          </label>
+          {!groupByProduct && (
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Filter SKU or product…"
+              className="rounded border border-neutral-300 px-2 py-1 text-sm"
+            />
+          )}
+        </div>
       </div>
 
+      {groupByProduct ? (
+        locationFilteredRows.length === 0 ? (
+          <div className="rounded border border-neutral-200 bg-white px-4 py-8 text-center text-sm text-neutral-500">
+            {summary.count === 0
+              ? "No SKUs are currently flagged as overstocked. The dashboard recomputes flags daily at 10am EST."
+              : "No overstocked SKUs in the selected warehouse."}
+          </div>
+        ) : (
+          <ProductRollupTable
+            warehouse={location === "all" ? "All" : location}
+            rows={locationFilteredRows}
+          />
+        )
+      ) : (
       <div className="rounded border border-neutral-200 bg-white">
         {filteredRows.length === 0 ? (
           <div className="px-4 py-8 text-center text-sm text-neutral-500">
@@ -223,6 +264,7 @@ export default function OverstockPage() {
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
