@@ -28,7 +28,10 @@ import {
   rejectBonus,
   sendNotification,
 } from "@/lib/jobs/bonus-mutations";
-import { getPerformanceRollup } from "@/lib/queries/performance";
+import {
+  getPerformanceRollup,
+  getPerformanceDataFreshness,
+} from "@/lib/queries/performance";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getVelocityForRange } from "@/lib/queries/velocity-range";
 import { getOverstockRows } from "@/lib/queries/overstock";
@@ -379,6 +382,15 @@ export const inventoryRouter = router({
         rangeDays: input.rangeDays,
       });
     }),
+
+  // /performance page — used to default the end-date picker to a date
+  // where both revenue + spend exist, and to drive the "ad spend not
+  // yet ingested for this date" warning banner. Surfaced 2026-05-14
+  // when the page silently showed $X revenue + $0 spend on a day
+  // before Supermetrics had ingested.
+  getPerformanceDataFreshness: publicProcedure.query(() =>
+    getPerformanceDataFreshness(),
+  ),
 
   // /launches page — returns all launch rows with derived ETA Ant/PD.
   getLaunches: publicProcedure.query(() => getLaunches()),

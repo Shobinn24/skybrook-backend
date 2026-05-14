@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc/client";
 
 const RANGE_OPTIONS = [
@@ -40,6 +40,14 @@ function fmtDate(ymd: string): string {
   });
 }
 
+// Pick the lower of two YYYY-MM-DD strings (lexicographic compare on
+// ISO date strings = correct chronological order). Returns the first
+// non-null when one side is null, or null when both are null.
+function minDate(a: string | null, b: string | null): string | null {
+  if (a && b) return a < b ? a : b;
+  return a ?? b;
+}
+
 // Yesterday in EST as YYYY-MM-DD. Today's data is still accumulating,
 // so the picker max + initial value is yesterday.
 function yesterdayEstYmd(): string {
@@ -56,11 +64,38 @@ function yesterdayEstYmd(): string {
 
 export default function PerformancePage() {
   const [rangeDays, setRangeDays] = useState<RangeDays>(1);
-  const [endDate, setEndDate] = useState<string>(() => yesterdayEstYmd());
+  const [endDate, setEndDate] = useState<string>("");
   const yesterday = yesterdayEstYmd();
+
+  // Fetch the latest revenue + spend dates so we can default the
+  // end-date picker to a day where BOTH have data. Previously the
+  // page defaulted to "yesterday" and silently showed $X revenue
+  // with $0 spend on mornings before the Supermetrics ingest had
+  // run for that day — confusing operators into thinking the page
+  // was broken. Jasper 2026-05-14.
+  const freshness = trpc.inventory.getPerformanceDataFreshness.useQuery(
+    undefined,
+    { refetchOnWindowFocus: false },
+  );
+  const safeDefault = freshness.data
+    ? minDate(
+        freshness.data.revenueMaxDate,
+        freshness.data.adSpendMaxDate,
+      ) ?? yesterday
+    : null;
+
+  useEffect(() => {
+    if (endDate) return;
+    if (safeDefault) setEndDate(safeDefault);
+  }, [endDate, safeDefault]);
+
+  const adSpendMaxDate = freshness.data?.adSpendMaxDate ?? null;
+  const spendStaleForEndDate =
+    !!adSpendMaxDate && !!endDate && endDate > adSpendMaxDate;
+
   const { data, isLoading, error } = trpc.inventory.getPerformance.useQuery(
     { rangeDays, endDate },
-    { refetchOnWindowFocus: false },
+    { refetchOnWindowFocus: false, enabled: !!endDate },
   );
 
   const rows = data?.rows ?? [];
@@ -89,9 +124,9 @@ export default function PerformancePage() {
               onChange={(e) => setEndDate(e.target.value || yesterday)}
               className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm text-neutral-700 focus:outline-none focus:ring-1 focus:ring-neutral-400"
             />
-            {endDate !== yesterday && (
+            {safeDefault && endDate !== safeDefault && (
               <button
-                onClick={() => setEndDate(yesterday)}
+                onClick={() => setEndDate(safeDefault)}
                 className="text-xs text-neutral-500 hover:text-neutral-900 underline"
               >
                 Reset
@@ -125,11 +160,29 @@ export default function PerformancePage() {
         <div className="text-sm text-neutral-500">Loading…</div>
       ) : (
         <>
+          {spendStaleForEndDate && adSpendMaxDate && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <strong>
+                Ad spend not yet ingested for {fmtDate(endDate)}.
+              </strong>{" "}
+              Latest available is {fmtDate(adSpendMaxDate)}. Revenue is
+              accurate but spend / ROAS will show $0 / — for any day past
+              that. Supermetrics refreshes at 3am EDT; the Skybrook
+              ingest cron picks it up at 5am EDT.{" "}
+              <button
+                onClick={() => setEndDate(adSpendMaxDate)}
+                className="underline hover:no-underline"
+              >
+                Switch to {fmtDate(adSpendMaxDate)}
+              </button>
+              .
+            </div>
+          )}
           {data?.warnEmpty && (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
               Most products have $0 spend or revenue in this range. Either the
-              ad spend sheet hasn&apos;t refreshed yet today (it runs at 4am LA
-              time) or the product mapping needs review. The 14:00 UTC ingest
+              ad spend sheet hasn&apos;t refreshed yet today (it runs at 3am
+              EDT) or the product mapping needs review. The 09:00 UTC ingest
               cron picks up new spend daily.
             </div>
           )}
@@ -186,8 +239,9 @@ export default function PerformancePage() {
 
           <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
             <strong>Notes:</strong> Spend ingested daily from the
-            Supermetrics sheet (refreshes 4am LA, our cron pulls at
-            14:00 UTC). Each product rolls Facebook + AppLovin spend
+            Supermetrics sheet (refreshes 4am Asuncion = 3am EDT, our
+            cron pulls at 09:00 UTC). Each product rolls Facebook +
+            AppLovin spend
             into one combined ROAS. Revenue summed from{" "}
             <code>daily_sales</code> across all Shopify channels.
             Product mapping: <code>Mens%</code> → Men&apos;s,{" "}

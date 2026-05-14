@@ -174,3 +174,32 @@ export async function getPerformanceRollup(opts: {
     warnEmpty,
   };
 }
+
+/** Returns the most-recent date present in each of the two tables that
+ * back /performance. The page uses these to (a) default the end-date
+ * picker to a date where both revenue AND spend data exist, and (b)
+ * warn the operator when they manually pick an end date past which
+ * ad spend hasn't been ingested yet (otherwise the page silently
+ * shows $X revenue + $0 spend = infinite ROAS — see Jasper 2026-05-14).
+ *
+ * Cheap query — two max() scans, no joins.
+ */
+export type PerformanceDataFreshness = {
+  /** Latest day with revenue data across any Shopify channel. */
+  revenueMaxDate: string | null;
+  /** Latest day with ad-spend data from Supermetrics. */
+  adSpendMaxDate: string | null;
+};
+
+export async function getPerformanceDataFreshness(): Promise<PerformanceDataFreshness> {
+  const [revRow] = await db
+    .select({ max: sql<string | null>`max(${dailySales.salesDate})` })
+    .from(dailySales);
+  const [spRow] = await db
+    .select({ max: sql<string | null>`max(${adSpendDaily.spendDate})` })
+    .from(adSpendDaily);
+  return {
+    revenueMaxDate: revRow?.max ?? null,
+    adSpendMaxDate: spRow?.max ?? null,
+  };
+}
