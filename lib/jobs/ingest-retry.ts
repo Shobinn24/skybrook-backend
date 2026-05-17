@@ -9,12 +9,16 @@ import { logger } from "@/lib/logger";
 // the day until manual re-trigger.
 const RETRY_DELAYS_MS: ReadonlyArray<number> = [15_000, 30_000];
 
-// Match upstream 5xx (anywhere in the message), plus the common
-// node/undici network failure signatures. We deliberately do NOT retry
-// on 4xx (auth, rate-limit-without-Retry-After, malformed query) —
-// those won't fix themselves and retrying just delays the surfaced
-// error.
-const TRANSIENT_HTTP_PATTERN = /\bHTTP 5\d\d\b/;
+// Match upstream 5xx (anywhere in the message), plus 401/403 from Shopify
+// (their Cloudflare-fronted edge has briefly returned 401 "Invalid API key
+// or access token" on tokens it had just legitimately minted — see
+// 2026-05-17 09:03 UTC incident where both shopify_us + shopify_intl
+// 401'd simultaneously on freshly-issued tokens, then succeeded on the
+// next call ~12h later with no credential change), plus the common
+// node/undici network failure signatures. We still do NOT retry on
+// 404 (resource-shape problem) or 429 (rate limit — needs Retry-After
+// honoring, not blind 15s retry) — those don't fix themselves.
+const TRANSIENT_HTTP_PATTERN = /\bHTTP (?:5\d\d|401|403)\b/;
 const TRANSIENT_NETWORK_PATTERNS: ReadonlyArray<RegExp> = [
   /ECONNRESET/,
   /ETIMEDOUT/,

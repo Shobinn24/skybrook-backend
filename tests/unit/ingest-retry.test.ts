@@ -34,9 +34,19 @@ describe("isTransientSourceError", () => {
     expect(isTransientSourceError(new Error("Network error: read timeout"))).toBe(true);
   });
 
-  it("does NOT treat 4xx as transient — those won't fix themselves on retry", () => {
-    expect(isTransientSourceError(new Error("HTTP 401 Unauthorized"))).toBe(false);
-    expect(isTransientSourceError(new Error("HTTP 403 Forbidden"))).toBe(false);
+  it("treats Shopify HTTP 401/403 as transient (edge auth blips — see 2026-05-17 incident)", () => {
+    expect(
+      isTransientSourceError(
+        new Error(
+          'shopify everdries-international.myshopify.com: HTTP 401 {"errors":"[API] Invalid API key or access token (unrecognized login or wrong password)"}',
+        ),
+      ),
+    ).toBe(true);
+    expect(isTransientSourceError(new Error("HTTP 401 Unauthorized"))).toBe(true);
+    expect(isTransientSourceError(new Error("HTTP 403 Forbidden"))).toBe(true);
+  });
+
+  it("does NOT treat 404 or 429 as transient — those don't fix themselves on blind retry", () => {
     expect(isTransientSourceError(new Error("HTTP 404 Not Found"))).toBe(false);
     expect(isTransientSourceError(new Error("HTTP 429 Too Many Requests"))).toBe(false);
   });
@@ -114,7 +124,7 @@ describe("runSourceWithRetry", () => {
   it("fails fast on non-transient errors — no retry, no sleep", async () => {
     const runner: SourceRunner = vi
       .fn()
-      .mockRejectedValue(new Error("shopify intl: HTTP 401 Unauthorized"));
+      .mockRejectedValue(new Error("shopify intl: HTTP 422 Unprocessable Entity"));
     const sleep = vi.fn().mockResolvedValue(undefined);
     await expect(
       runSourceWithRetry({
@@ -124,9 +134,31 @@ describe("runSourceWithRetry", () => {
         delaysMs: [10, 20],
         sleep,
       }),
-    ).rejects.toThrow(/HTTP 401/);
+    ).rejects.toThrow(/HTTP 422/);
     expect(runner).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("recovers a Shopify HTTP 401 (edge auth blip) on second attempt", async () => {
+    const runner: SourceRunner = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          'shopify everdries-international.myshopify.com: HTTP 401 {"errors":"[API] Invalid API key or access token (unrecognized login or wrong password)"}',
+        ),
+      )
+      .mockResolvedValueOnce(FAKE_RESULT);
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const result = await runSourceWithRetry({
+      source: "shopify_intl",
+      runner,
+      batchId: "batch-1",
+      delaysMs: [10, 20],
+      sleep,
+    });
+    expect(result).toBe(FAKE_RESULT);
+    expect(runner).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(10);
   });
 
   it("recovers a sheets source from a transient network error", async () => {
