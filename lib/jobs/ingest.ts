@@ -23,11 +23,28 @@ export type SourceRunResult = {
 
 export type SourceRunner = (batchId: string) => Promise<SourceRunResult>;
 
+export type RunIngestResult = {
+  batchId: string;
+  // Counts of Slack alert side-effects fired during this batch. Captured
+  // so the cron summary log can show whether the alert path actually
+  // worked — without these the only way to verify a fire is to query
+  // alert_events directly (cost real diagnosis time on 2026-05-17 incident).
+  alertsFired: number;
+  alertsResolved: number;
+};
+
 export async function runIngest(input: {
   sources: Partial<Record<SourceKey, SourceRunner>>;
-}): Promise<string> {
+}): Promise<RunIngestResult> {
   const batchId = randomUUID();
   logger.info("ingest.start", { batchId });
+
+  // Track Slack alert side-effects so they show up in cron.ingest.done.
+  // Push every postAlert/resolveAlert promise here; we Promise.allSettled
+  // them after the source loop so per-source paths stay fire-and-forget
+  // (a slow Slack post never delays the source itself) but we still
+  // arrive at a deterministic count by the time runIngest returns.
+  const alertPromises: Promise<{ kind: "fired" | "resolved" | "noop" }>[] = [];
 
   const entries = Object.entries(input.sources) as [SourceKey, SourceRunner][];
   await Promise.allSettled(
@@ -60,12 +77,17 @@ export async function runIngest(input: {
         // is now stale — close it and post a "resolved" follow-up. No-op
         // when nothing was open. Fire-and-forget: the recovery path must
         // never become flakier than the failure path.
-        void resolveAlert(`ingest.source.failed:${source}`).catch((e) => {
-          logger.warn("alert.resolve.threw", {
-            source,
-            error: e instanceof Error ? e.message : String(e),
-          });
-        });
+        alertPromises.push(
+          resolveAlert(`ingest.source.failed:${source}`)
+            .then((r) => ({ kind: r.resolved > 0 ? ("resolved" as const) : ("noop" as const) }))
+            .catch((e) => {
+              logger.warn("alert.resolve.threw", {
+                source,
+                error: e instanceof Error ? e.message : String(e),
+              });
+              return { kind: "noop" as const };
+            }),
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await db.insert(dataPulls).values({
@@ -80,21 +102,39 @@ export async function runIngest(input: {
         // Fire-and-forget Slack alert. Dedup key per source prevents
         // every cron tick re-paging the channel about the same broken
         // ingest. Auto-resolves when the source next succeeds.
-        void postAlert({
-          severity: "p1",
-          title: `${source} ingest failed`,
-          dedupKey: `ingest.source.failed:${source}`,
-          fields: { source, batchId, error: message.slice(0, 500) },
-        }).catch((e) => {
-          logger.warn("alert.post.threw", {
-            source,
-            error: e instanceof Error ? e.message : String(e),
-          });
-        });
+        alertPromises.push(
+          postAlert({
+            severity: "p1",
+            title: `${source} ingest failed`,
+            dedupKey: `ingest.source.failed:${source}`,
+            fields: { source, batchId, error: message.slice(0, 500) },
+          })
+            .then((r) => ({ kind: r.fired ? ("fired" as const) : ("noop" as const) }))
+            .catch((e) => {
+              logger.warn("alert.post.threw", {
+                source,
+                error: e instanceof Error ? e.message : String(e),
+              });
+              return { kind: "noop" as const };
+            }),
+        );
       }
     })
   );
 
   logger.info("ingest.end", { batchId });
-  return batchId;
+
+  // Settle every alert side-effect so the cron summary line shows
+  // accurate counts. Per-call postToWebhook already has a 5s timeout
+  // (slack.ts), so the worst case here is bounded.
+  const settled = await Promise.allSettled(alertPromises);
+  let alertsFired = 0;
+  let alertsResolved = 0;
+  for (const s of settled) {
+    if (s.status !== "fulfilled") continue;
+    if (s.value.kind === "fired") alertsFired++;
+    else if (s.value.kind === "resolved") alertsResolved++;
+  }
+
+  return { batchId, alertsFired, alertsResolved };
 }

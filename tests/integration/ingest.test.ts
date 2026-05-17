@@ -32,12 +32,14 @@ describe("runIngest orchestrator", () => {
   });
 
   it("logs a success data_pulls row for a successful source", async () => {
-    const batch = await runIngest({ sources: { sheets_inventory: successRunner } });
+    const result = await runIngest({ sources: { sheets_inventory: successRunner } });
     const rows = await db.select().from(dataPulls);
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe("success");
     expect(rows[0].rowCount).toBe(3);
-    expect(rows[0].pullBatchId).toBe(batch);
+    expect(rows[0].pullBatchId).toBe(result.batchId);
+    expect(result.alertsFired).toBe(0);
+    expect(result.alertsResolved).toBe(0);
   });
 
   it("logs a failed data_pulls row with error message when source throws", async () => {
@@ -64,23 +66,31 @@ describe("runIngest orchestrator", () => {
   });
 
   it("fires postAlert when a source fails and resolves it on next success", async () => {
-    const postSpy = vi.spyOn(slackModule, "postAlert");
-    const resolveSpy = vi.spyOn(slackModule, "resolveAlert");
+    // Mock the slack module so we can assert behavior without depending
+    // on webhook env vars (which tests/setup.ts deliberately clobbers
+    // per [[feedback_test_isolation_external_services]]) and so the
+    // returned counts reflect the simulated fire/resolve outcomes.
+    const postSpy = vi
+      .spyOn(slackModule, "postAlert")
+      .mockResolvedValue({ fired: true, alertId: "fake-alert-id" });
+    const resolveSpy = vi
+      .spyOn(slackModule, "resolveAlert")
+      .mockResolvedValue({ resolved: 1 });
 
-    await runIngest({ sources: { shopify_intl: failingRunner } });
-    // Fire-and-forget — wait one microtask + macrotask cycle for the
-    // postAlert promise to be invoked.
-    await new Promise((r) => setTimeout(r, 0));
+    const failResult = await runIngest({ sources: { shopify_intl: failingRunner } });
 
     expect(postSpy).toHaveBeenCalledTimes(1);
     expect(postSpy.mock.calls[0][0]).toMatchObject({
       severity: "p1",
       dedupKey: "ingest.source.failed:shopify_intl",
     });
+    expect(failResult.alertsFired).toBe(1);
+    expect(failResult.alertsResolved).toBe(0);
 
-    await runIngest({ sources: { shopify_intl: successRunner } });
-    await new Promise((r) => setTimeout(r, 0));
+    const recoverResult = await runIngest({ sources: { shopify_intl: successRunner } });
 
     expect(resolveSpy).toHaveBeenCalledWith("ingest.source.failed:shopify_intl");
+    expect(recoverResult.alertsFired).toBe(0);
+    expect(recoverResult.alertsResolved).toBe(1);
   });
 });

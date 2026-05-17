@@ -41,7 +41,8 @@ export async function POST(req: Request) {
   }
 
   const asOfDate = toEstDate(new Date());
-  const batchId = await runIngest({ sources: SOURCES });
+  const ingest = await runIngest({ sources: SOURCES });
+  const batchId = ingest.batchId;
   const productNames = await syncProductNames();
   const unitCosts = await syncUnitCosts();
   // Auto-receipt detection runs after ingest (today's stock snapshot
@@ -88,6 +89,8 @@ export async function POST(req: Request) {
     autoLaunches,
     bonusCrossings,
     ...phase2,
+    ingestAlertsFired: ingest.alertsFired,
+    ingestAlertsResolved: ingest.alertsResolved,
     freshnessFails: freshness.checks.filter((c) => c.status === "fail").length,
     freshnessAlertsFired: freshness.alertsFired,
     freshnessAlertsResolved: freshness.alertsResolved,
