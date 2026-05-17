@@ -180,6 +180,55 @@ describe("walkProjection", () => {
     expect(out[0].runOutDate).toBe("2026-05-06");
   });
 
+  it("carries forward runOutDate into subsequent OOS windows (Scott 2026-05-15)", () => {
+    // Stock 50, rate 10/day → runs out at day 5 = 2026-05-06.
+    // Ship1 (Jun 1): 31 days × 10 = 310 sold, stockLeftAtEta = -260,
+    // afterReceipt = -260 + 30 = -230. Subsequent shipments don't
+    // recover. Without carry-forward, future shipment cells would
+    // render "—". With it, the operator keeps seeing the actual
+    // run-out date "2026-05-06" across every OOS column.
+    const out = walkProjection(50, 10, "2026-05-01", [
+      { shipmentName: "Ship1", eta: "2026-06-01", quantity: 30 },
+      { shipmentName: "Ship2", eta: "2026-07-01", quantity: 50 },
+      { shipmentName: "Ship3", eta: "2026-08-01", quantity: 50 },
+    ]);
+    expect(out[0].runOutDate).toBe("2026-05-06");
+    expect(out[0].afterReceiptStock).toBe(-230);
+    expect(out[1].stockLeftAtEta).toBeLessThan(0);
+    expect(out[1].runOutDate).toBe("2026-05-06"); // carried forward
+    expect(out[2].stockLeftAtEta).toBeLessThan(0);
+    expect(out[2].runOutDate).toBe("2026-05-06"); // still carried
+  });
+
+  it("recovery (stock > 0 at next pivot) replaces the anchor with a fresh compute", () => {
+    // Stock 10, rate 1/day → runs out 2026-05-11.
+    // Ship1 (Jun 1): 31d × 1 = 31 sold, stockLeftAtEta = -21,
+    // afterReceipt = -21 + 100 = 79. Pivot advances to 2026-06-01.
+    // Ship2 (Jul 1) starts with stock 79 (recovery). Fresh compute
+    // from new pivot: 79 / 1 = 79 days from 2026-06-01 = 2026-08-19.
+    // Notably NOT "2026-05-11" — the recovery cleared the anchor.
+    const out = walkProjection(10, 1, "2026-05-01", [
+      { shipmentName: "Ship1", eta: "2026-06-01", quantity: 100 },
+      { shipmentName: "Ship2", eta: "2026-07-01", quantity: 0 },
+    ]);
+    expect(out[0].runOutDate).toBe("2026-05-11");
+    expect(out[0].afterReceiptStock).toBe(79);
+    expect(out[1].stockLeftAtEta).toBe(49);
+    expect(out[1].runOutDate).toBe("2026-08-19");
+  });
+
+  it("no anchor to carry when SKU was already OOS at today (currentStock = 0)", () => {
+    // Stock 0, rate 1/day, never recovers (small shipments still leave
+    // afterReceipt negative). Ship1 carries 0 → no anchor was ever set,
+    // so subsequent OOS rows show "—" (null), not a stale phantom date.
+    const out = walkProjection(0, 1, "2026-05-01", [
+      { shipmentName: "Ship1", eta: "2026-06-01", quantity: 5 },
+      { shipmentName: "Ship2", eta: "2026-07-01", quantity: 5 },
+    ]);
+    expect(out[0].runOutDate).toBeNull();
+    expect(out[1].runOutDate).toBeNull();
+  });
+
   it("two overdue shipments: pivot doesn't rewind, no phantom sales between them", () => {
     // Today = 2026-05-10. Both shipments have ETAs in the past.
     // The fix: pivot stays at "today" across past ETAs so we don't

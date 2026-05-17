@@ -77,6 +77,16 @@ export function walkProjection(
   const out: ProjectionRow[] = [];
   let pivotDays = ymdToDays(today);
   let stock = currentStock;
+  // Anchor that carries the most recent computed run-out date forward
+  // into subsequent shipment windows where the SKU starts already OOS
+  // (stock <= 0 at the pivot). Scott 2026-05-15: if a SKU runs out
+  // before shipment 1 and stays OOS, future shipment cells should keep
+  // showing the same run-out date rather than recomputing a fresh
+  // (often nonsensical) date or rendering "—". Anchor is replaced
+  // whenever a fresh date is computed (i.e. the SKU recovered and
+  // entered a window with stock > 0), preserving the "compute fresh on
+  // recovery" property.
+  let lastRunOutDate: string | null = null;
   const useMultiplier = !!options?.multiplierAt;
   const multiplierAt = options?.multiplierAt;
 
@@ -132,6 +142,15 @@ export function walkProjection(
         const daysToZero = Math.ceil(stock / dailyRate);
         runOutDate = daysToYmd(pivotDays + daysToZero);
       }
+      // Fresh compute — replace the anchor (including with null when
+      // stock holds through the horizon). Acts as the "recovery clears"
+      // path for the carry-forward rule.
+      lastRunOutDate = runOutDate;
+    } else if (dailyRate > 0 && stock <= 0) {
+      // Already OOS at start of this window — carry forward the most
+      // recent anchor instead of rendering "—" (null when no prior
+      // window ever set one, e.g. SKU was OOS at `today`).
+      runOutDate = lastRunOutDate;
     }
     const afterReceiptStock = stockLeftAtEta + ship.quantity;
 
