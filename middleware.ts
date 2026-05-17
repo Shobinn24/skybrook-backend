@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
+import {
+  SESSION_COOKIE,
+  getUserRole,
+  isMarketingAllowedPath,
+  MARKETING_LANDING_PATH,
+  verifySessionToken,
+} from "@/lib/auth";
 
 const PUBLIC_PATHS = [
   "/login",
@@ -37,7 +43,19 @@ export async function middleware(req: NextRequest) {
   }
 
   const token = req.cookies.get(SESSION_COOKIE)?.value;
-  if (token && (await verifySessionToken(secret, token))) {
+  const session = token ? await verifySessionToken(secret, token) : null;
+  if (session) {
+    // Role-based scoping (Scott 2026-05-15): marketing users only see
+    // /launches, /fb-ads, /bonus-tracker, /performance. Any other page
+    // path silently redirects to MARKETING_LANDING_PATH. tRPC routes
+    // stay open to marketing in Phase 1 — see isMarketingAllowedPath.
+    const role = getUserRole(session.email);
+    if (role === "marketing" && !isMarketingAllowedPath(pathname)) {
+      const url = req.nextUrl.clone();
+      url.pathname = MARKETING_LANDING_PATH;
+      url.search = "";
+      return NextResponse.redirect(url);
+    }
     return NextResponse.next();
   }
 

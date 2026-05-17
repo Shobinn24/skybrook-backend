@@ -279,3 +279,60 @@ export function parseAllowedEmails(raw: string | undefined): string[] {
     .map((e) => e.trim().toLowerCase())
     .filter((e) => e.length > 0);
 }
+
+// --- Role-based scoping ----------------------------------------------------
+// Scott 2026-05-15: marketing team should see only Launches, Ad spend
+// tracker, Bonus tracker, and Performance — Ops keeps full access.
+//
+// Defensible defaults (Shobinn 2026-05-17): the role is a per-email tag
+// pulled from env at request time, not a DB column. Adding/removing a
+// teammate from the marketing group is a one-line env change, redeploy,
+// done. When the marketing email list grows past ~10 people or anyone
+// needs more than two role categories, promote this to a `users.role`
+// column and an admin UI.
+
+export type Role = "ops" | "marketing";
+
+/** Returns the role for a signed-in email. Marketing membership is
+ * controlled by `SKYBROOK_MARKETING_EMAILS` (comma-separated, normalized
+ * to lowercase). When the env var is empty or unset, no one is in the
+ * marketing group — everyone defaults to `ops` (full access). */
+export function getUserRole(
+  email: string | null | undefined,
+  marketingEmailsRaw?: string,
+): Role {
+  if (!email) return "ops";
+  const raw = marketingEmailsRaw ?? process.env.SKYBROOK_MARKETING_EMAILS;
+  const list = parseAllowedEmails(raw);
+  if (list.length === 0) return "ops";
+  return list.includes(email.toLowerCase()) ? "marketing" : "ops";
+}
+
+// URL prefixes a marketing user is permitted to load. Anything else
+// redirects to MARKETING_LANDING_PATH. tRPC procedure paths
+// (/api/trpc/*) are intentionally NOT narrowed here because every page
+// — marketing and ops — calls into the same `inventory` router; a
+// prefix gate would block legitimate marketing reads too. Phase 2
+// follow-up: per-procedure allowlist in a tRPC middleware, with the
+// router's procedure name as the key (default-deny for marketing).
+const MARKETING_ALLOWED_PREFIXES: ReadonlyArray<string> = [
+  "/launches",
+  "/fb-ads",
+  "/bonus-tracker",
+  "/performance",
+];
+
+export const MARKETING_LANDING_PATH = "/performance";
+
+/** True when a marketing user is allowed to navigate to `pathname`.
+ * Auth/OAuth, the dev-bypass route, the health endpoint, tRPC paths,
+ * and Next internals are all permitted (the middleware separately
+ * handles the public-paths list before reaching this check). */
+export function isMarketingAllowedPath(pathname: string): boolean {
+  for (const prefix of MARKETING_ALLOWED_PREFIXES) {
+    if (pathname === prefix || pathname.startsWith(prefix + "/")) return true;
+  }
+  // tRPC: allow Phase 1; narrow in Phase 2.
+  if (pathname.startsWith("/api/trpc/")) return true;
+  return false;
+}

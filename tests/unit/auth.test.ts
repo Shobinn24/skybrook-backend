@@ -5,6 +5,8 @@ import {
   createOAuthStateToken,
   createSessionToken,
   decodeIdToken,
+  getUserRole,
+  isMarketingAllowedPath,
   parseAllowedEmails,
   verifyOAuthStateToken,
   verifySessionToken,
@@ -256,5 +258,83 @@ describe("appOrigin", () => {
     process.env.APP_URL = "https://skybrook.example.com";
     const redirect = new URL("/inventory", appOrigin(reqOf("http://localhost:8080/api/auth/google/callback?code=x")));
     expect(redirect.toString()).toBe("https://skybrook.example.com/inventory");
+  });
+});
+
+describe("getUserRole (Scott 2026-05-15 marketing scoping)", () => {
+  afterEach(() => {
+    delete process.env.SKYBROOK_MARKETING_EMAILS;
+  });
+
+  it("defaults to ops when SKYBROOK_MARKETING_EMAILS is unset", () => {
+    expect(getUserRole("anyone@everdries.com")).toBe("ops");
+  });
+
+  it("defaults to ops when SKYBROOK_MARKETING_EMAILS is empty", () => {
+    process.env.SKYBROOK_MARKETING_EMAILS = "";
+    expect(getUserRole("anyone@everdries.com")).toBe("ops");
+  });
+
+  it("returns marketing when the email is in the env list (case-insensitive)", () => {
+    process.env.SKYBROOK_MARKETING_EMAILS = "Craig@everdries.com,nate@everdries.com";
+    expect(getUserRole("craig@everdries.com")).toBe("marketing");
+    expect(getUserRole("NATE@everdries.com")).toBe("marketing");
+  });
+
+  it("returns ops when the email is signed in but not on the marketing list", () => {
+    process.env.SKYBROOK_MARKETING_EMAILS = "craig@everdries.com";
+    expect(getUserRole("scott@everdries.com")).toBe("ops");
+  });
+
+  it("treats null / undefined / empty email as ops (no signed-in user yet)", () => {
+    process.env.SKYBROOK_MARKETING_EMAILS = "craig@everdries.com";
+    expect(getUserRole(null)).toBe("ops");
+    expect(getUserRole(undefined)).toBe("ops");
+    expect(getUserRole("")).toBe("ops");
+  });
+
+  it("accepts an explicit override list (bypasses env read)", () => {
+    process.env.SKYBROOK_MARKETING_EMAILS = "scott@everdries.com";
+    // Override should win — scott is ops here because the explicit list
+    // doesn't include him.
+    expect(getUserRole("scott@everdries.com", "craig@everdries.com")).toBe("ops");
+    expect(getUserRole("craig@everdries.com", "craig@everdries.com")).toBe("marketing");
+  });
+});
+
+describe("isMarketingAllowedPath", () => {
+  it("allows the 4 marketing pages and their subpaths", () => {
+    expect(isMarketingAllowedPath("/launches")).toBe(true);
+    expect(isMarketingAllowedPath("/launches/sku/X")).toBe(true);
+    expect(isMarketingAllowedPath("/fb-ads")).toBe(true);
+    expect(isMarketingAllowedPath("/fb-ads/anything")).toBe(true);
+    expect(isMarketingAllowedPath("/bonus-tracker")).toBe(true);
+    expect(isMarketingAllowedPath("/performance")).toBe(true);
+  });
+
+  it("allows all tRPC paths (Phase 1 leaves per-procedure gating to follow-up)", () => {
+    expect(isMarketingAllowedPath("/api/trpc/inventory.getPerformance")).toBe(true);
+    expect(isMarketingAllowedPath("/api/trpc/inventory.getBonusTracker")).toBe(true);
+    // Phase 1 known gap: ops-only procedures aren't blocked at this layer.
+    expect(isMarketingAllowedPath("/api/trpc/inventory.getInventoryRows")).toBe(true);
+  });
+
+  it("blocks ops-only pages", () => {
+    expect(isMarketingAllowedPath("/inventory")).toBe(false);
+    expect(isMarketingAllowedPath("/incoming")).toBe(false);
+    expect(isMarketingAllowedPath("/sustainability")).toBe(false);
+    expect(isMarketingAllowedPath("/overstock")).toBe(false);
+    expect(isMarketingAllowedPath("/stock-value")).toBe(false);
+    expect(isMarketingAllowedPath("/admin/product-names")).toBe(false);
+    expect(isMarketingAllowedPath("/pipeline")).toBe(false);
+    expect(isMarketingAllowedPath("/sku/EV-OG-5X-XS")).toBe(false);
+    expect(isMarketingAllowedPath("/")).toBe(false);
+  });
+
+  it("does not match a similarly-prefixed path (no false positives)", () => {
+    // "/launches-history" must NOT match "/launches" — only exact path or
+    // path + "/" subroutes count.
+    expect(isMarketingAllowedPath("/launches-history")).toBe(false);
+    expect(isMarketingAllowedPath("/performance-old")).toBe(false);
   });
 });
