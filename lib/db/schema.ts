@@ -520,6 +520,11 @@ export const factoryOrderInputs = pgTable("factory_order_inputs", {
   scalingJson: jsonb("scaling_json").notNull().default({}),
   // Per-custom-product manual totals: `{ [productGroup]: 3000 }`
   customQtysJson: jsonb("custom_qtys_json").notNull().default({}),
+  // Per-custom-product US share, 0..1 (e.g., 0.7 = 70% US / 30% INTL).
+  // Defaults to 1.0 (all US) when a group is missing from the map so
+  // existing drafts stay backwards-compatible.
+  // `{ [productGroup]: 0.7 }`
+  customUsShareJson: jsonb("custom_us_share_json").notNull().default({}),
   // Per-SKU Amazon inputs (US only):
   // `{ [sku]: { sales30d, stock, hold } }`
   amazonDataJson: jsonb("amazon_data_json").notNull().default({}),

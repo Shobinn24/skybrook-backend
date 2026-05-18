@@ -84,6 +84,7 @@ describe("factory-order Phase 1 — schema + draft persistence", () => {
       },
       scaling: { Boyshort: 0.9, "9055 Main": 1.0 },
       customQtys: { "FC Super HW": 3000, "Cotton Hipster": 1500 },
+      customUsShare: { "FC Super HW": 0.7, "Cotton Hipster": 1.0 },
       amazonData: {
         "ev-9055-5x-m": { sales30d: 250, stock: 100, hold: 20 },
       },
@@ -105,6 +106,7 @@ describe("factory-order Phase 1 — schema + draft persistence", () => {
     expect(reloaded.inputs.splits).toEqual(payload.splits);
     expect(reloaded.inputs.scaling).toEqual(payload.scaling);
     expect(reloaded.inputs.customQtys).toEqual(payload.customQtys);
+    expect(reloaded.inputs.customUsShare).toEqual(payload.customUsShare);
     expect(reloaded.inputs.amazonData).toEqual(payload.amazonData);
     expect(reloaded.inputs.comments).toEqual(payload.comments);
     expect(reloaded.inputs.orderNotes).toBe(payload.orderNotes);

@@ -36,6 +36,7 @@ const inputsSchema = z.object({
   splits: splitsSchema,
   scaling: z.record(z.string(), z.number()),
   customQtys: z.record(z.string(), z.number().int().min(0)),
+  customUsShare: z.record(z.string(), z.number().min(0).max(1)),
   amazonData: z.record(
     z.string(),
     z.object({

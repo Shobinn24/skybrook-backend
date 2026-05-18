@@ -22,10 +22,10 @@ describe("skuMatchesGroup", () => {
   const ogBlack1x = CALCULATED_GROUPS.find((g) => g.name === "OG Black 1-Pack")!;
 
   it("matches a SKU whose size suffix is in the group's size list", () => {
-    expect(skuMatchesGroup("ev-pp-og-m", og)).toBe(true);
+    expect(skuMatchesGroup("ev-mixed-m", og)).toBe(true);
   });
   it("rejects a SKU whose suffix is not a recognised size", () => {
-    expect(skuMatchesGroup("ev-pp-og-wrong", og)).toBe(false);
+    expect(skuMatchesGroup("ev-mixed-wrong", og)).toBe(false);
   });
   it("rejects a SKU that doesn't start with the prefix", () => {
     expect(skuMatchesGroup("ev-hw-1x-black-m", og)).toBe(false);
@@ -35,7 +35,7 @@ describe("skuMatchesGroup", () => {
     expect(skuMatchesGroup("ev-og-1x-black-m", ogBlack1x)).toBe(true);
   });
   it("is case-insensitive", () => {
-    expect(skuMatchesGroup("EV-PP-OG-M", og)).toBe(true);
+    expect(skuMatchesGroup("EV-MIXED-M", og)).toBe(true);
   });
 });
 
@@ -119,7 +119,7 @@ describe("runCalculation — calculated chain", () => {
     // Single SKU in OG Main, US side only.
     const facts = buildFacts([
       {
-        sku: "ev-pp-og-m",
+        sku: "ev-mixed-m",
         shopifyUs30d: 100,
         shopifyIntl30d: 0,
         pdStock: 200,
@@ -133,7 +133,7 @@ describe("runCalculation — calculated chain", () => {
     const result = runCalculation({
       inputs: inputsWithRevenue(100_000, { us: [200_000, 200_000, 200_000, 200_000], intl: [0, 0, 0] }),
       skuFacts: facts,
-      catalog: ["ev-pp-og-m"],
+      catalog: ["ev-mixed-m"],
     });
 
     // mosNeeded = forecast / revenue = 800k / 100k = 8 months.
@@ -147,7 +147,7 @@ describe("runCalculation — calculated chain", () => {
     expect(ogMainUs?.qtyToOrder).toBe(600);
     expect(result.lines).toHaveLength(1);
     expect(result.lines[0]).toEqual({
-      sku: "ev-pp-og-m",
+      sku: "ev-mixed-m",
       groupName: "OG Main",
       side: "US",
       qty: 600,
@@ -159,7 +159,7 @@ describe("runCalculation — calculated chain", () => {
   it("returns zero qty when FUT MOS already exceeds MOS needed", () => {
     const facts = buildFacts([
       {
-        sku: "ev-pp-og-m",
+        sku: "ev-mixed-m",
         shopifyUs30d: 100,
         shopifyIntl30d: 0,
         pdStock: 1000, // way more than needed
@@ -173,7 +173,7 @@ describe("runCalculation — calculated chain", () => {
     const result = runCalculation({
       inputs: inputsWithRevenue(100_000, { us: [200_000, 200_000, 200_000, 200_000], intl: [0, 0, 0] }),
       skuFacts: facts,
-      catalog: ["ev-pp-og-m"],
+      catalog: ["ev-mixed-m"],
     });
 
     // futureMos = 1500 / 100 = 15 months; mosNeeded = 8 months → no order.
@@ -201,7 +201,7 @@ describe("runCalculation — calculated chain", () => {
         unitCostIntl: 5.9,
       },
       {
-        sku: "ev-pp-og-m",
+        sku: "ev-mixed-m",
         shopifyUs30d: 100,
         shopifyIntl30d: 0,
         pdStock: 0,
@@ -219,7 +219,7 @@ describe("runCalculation — calculated chain", () => {
         { "9055 Main": 0.7, "OG Main": 0.3 },
       ),
       skuFacts: facts,
-      catalog: ["ev-9055-5x-m", "ev-pp-og-m"],
+      catalog: ["ev-9055-5x-m", "ev-mixed-m"],
     });
 
     // Current split for both = 0.5 (each group is half the main-line total).
@@ -363,6 +363,80 @@ describe("runCalculation — custom-input chain", () => {
     expect(hrsLines.every((l) => l.side === "US")).toBe(true);
   });
 
+  it("splits the custom total across US/INTL when customUsShare is set", () => {
+    const facts = new Map<string, SkuFacts>();
+    const sizes = ["xxs", "xs", "s", "m", "l", "xl", "xxl", "3xl", "4xl", "5xl"];
+    const catalog: string[] = [];
+    for (const sz of sizes) {
+      const sku = `ev-hrshort-5x-${sz}`;
+      catalog.push(sku);
+      facts.set(sku, {
+        sku,
+        shopifyUs30d: 0,
+        shopifyIntl30d: 0,
+        pdStock: 0,
+        antStock: 0,
+        incomingUs: 0,
+        incomingIntl: 0,
+        unitCostUs: 9.0,
+        unitCostIntl: 8.0,
+      });
+    }
+    const result = runCalculation({
+      inputs: {
+        ...EMPTY_INPUTS,
+        customQtys: { "High Rise Short": 1000 },
+        customUsShare: { "High Rise Short": 0.7 },
+      },
+      skuFacts: facts,
+      catalog,
+    });
+    const usLines = result.lines.filter(
+      (l) => l.groupName === "High Rise Short" && l.side === "US",
+    );
+    const intlLines = result.lines.filter(
+      (l) => l.groupName === "High Rise Short" && l.side === "INTL",
+    );
+    const usTotal = usLines.reduce((s, l) => s + l.qty, 0);
+    const intlTotal = intlLines.reduce((s, l) => s + l.qty, 0);
+    expect(usTotal).toBe(700);
+    expect(intlTotal).toBe(300);
+    // Both sides should use the configured curve so L gets the
+    // biggest bucket on each.
+    const usL = usLines.find((l) => l.sku === "ev-hrshort-5x-l");
+    const intlL = intlLines.find((l) => l.sku === "ev-hrshort-5x-l");
+    expect(usL?.qty).toBeGreaterThan(0);
+    expect(intlL?.qty).toBeGreaterThan(0);
+  });
+
+  it("defaults to 100% US when customUsShare is missing for the group", () => {
+    const facts = new Map<string, SkuFacts>();
+    facts.set("ev-hrshort-5x-m", {
+      sku: "ev-hrshort-5x-m",
+      shopifyUs30d: 0,
+      shopifyIntl30d: 0,
+      pdStock: 0,
+      antStock: 0,
+      incomingUs: 0,
+      incomingIntl: 0,
+      unitCostUs: 9.0,
+      unitCostIntl: 8.0,
+    });
+    const result = runCalculation({
+      inputs: {
+        ...EMPTY_INPUTS,
+        customQtys: { "High Rise Short": 500 },
+      },
+      skuFacts: facts,
+      catalog: ["ev-hrshort-5x-m"],
+    });
+    expect(
+      result.lines.filter(
+        (l) => l.groupName === "High Rise Short" && l.side === "INTL",
+      ),
+    ).toHaveLength(0);
+  });
+
   it("emits zero lines when the custom total is 0", () => {
     const facts = new Map<string, SkuFacts>();
     const catalog: string[] = ["ev-hrshort-5x-m"];
@@ -396,7 +470,7 @@ describe("runCalculation — totals roll up correctly", () => {
   it("totals.usAmount = sum of US-side line amounts", () => {
     const facts = buildFacts([
       {
-        sku: "ev-pp-og-m",
+        sku: "ev-mixed-m",
         shopifyUs30d: 100,
         shopifyIntl30d: 0,
         pdStock: 0,
@@ -410,7 +484,7 @@ describe("runCalculation — totals roll up correctly", () => {
     const r = runCalculation({
       inputs: inputsWithRevenue(100_000, { us: [200_000, 200_000, 200_000, 200_000], intl: [0, 0, 0] }),
       skuFacts: facts,
-      catalog: ["ev-pp-og-m"],
+      catalog: ["ev-mixed-m"],
     });
     const lineSum = r.lines
       .filter((l) => l.side === "US")

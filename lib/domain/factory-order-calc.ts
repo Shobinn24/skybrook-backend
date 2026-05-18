@@ -313,21 +313,30 @@ export function runCalculation(opts: CalcInputs): CalculationResult {
       const forecastSide = side === "US" ? usForecast : intlForecast;
 
       if (group.kind === "custom") {
-        // Custom: total qty × size distribution. The user enters
-        // ONE total across both sides; we currently allocate the
-        // full custom total to whichever side the user is viewing.
-        // Spec §4.1 implies a US/INTL split ratio — but doesn't
-        // specify a default. Phase 2 emits the full total on the US
-        // side and 0 on INTL; the Phase 3 UI will surface a per-
-        // custom-product side toggle if needed.
+        // Custom: total qty × size distribution per warehouse.
+        // The user enters ONE total across both sides and a US-share
+        // percentage (0–1, missing = 1.0 = all US). We split the
+        // total across warehouses first, then run distribution per
+        // side. Rounding lands on the largest-percentage bucket in
+        // each warehouse independently so both per-side sums equal
+        // their respective allocations exactly.
         const totalQty = inputs.customQtys[group.name] ?? 0;
-        if (totalQty <= 0 || side === "INTL") {
+        const rawShare = inputs.customUsShare[group.name];
+        const usShare =
+          rawShare === undefined || rawShare === null
+            ? 1.0
+            : Math.min(Math.max(rawShare, 0), 1);
+        const sideQty =
+          side === "US"
+            ? Math.round(totalQty * usShare)
+            : Math.round(totalQty * (1 - usShare));
+        if (totalQty <= 0 || sideQty <= 0) {
           summaries.push(emptySummary(group, side));
           continue;
         }
         const curve = SIZE_CURVES[group.curve];
         const allocations = distributeAcrossSizes({
-          totalQty,
+          totalQty: sideQty,
           sizes: group.sizes,
           curve,
         });

@@ -95,8 +95,11 @@ export type CalculatedGroup = {
 };
 
 const TEN_SIZES = ["xxs", "xs", "s", "m", "l", "xl", "xxl", "3xl", "4xl", "5xl"] as const;
+// OG Main uses `xxxl` instead of `3xl` per the actual catalog (the
+// spec's "3xl" notation in §5.1 is the conceptual size, not the
+// literal suffix Shopify uses for the ev-mixed-* line).
+const TEN_SIZES_OG_MAIN = ["xxs", "xs", "s", "m", "l", "xl", "xxl", "xxxl", "4xl", "5xl"] as const;
 const NINE_SIZES_NO_5XL = ["xxs", "xs", "s", "m", "l", "xl", "xxl", "3xl", "4xl"] as const;
-const NINE_SIZES_NO_4XL = ["xxs", "xs", "s", "m", "l", "xl", "xxl", "3xl", "5xl"] as const;
 const EIGHT_SIZES_HIPSTER = ["xxs", "xs", "s", "m", "l", "xl", "xxl", "3xl"] as const;
 const EIGHT_SIZES_HW1X = ["xxs", "xs", "s", "m", "l", "xl", "xxl", "3xl"] as const;
 const MENS_SIZES = ["s", "m", "l", "xl", "xxl", "3xl"] as const;
@@ -111,16 +114,19 @@ export const CALCULATED_GROUPS: ReadonlyArray<CalculatedGroup> = [
     isMainLine: true,
   },
   {
+    // Production catalog uses `ev-mixed-*` for the OG 5-Pack family
+    // (not `ev-pp-og-*` as in the spec text — the spec was conceptual).
     kind: "calculated",
     name: "OG Main",
-    skuPrefix: "ev-pp-og-",
-    sizes: TEN_SIZES,
+    skuPrefix: "ev-mixed-",
+    sizes: TEN_SIZES_OG_MAIN,
     isMainLine: true,
   },
   {
+    // Production uses `ev-hw-*` (no `5x`/`pp` infix).
     kind: "calculated",
     name: "HW Main",
-    skuPrefix: "ev-pp-hw-",
+    skuPrefix: "ev-hw-",
     sizes: NINE_SIZES_NO_5XL,
     isMainLine: true,
   },

@@ -1,0 +1,1 @@
+ALTER TABLE "factory_order_inputs" ADD COLUMN "custom_us_share_json" jsonb DEFAULT '{}'::jsonb NOT NULL;

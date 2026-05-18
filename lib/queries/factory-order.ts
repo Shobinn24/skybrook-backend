@@ -49,6 +49,13 @@ export type ScalingJson = Record<string, number>;
 /** Per-custom-product manual total. */
 export type CustomQtysJson = Record<string, number>;
 
+/**
+ * Per-custom-product US share (0–1). Missing keys default to 1.0
+ * (all US) so existing drafts and freshly-set-to-zero-by-mistake
+ * sliders behave the same way they did pre-toggle.
+ */
+export type CustomUsShareJson = Record<string, number>;
+
 /** Per-SKU Amazon inputs (US-only manual entry). */
 export type AmazonDataJson = Record<
   string,
@@ -74,6 +81,7 @@ export type FactoryOrderInputs = {
   splits: SplitsJson;
   scaling: ScalingJson;
   customQtys: CustomQtysJson;
+  customUsShare: CustomUsShareJson;
   amazonData: AmazonDataJson;
   comments: CommentsJson;
   orderNotes: string | null;
@@ -87,6 +95,7 @@ export const EMPTY_INPUTS: FactoryOrderInputs = {
   splits: { us: {}, intl: {} },
   scaling: {},
   customQtys: {},
+  customUsShare: {},
   amazonData: {},
   comments: {},
   orderNotes: null,
@@ -145,6 +154,7 @@ function rowToInputs(
     splits: { ...EMPTY_INPUTS.splits, ...((row.splitsJson as object) ?? {}) } as SplitsJson,
     scaling: (row.scalingJson as ScalingJson) ?? {},
     customQtys: (row.customQtysJson as CustomQtysJson) ?? {},
+    customUsShare: (row.customUsShareJson as CustomUsShareJson) ?? {},
     amazonData: (row.amazonDataJson as AmazonDataJson) ?? {},
     comments: (row.commentsJson as CommentsJson) ?? {},
     orderNotes: row.orderNotes,
@@ -225,6 +235,7 @@ export async function saveInputs(opts: {
       splitsJson: opts.inputs.splits,
       scalingJson: opts.inputs.scaling,
       customQtysJson: opts.inputs.customQtys,
+      customUsShareJson: opts.inputs.customUsShare,
       amazonDataJson: opts.inputs.amazonData,
       commentsJson: opts.inputs.comments,
       orderNotes: opts.inputs.orderNotes,
