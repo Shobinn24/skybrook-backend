@@ -113,22 +113,23 @@ export default function OverstockPage() {
       <div>
         <h1 className="text-2xl font-semibold text-neutral-900">Overstock</h1>
         <p className="mt-1 text-sm text-neutral-600">
-          SKUs whose current stock significantly exceeds projected demand. Use
-          this view to decide which products to push in marketing emails and
-          ad campaigns. Sorted by stock value — highest dollar-leverage first.
+          Products whose combined stock (across all SKUs and both warehouses)
+          exceeds 300 days at the current 7-day sales pace. Use this view to
+          decide which products to push in marketing emails and ad campaigns.
+          Sorted by stock value — highest dollar-leverage first.
         </p>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <KpiCard
-          label="Overstocked SKUs"
+          label="Overstocked products"
           value={summary.count}
           tone={summary.count > 0 ? "warn" : "neutral"}
         />
         <KpiCard
           label="Capital tied up"
           value={fmtMoney(summary.totalStockValueUsd)}
-          hint="Stock value across all overstocked SKU × location rows."
+          hint="Stock value across every SKU of every overstocked product."
         />
         <KpiCard
           label="Median days of stock"
@@ -137,7 +138,7 @@ export default function OverstockPage() {
               ? "—"
               : fmtDays(summary.medianDaysOfStock)
           }
-          hint="Half of overstocked rows are sitting on more days of stock than this."
+          hint="Half of overstocked products are sitting on more combined days of stock than this."
         />
       </div>
 
@@ -183,7 +184,7 @@ export default function OverstockPage() {
         locationFilteredRows.length === 0 ? (
           <div className="rounded border border-neutral-200 bg-white px-4 py-8 text-center text-sm text-neutral-500">
             {summary.count === 0
-              ? "No SKUs are currently flagged as overstocked. The dashboard recomputes flags daily at 10am EST."
+              ? "No products are currently flagged as overstocked. The dashboard recomputes the rollups daily at 10am EST."
               : "No overstocked SKUs in the selected warehouse."}
           </div>
         ) : (
@@ -197,7 +198,7 @@ export default function OverstockPage() {
         {filteredRows.length === 0 ? (
           <div className="px-4 py-8 text-center text-sm text-neutral-500">
             {summary.count === 0
-              ? "No SKUs are currently flagged as overstocked. The dashboard recomputes flags daily at 10am EST."
+              ? "No products are currently flagged as overstocked. The dashboard recomputes the rollups daily at 10am EST."
               : "No SKUs match the current filter."}
           </div>
         ) : (
