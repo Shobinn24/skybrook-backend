@@ -8,6 +8,7 @@ import { syncProductNames } from "@/lib/jobs/product-names";
 import { runPhase2 } from "@/lib/jobs/reconcile";
 import { runShippingSnapshot } from "@/lib/jobs/shipping-snapshot";
 import { syncUnitCosts } from "@/lib/jobs/unit-costs";
+import { postAlert, resolveAlert } from "@/lib/notifications/slack";
 import {
   sheetsAdSpendRunner,
   sheetsFbAdsRunner,
@@ -62,15 +63,28 @@ export async function POST(req: Request) {
   const bonusCrossings = await detectAndInsertBonusCrossings({ asOfDate });
   // Shipping Performance snapshot (Spec: docs/shipping-checks-spec).
   // Pulls last 60d of US-store orders + computes 30d-trailing stats.
-  // Best-effort: a Shopify hiccup here shouldn't block the cron — log
-  // and proceed. Marketing/ops view, not blocking infra.
+  // Best-effort for the cron response: a Shopify hiccup shouldn't block
+  // the rest of the pipeline. But we DO want to know — fire P1 on
+  // failure, auto-resolve on next successful run. The freshness check
+  // for `shipping_stats_daily` would eventually catch the gap too, but
+  // the failure alert tells us WHY (auth expired / Shopify outage / etc.)
+  // a day sooner than the staleness check can.
   let shippingSnapshot: Awaited<ReturnType<typeof runShippingSnapshot>> | null =
     null;
   try {
     shippingSnapshot = await runShippingSnapshot({ asOfDate });
+    await resolveAlert("shipping.snapshot.failed");
   } catch (e) {
-    logger.error("shipping.snapshot.failed", {
-      error: e instanceof Error ? e.message : String(e),
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    logger.error("shipping.snapshot.failed", { error: errorMessage });
+    await postAlert({
+      severity: "p1",
+      title: "Shipping Performance snapshot failed",
+      dedupKey: "shipping.snapshot.failed",
+      fields: {
+        asOfDate,
+        error: errorMessage.slice(0, 240),
+      },
     });
   }
   // Freshness sweep runs LAST so its checks see the post-phase2 state of

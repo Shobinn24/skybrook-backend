@@ -36,7 +36,7 @@ describe("GET /api/health", () => {
 
   beforeEach(async () => {
     await db.execute(
-      sql`TRUNCATE TABLE alert_events, data_pulls, ad_spend_daily, fb_ad_spend_daily, daily_sales, stock_snapshots, raw_pulls CASCADE`,
+      sql`TRUNCATE TABLE alert_events, data_pulls, ad_spend_daily, fb_ad_spend_daily, daily_sales, stock_snapshots, shipping_stats_daily, factory_order_lines, factory_orders, factory_order_inputs, skus, raw_pulls CASCADE`,
     );
     await seedRawPull();
     vi.stubGlobal(
@@ -167,6 +167,13 @@ describe("GET /api/health", () => {
     await db.execute(sql`
       INSERT INTO daily_sales (channel, routed_location, sku, sales_date, units_sold, net_sales_usd, source_pull_id)
       VALUES ('shopify_intl', 'CN', 's', ${yesterday}, 1, '1', ${rawPullId})
+    `);
+    // 2026-05-18 monitoring extension: shipping_stats_daily freshness
+    // must also pass. The other two new checks (factory-order integrity)
+    // pass by default on empty tables, so no seed needed for them.
+    await db.execute(sql`
+      INSERT INTO shipping_stats_daily (snapshot_date, delivered_count, transit_histogram)
+      VALUES (${yesterday}, 0, '{}'::jsonb)
     `);
 
     const res = await GET();

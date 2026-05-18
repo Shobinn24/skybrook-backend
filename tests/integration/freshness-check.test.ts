@@ -6,8 +6,12 @@ import {
   adSpendDaily,
   alertEvents,
   dailySales,
+  factoryOrderLines,
+  factoryOrders,
   fbAdSpendDaily,
   rawPulls,
+  shippingStatsDaily,
+  skus,
   stockSnapshots,
 } from "@/lib/db/schema";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
@@ -42,7 +46,7 @@ async function seedRawPull() {
 
 async function truncate() {
   await db.execute(
-    sql`TRUNCATE TABLE ad_spend_daily, fb_ad_spend_daily, daily_sales, stock_snapshots, alert_events, raw_pulls CASCADE`,
+    sql`TRUNCATE TABLE ad_spend_daily, fb_ad_spend_daily, daily_sales, stock_snapshots, shipping_stats_daily, factory_order_lines, factory_orders, factory_order_inputs, skus, alert_events, raw_pulls CASCADE`,
   );
 }
 
@@ -55,6 +59,7 @@ describe("runFreshnessCheck", () => {
     await truncate();
     await seedRawPull();
     process.env.SLACK_WEBHOOK_ALERTS_URL = "https://hooks.slack.test/alerts";
+    process.env.SLACK_WEBHOOK_DIGEST_URL = "https://hooks.slack.test/digest";
     // Mock fetch globally so postAlert never POSTs externally during tests.
     vi.stubGlobal(
       "fetch",
@@ -217,5 +222,231 @@ describe("runFreshnessCheck", () => {
     const result = await runFreshnessCheck({ now: fixedNow });
     const stock = result.checks.find((c) => c.name === "stock_snapshots");
     expect(stock?.status).toBe("pass");
+  });
+
+  // --- 2026-05-18 additions: shipping snapshot + factory-order data
+  // integrity + tRPC error auto-resolve.
+
+  it("fails shipping_stats_daily when no snapshot row exists", async () => {
+    const result = await runFreshnessCheck({ now: fixedNow });
+    const ship = result.checks.find((c) => c.name === "shipping_stats_daily");
+    expect(ship?.status).toBe("fail");
+  });
+
+  it("passes shipping_stats_daily when yesterday's snapshot is present", async () => {
+    await db.insert(shippingStatsDaily).values({
+      snapshotDate: YESTERDAY_EST,
+      deliveredCount: 100,
+      avgFulfilmentHours: "12.5",
+      avgTransitDays: "3.2",
+      avgTotalDays: "3.7",
+      transitHistogram: { "3": 50, "4": 50 },
+    });
+    const result = await runFreshnessCheck({ now: fixedNow });
+    const ship = result.checks.find((c) => c.name === "shipping_stats_daily");
+    expect(ship?.status).toBe("pass");
+  });
+
+  it("flags approved factory orders with $0 line totals as a P2 integrity issue", async () => {
+    const [order] = await db
+      .insert(factoryOrders)
+      .values({
+        orderMonth: "2026-05-01",
+        status: "approved",
+        approvedAt: new Date(FAKE_NOW.getTime() - 24 * 60 * 60 * 1000),
+        approvedBy: "test",
+      })
+      .returning({ id: factoryOrders.id });
+    await db.insert(factoryOrderLines).values({
+      orderId: order.id,
+      sku: "test-sku-zero",
+      destination: "US",
+      qty: 100,
+      unitCost: "0.0000", // No cost on file → 0 amount
+      amount: "0.00",
+      productGroup: "Test Group",
+    });
+
+    const result = await runFreshnessCheck({ now: fixedNow });
+    const integrity = result.checks.find(
+      (c) => c.name === "factory_orders.approved_zero_lines",
+    );
+    expect(integrity?.status).toBe("fail");
+
+    const fired = await db
+      .select()
+      .from(alertEvents)
+      .where(
+        sql`dedup_key = 'factory_orders:approved_zero_lines' AND resolved_at IS NULL`,
+      );
+    expect(fired.length).toBe(1);
+    expect(fired[0].severity).toBe("p2");
+    expect(fired[0].channel).toBe("digest");
+  });
+
+  it("passes approved_zero_lines when approved orders have non-zero line totals", async () => {
+    const [order] = await db
+      .insert(factoryOrders)
+      .values({
+        orderMonth: "2026-05-01",
+        status: "approved",
+        approvedAt: new Date(FAKE_NOW.getTime() - 24 * 60 * 60 * 1000),
+        approvedBy: "test",
+      })
+      .returning({ id: factoryOrders.id });
+    await db.insert(factoryOrderLines).values({
+      orderId: order.id,
+      sku: "test-sku-ok",
+      destination: "US",
+      qty: 100,
+      unitCost: "12.1000",
+      amount: "1210.00",
+      productGroup: "Test Group",
+    });
+
+    const result = await runFreshnessCheck({ now: fixedNow });
+    const integrity = result.checks.find(
+      (c) => c.name === "factory_orders.approved_zero_lines",
+    );
+    expect(integrity?.status).toBe("pass");
+  });
+
+  it("ignores DRAFT factory orders with $0 lines (only flags approved)", async () => {
+    const [order] = await db
+      .insert(factoryOrders)
+      .values({
+        orderMonth: "2026-05-01",
+        status: "draft",
+      })
+      .returning({ id: factoryOrders.id });
+    await db.insert(factoryOrderLines).values({
+      orderId: order.id,
+      sku: "test-sku-draft",
+      destination: "US",
+      qty: 100,
+      unitCost: "0.0000",
+      amount: "0.00",
+      productGroup: "Test Group",
+    });
+    const result = await runFreshnessCheck({ now: fixedNow });
+    const integrity = result.checks.find(
+      (c) => c.name === "factory_orders.approved_zero_lines",
+    );
+    expect(integrity?.status).toBe("pass");
+  });
+
+  it("flags active SKUs missing unit_cost_usd as a P2 integrity issue", async () => {
+    await db.insert(skus).values([
+      {
+        sku: "active-no-cost",
+        productName: "Test Active",
+        unitCostUsd: null,
+        firstSeenAt: "2026-01-01",
+        active: true,
+      },
+      {
+        sku: "active-with-cost",
+        productName: "Test Active 2",
+        unitCostUsd: "10.0000",
+        firstSeenAt: "2026-01-01",
+        active: true,
+      },
+      {
+        sku: "inactive-no-cost",
+        productName: "Old SKU",
+        unitCostUsd: null,
+        firstSeenAt: "2025-01-01",
+        active: false,
+      },
+    ]);
+
+    const result = await runFreshnessCheck({ now: fixedNow });
+    const integrity = result.checks.find(
+      (c) => c.name === "factory_orders.active_skus_missing_cost",
+    );
+    expect(integrity?.status).toBe("fail");
+    expect(integrity?.detail).toContain("count=1"); // only the active one
+  });
+
+  it("passes active_skus_missing_cost when every active SKU has a unit cost", async () => {
+    await db.insert(skus).values({
+      sku: "active-priced",
+      productName: "Test Active",
+      unitCostUsd: "10.0000",
+      firstSeenAt: "2026-01-01",
+      active: true,
+    });
+    const result = await runFreshnessCheck({ now: fixedNow });
+    const integrity = result.checks.find(
+      (c) => c.name === "factory_orders.active_skus_missing_cost",
+    );
+    expect(integrity?.status).toBe("pass");
+  });
+
+  it("auto-resolves trpc.error:* alerts at end of every cron tick", async () => {
+    // Seed an open trpc.error alert as if the onError tap had fired
+    // some hours earlier in the day.
+    await db.insert(alertEvents).values({
+      dedupKey: "trpc.error:factoryOrders.approve",
+      severity: "p1",
+      title: "tRPC mutation factoryOrders.approve threw INTERNAL_SERVER_ERROR",
+      payload: {},
+      channel: "alerts",
+      firedAt: new Date(FAKE_NOW.getTime() - 2 * 60 * 60 * 1000),
+    });
+
+    const result = await runFreshnessCheck({ now: fixedNow });
+    expect(result.alertsResolved).toBeGreaterThanOrEqual(1);
+
+    const stillOpen = await db
+      .select()
+      .from(alertEvents)
+      .where(
+        sql`dedup_key LIKE 'trpc.error:%' AND resolved_at IS NULL`,
+      );
+    expect(stillOpen.length).toBe(0);
+  });
+
+  it("does not touch non-trpc.error alerts during auto-resolve", async () => {
+    // A genuine freshness alert in flight — must NOT be resolved by
+    // the trpc.error sweep.
+    await db.insert(alertEvents).values({
+      dedupKey: "freshness:stock_snapshots",
+      severity: "p1",
+      title: "stock_snapshots is stale",
+      payload: {},
+      channel: "alerts",
+      firedAt: new Date(FAKE_NOW.getTime() - 2 * 60 * 60 * 1000),
+    });
+    // Seed yesterday's stock so the check itself doesn't re-fire.
+    await db.insert(stockSnapshots).values({
+      sku: "test-sku",
+      location: "US",
+      snapshotDate: YESTERDAY_EST,
+      onHand: 100,
+      sourcePullId: seededRawPullId,
+    });
+
+    await runFreshnessCheck({ now: fixedNow });
+
+    // The freshness-recovery branch resolves stock_snapshots — that's
+    // legitimate. What we're guarding here is that NON-freshness
+    // unrelated dedup keys are left alone. Add one to confirm.
+    await db.insert(alertEvents).values({
+      dedupKey: "ingest.source.failed:shopify_us",
+      severity: "p1",
+      title: "shopify_us source failed",
+      payload: {},
+      channel: "alerts",
+      firedAt: new Date(FAKE_NOW.getTime() - 2 * 60 * 60 * 1000),
+    });
+    await runFreshnessCheck({ now: fixedNow });
+    const ingestStillOpen = await db
+      .select()
+      .from(alertEvents)
+      .where(
+        sql`dedup_key = 'ingest.source.failed:shopify_us' AND resolved_at IS NULL`,
+      );
+    expect(ingestStillOpen.length).toBe(1);
   });
 });
