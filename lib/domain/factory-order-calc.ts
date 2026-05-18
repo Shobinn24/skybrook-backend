@@ -267,12 +267,30 @@ export function runCalculation(opts: CalcInputs): CalculationResult {
   const usGroupTotals = new Map<string, number>();
   const intlGroupTotals = new Map<string, number>();
 
+  // Custom groups that the user is actively driving with a non-zero
+  // total claim ownership of their SKUs — the calculated entry for
+  // the same SKUs (e.g., "Super HW" calculated vs "Super HW (custom
+  // batch)" custom) should sit out so we don't double-order or
+  // violate the (order, sku, destination) unique index in
+  // factory_order_lines.
+  const skusOwnedByCustom = new Set<string>();
+  for (const g of ALL_GROUPS) {
+    if (g.kind !== "custom") continue;
+    if ((inputs.customQtys[g.name] ?? 0) <= 0) continue;
+    for (const sku of catalog) {
+      if (skuMatchesGroup(sku, g)) skusOwnedByCustom.add(sku);
+    }
+  }
+
   // Bucket SKUs by group.
   const groupSkus = new Map<string, string[]>();
   for (const group of ALL_GROUPS) {
     const matched: string[] = [];
     for (const sku of catalog) {
-      if (skuMatchesGroup(sku, group)) matched.push(sku);
+      if (!skuMatchesGroup(sku, group)) continue;
+      // Calculated entries skip SKUs claimed by an active custom entry.
+      if (group.kind === "calculated" && skusOwnedByCustom.has(sku)) continue;
+      matched.push(sku);
     }
     groupSkus.set(group.name, matched);
 
