@@ -14,6 +14,7 @@ const NAV_ITEMS: ReadonlyArray<{ href: string; label: string; roles: ReadonlyArr
   { href: "/launches",       label: "Launches",       roles: ["ops", "marketing"] },
   { href: "/fb-ads",         label: "FB Ads Tracker", roles: ["ops", "marketing"] },
   { href: "/bonus-tracker",  label: "Bonus Tracker",  roles: ["ops", "marketing"] },
+  { href: "/shipping-performance", label: "Shipping",   roles: ["ops"] },
 ];
 
 const LINK_CLS = "block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100";

@@ -1,4 +1,5 @@
 import { clsx } from "clsx";
+import type { ReactNode } from "react";
 import { TracedNumber } from "@/components/trace/TracedNumber";
 import type { NumberTrace } from "@/lib/queries/inventory";
 
@@ -10,7 +11,10 @@ export function KpiCard({
   trace,
 }: {
   label: string;
-  value: string | number;
+  // ReactNode (not just string/number) so callers can decorate the
+  // value with inline delta badges, units, links, etc. without
+  // dropping out of the KpiCard component.
+  value: ReactNode;
   tone?: "neutral" | "warn" | "danger";
   hint?: string;
   // Optional click-to-inspect trace. When passed, the number becomes

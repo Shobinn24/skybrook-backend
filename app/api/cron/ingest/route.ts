@@ -6,6 +6,7 @@ import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest"
 import { runLaunchAutoPopulate } from "@/lib/jobs/launches";
 import { syncProductNames } from "@/lib/jobs/product-names";
 import { runPhase2 } from "@/lib/jobs/reconcile";
+import { runShippingSnapshot } from "@/lib/jobs/shipping-snapshot";
 import { syncUnitCosts } from "@/lib/jobs/unit-costs";
 import {
   sheetsAdSpendRunner,
@@ -59,6 +60,19 @@ export async function POST(req: Request) {
   // become `pending` rows in bonus_awards for Jasper to triage.
   // Idempotent — won't double-insert if cron re-runs.
   const bonusCrossings = await detectAndInsertBonusCrossings({ asOfDate });
+  // Shipping Performance snapshot (Spec: docs/shipping-checks-spec).
+  // Pulls last 60d of US-store orders + computes 30d-trailing stats.
+  // Best-effort: a Shopify hiccup here shouldn't block the cron — log
+  // and proceed. Marketing/ops view, not blocking infra.
+  let shippingSnapshot: Awaited<ReturnType<typeof runShippingSnapshot>> | null =
+    null;
+  try {
+    shippingSnapshot = await runShippingSnapshot({ asOfDate });
+  } catch (e) {
+    logger.error("shipping.snapshot.failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
   // Freshness sweep runs LAST so its checks see the post-phase2 state of
   // every table. Catches silent emptiness that per-source ingest alerts
   // miss (e.g. May-6 cross-channel skew, partial sheet refreshes).
@@ -88,6 +102,7 @@ export async function POST(req: Request) {
     autoReceipts,
     autoLaunches,
     bonusCrossings,
+    shippingSnapshot,
     ...phase2,
     ingestAlertsFired: ingest.alertsFired,
     ingestAlertsResolved: ingest.alertsResolved,
@@ -104,6 +119,7 @@ export async function POST(req: Request) {
     autoReceipts,
     autoLaunches,
     bonusCrossings,
+    shippingSnapshot,
     phase2,
     freshness,
   });

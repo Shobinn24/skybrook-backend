@@ -423,3 +423,52 @@ export const bonusNotificationBatches = pgTable("bonus_notification_batches", {
   sentBy: text("sent_by").notNull(),
   whatsappStatus: text("whatsapp_status"), // "sent" | "skipped" | "failed:<reason>"
 });
+
+// --- Shipping Performance Checks (spec: docs/shipping-checks-spec) ---
+
+// Persisted daily snapshot of the 30-day-trailing-window shipping
+// stats. Stored so the prior-30d comparison + delta math can avoid
+// re-aggregating 60 days of Shopify orders on every page load. The
+// stats are derived from delivered US orders only (per spec §5.3).
+// One row per `snapshot_date`, idempotent on upsert.
+export const shippingStatsDaily = pgTable("shipping_stats_daily", {
+  snapshotDate: date("snapshot_date").primaryKey(),
+  // Window end is `snapshot_date - 0d`, window start is `snapshot_date - 30d`.
+  // Denormalized counts so the UI can call out small-sample windows.
+  deliveredCount: integer("delivered_count").notNull(),
+  // Mean(fulfilled_at - order_created_at) in hours. Null when
+  // delivered_count is 0.
+  avgFulfilmentHours: numeric("avg_fulfilment_hours", { precision: 8, scale: 2 }),
+  // Mean(delivered_at - fulfilled_at) in days.
+  avgTransitDays: numeric("avg_transit_days", { precision: 6, scale: 2 }),
+  // Mean(delivered_at - order_created_at) in days.
+  avgTotalDays: numeric("avg_total_days", { precision: 6, scale: 2 }),
+  // Histogram bins for the carrier-transit distribution chart. Keys
+  // are day-bucket integers as strings (e.g., "0".."20", ">20"); values
+  // are counts. Persisted with the snapshot so the prior-30d overlay
+  // doesn't have to re-fetch.
+  transitHistogram: jsonb("transit_histogram").notNull(),
+  computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// First-flagged timestamp per (order_id, check_type) so the UI can
+// show "flagged 3 days ago" badges without persisting the flag list
+// itself (flags are re-derived from live Shopify state on every page
+// load — see spec §7.2). Lightly persisted: an INSERT-IF-NOT-EXISTS
+// per flag per day. Composite PK ensures idempotency across runs.
+export const shippingFlagFirstSeen = pgTable(
+  "shipping_flag_first_seen",
+  {
+    // Shopify GID, e.g., gid://shopify/Order/12345
+    orderId: text("order_id").notNull(),
+    // "fulfilment_sla" | "carrier_transit" — text rather than enum so
+    // adding a new check class doesn't need a migration.
+    checkType: text("check_type").notNull(),
+    firstFlaggedAt: timestamp("first_flagged_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.orderId, t.checkType] }),
+  }),
+);
