@@ -37,6 +37,9 @@ export function LeftNav({ role = "ops" }: { role?: Role }) {
           <Link href="/admin/product-names" className={LINK_CLS}>
             Product names
           </Link>
+          <Link href="/admin/data-sources" className={LINK_CLS}>
+            Data sources
+          </Link>
           <Link href="/pipeline" className={LINK_CLS}>
             Pipeline
           </Link>
