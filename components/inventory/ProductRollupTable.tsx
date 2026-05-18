@@ -13,8 +13,8 @@ type SortKey =
   | "incoming"
   | "futureStock"
   | "velocity"
-  | "weeksOfStock"
-  | "futureWeeksOfStock"
+  | "daysOfStock"
+  | "futureDaysOfStock"
   | "stockValue"
   | "skuCount";
 
@@ -34,10 +34,10 @@ type Group = {
   incomingUnits: number;
   futureStock: number;
   stockValueUsd: number;
-  velocityPerDay7d: number; // sum across SKUs — drives WoS math
+  velocityPerDay7d: number; // sum across SKUs — drives DOS math
   velocityDisplay: number; // velocity shown in the cell + used for sort
-  weeksOfStock: number | null; // computed: onHand / (7d velocity × 7); null if 0
-  futureWeeksOfStock: number | null; // computed: futureStock / (7d velocity × 7); null if 0
+  daysOfStock: number | null; // computed: onHand / 7d velocity; null if 0
+  futureDaysOfStock: number | null; // computed: futureStock / 7d velocity; null if 0
   worstFlag: "healthy" | "watch" | "at_risk" | "overstocked" | null;
   earliestRunOutDate: string | null;
 };
@@ -50,10 +50,11 @@ function moneyDisplay(n: number): string {
   });
 }
 
-function weeksDisplay(w: number | null): string {
-  if (w === null) return "—";
-  if (!Number.isFinite(w)) return "∞";
-  return w.toFixed(1);
+function daysDisplay(d: number | null): string {
+  if (d === null) return "—";
+  if (!Number.isFinite(d)) return "∞";
+  // Days are integer-friendly; match the rounding style /overstock uses.
+  return Math.round(d).toLocaleString();
 }
 
 export function ProductRollupTable({
@@ -131,21 +132,23 @@ export function ProductRollupTable({
         stockValueUsd: r.stockValueUsd,
         velocityPerDay7d: r.velocityPerDay7d ?? 0,
         velocityDisplay: rowVelocityDisplay(r),
-        weeksOfStock: null, // computed below
-        futureWeeksOfStock: null, // computed below
+        daysOfStock: null, // computed below
+        futureDaysOfStock: null, // computed below
         worstFlag: r.flag,
         earliestRunOutDate: r.runOutDate,
       });
     }
 
-    // Compute weeks-of-stock per group from totals so it stays
+    // Compute days-of-stock per group from totals so it stays
     // consistent with the rolled-up onHand + velocity numbers.
+    // (Switched from WOS to DOS 2026-05-18 per Scott — aligns with the
+    // /overstock flat view and the factory-order spec's MOS units.)
     for (const g of byProduct.values()) {
-      g.weeksOfStock = g.velocityPerDay7d > 0
-        ? g.onHand / g.velocityPerDay7d / 7
+      g.daysOfStock = g.velocityPerDay7d > 0
+        ? g.onHand / g.velocityPerDay7d
         : null;
-      g.futureWeeksOfStock = g.velocityPerDay7d > 0
-        ? g.futureStock / g.velocityPerDay7d / 7
+      g.futureDaysOfStock = g.velocityPerDay7d > 0
+        ? g.futureStock / g.velocityPerDay7d
         : null;
       // Stable SKU order in the expanded view — alphabetical so size
       // lists at least cluster by family.
@@ -169,10 +172,10 @@ export function ProductRollupTable({
           return (a.futureStock - b.futureStock) * dir;
         case "velocity":
           return (a.velocityDisplay - b.velocityDisplay) * dir;
-        case "weeksOfStock":
-          return (nullish(a.weeksOfStock) - nullish(b.weeksOfStock)) * dir;
-        case "futureWeeksOfStock":
-          return (nullish(a.futureWeeksOfStock) - nullish(b.futureWeeksOfStock)) * dir;
+        case "daysOfStock":
+          return (nullish(a.daysOfStock) - nullish(b.daysOfStock)) * dir;
+        case "futureDaysOfStock":
+          return (nullish(a.futureDaysOfStock) - nullish(b.futureDaysOfStock)) * dir;
         case "stockValue":
           return (a.stockValueUsd - b.stockValueUsd) * dir;
         case "flag":
@@ -180,7 +183,7 @@ export function ProductRollupTable({
           const fa = a.worstFlag ? FLAG_RANK[a.worstFlag] ?? 99 : 99;
           const fb = b.worstFlag ? FLAG_RANK[b.worstFlag] ?? 99 : 99;
           if (fa !== fb) return (fa - fb) * dir;
-          return nullish(a.weeksOfStock) - nullish(b.weeksOfStock);
+          return nullish(a.daysOfStock) - nullish(b.daysOfStock);
         }
       }
     });
@@ -229,8 +232,8 @@ export function ProductRollupTable({
               <SortableHeader label="Incoming" sortKey="incoming" config={sort} onChange={setSort} align="right" />
               <SortableHeader label="Future stock" sortKey="futureStock" config={sort} onChange={setSort} align="right" />
               <SortableHeader label={`Velocity/day${velocityLabel ? ` (${velocityLabel})` : ""}`} sortKey="velocity" config={sort} onChange={setSort} align="right" />
-              <SortableHeader label="WOS" sortKey="weeksOfStock" config={sort} onChange={setSort} align="right" />
-              <SortableHeader label="FUT WOS" sortKey="futureWeeksOfStock" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="DOS" sortKey="daysOfStock" config={sort} onChange={setSort} align="right" />
+              <SortableHeader label="FUT DOS" sortKey="futureDaysOfStock" config={sort} onChange={setSort} align="right" />
               <th className="px-4 py-2 text-left text-xs uppercase tracking-wide text-neutral-600">Runs out</th>
               <SortableHeader label="Status" sortKey="flag" config={sort} onChange={setSort} />
               <SortableHeader label="Stock value" sortKey="stockValue" config={sort} onChange={setSort} align="right" />
@@ -270,10 +273,10 @@ export function ProductRollupTable({
                       {g.velocityDisplay > 0 ? g.velocityDisplay.toFixed(2) : "—"}
                     </td>
                     <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums">
-                      {weeksDisplay(g.weeksOfStock)}
+                      {daysDisplay(g.daysOfStock)}
                     </td>
                     <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-neutral-700">
-                      {weeksDisplay(g.futureWeeksOfStock)}
+                      {daysDisplay(g.futureDaysOfStock)}
                     </td>
                     <td className="whitespace-nowrap px-4 py-2 text-xs text-neutral-600">
                       {g.earliestRunOutDate ?? "—"}
@@ -320,10 +323,14 @@ export function ProductRollupTable({
                           })()}
                         </td>
                         <td className="whitespace-nowrap px-4 py-1.5 text-right tabular-nums text-neutral-500">
-                          {weeksDisplay(s.weeksOfStock)}
+                          {daysDisplay(s.daysOfStock)}
                         </td>
                         <td className="whitespace-nowrap px-4 py-1.5 text-right tabular-nums text-neutral-500">
-                          {weeksDisplay(s.futureWeeksOfStock)}
+                          {daysDisplay(
+                            s.velocityPerDay7d && s.velocityPerDay7d > 0
+                              ? s.futureStock / s.velocityPerDay7d
+                              : null,
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-4 py-1.5 text-xs text-neutral-500">
                           {s.runOutDate ?? "—"}
