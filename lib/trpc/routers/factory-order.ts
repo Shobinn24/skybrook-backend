@@ -12,6 +12,7 @@ import {
   saveInputs,
   type FactoryOrderInputs,
 } from "@/lib/queries/factory-order";
+import { calculateOrder } from "@/lib/queries/factory-order-calc";
 
 // Zod shapes mirror lib/queries/factory-order.ts. Kept here so the
 // router file is the single source of validation for incoming
@@ -89,6 +90,15 @@ export const factoryOrderRouter = router({
       });
       return { ok: true as const };
     }),
+
+  // Run the MOS calculation chain against the saved inputs + the
+  // current state of daily_sales, stock_snapshots, incoming_shipments,
+  // and skus. Pure computation on the server — does not mutate the
+  // order. The dashboard hits this on every input change to refresh
+  // the summary + detail tables.
+  calculate: publicProcedure
+    .input(z.object({ orderId: z.string().uuid() }))
+    .query(({ input }) => calculateOrder({ orderId: input.orderId })),
 
   // List orders newest-first for the picker UI.
   list: publicProcedure.query(() => listOrders()),
