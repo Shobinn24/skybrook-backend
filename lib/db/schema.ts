@@ -35,6 +35,10 @@ export const bonusStatusEnum = pgEnum(
   "bonus_status",
   ["pending", "approved_full", "approved_half", "rejected"],
 );
+export const factoryOrderStatusEnum = pgEnum(
+  "factory_order_status",
+  ["draft", "approved"],
+);
 
 // --- Raw layer ---
 export const rawPulls = pgTable("raw_pulls", {
@@ -470,5 +474,92 @@ export const shippingFlagFirstSeen = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.orderId, t.checkType] }),
+  }),
+);
+
+// --- Factory Order Automation (spec: docs/factory-order-spec) ---
+
+// One row per monthly secondary factory order. The user-facing
+// concept is "the May 2026 order"; we key on the first-of-month
+// date for cheap uniqueness checks. Draft state allows iterating
+// on inputs; approval freezes the calculated lines into
+// `factory_order_lines` so the Excel generator has a stable
+// snapshot to render even if upstream sales/stock numbers shift.
+export const factoryOrders = pgTable("factory_orders", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orderMonth: date("order_month").notNull().unique(), // first of month
+  status: factoryOrderStatusEnum("status").notNull().default("draft"),
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
+  approvedBy: text("approved_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// All manual inputs for an order kept as JSON blobs — keyed by month
+// rather than by line. The full panel of inputs auto-saves on every
+// edit; a single row per order keeps the round-trip small. Shapes
+// live in the calc engine (`lib/domain/factory-order-calc.ts`) and
+// are validated with Zod on the way in.
+export const factoryOrderInputs = pgTable("factory_order_inputs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orderId: uuid("order_id")
+    .notNull()
+    .unique()
+    .references(() => factoryOrders.id, { onDelete: "cascade" }),
+  // 30D actuals (user-confirmed or auto-populated then edited).
+  revenueUs: numeric("revenue_us", { precision: 14, scale: 2 }),
+  revenueIntl: numeric("revenue_intl", { precision: 14, scale: 2 }),
+  revenueAmazon: numeric("revenue_amazon", { precision: 14, scale: 2 }),
+  // Forward forecast (US 4 months, INTL 3 months):
+  // `{ us: [m1..m4], intl: [m1..m3] }`
+  forecastJson: jsonb("forecast_json").notNull().default({}),
+  // Main-line split overrides per warehouse:
+  // `{ us: { "9055 Main": 0.55, ... }, intl: { ... } }`
+  splitsJson: jsonb("splits_json").notNull().default({}),
+  // Per-product-group multipliers: `{ [productGroup]: 1.0 }`
+  scalingJson: jsonb("scaling_json").notNull().default({}),
+  // Per-custom-product manual totals: `{ [productGroup]: 3000 }`
+  customQtysJson: jsonb("custom_qtys_json").notNull().default({}),
+  // Per-SKU Amazon inputs (US only):
+  // `{ [sku]: { sales30d, stock, hold } }`
+  amazonDataJson: jsonb("amazon_data_json").notNull().default({}),
+  // Per-product-group free-text comments: `{ [productGroup]: "…" }`
+  commentsJson: jsonb("comments_json").notNull().default({}),
+  // General order-level note: "This needs to last until 4 Aug" etc.
+  orderNotes: text("order_notes"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Snapshot of computed order lines, frozen on approval. Phase 4
+// (Excel generation) reads from this table so the file always
+// reflects what was actually approved, not whatever the live
+// calculation would produce today.
+export const factoryOrderLines = pgTable(
+  "factory_order_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => factoryOrders.id, { onDelete: "cascade" }),
+    sku: text("sku").notNull(),
+    // Where the order goes — US warehouse (Skybrook / "SB" file)
+    // or CN warehouse (Manora / "MV" file).
+    destination: locationEnum("destination").notNull(),
+    qty: integer("qty").notNull(),
+    // DDP price for US destination, Cost price for CN.
+    unitCost: numeric("unit_cost", { precision: 10, scale: 4 }).notNull(),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    // Product-group label snapshotted at approval time so the Excel
+    // generator can group rows without re-deriving from the SKU.
+    productGroup: text("product_group").notNull(),
+  },
+  (t) => ({
+    // One line per (order × sku × destination). Prevents duplicate
+    // snapshots if the approve flow ever runs twice.
+    uniq: uniqueIndex("factory_order_lines_order_sku_dest_uq").on(
+      t.orderId,
+      t.sku,
+      t.destination,
+    ),
   }),
 );

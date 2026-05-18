@@ -26,6 +26,11 @@ export async function resetDb() {
       velocity_overrides,
       sku_family_overrides,
       skus,
+      shipping_stats_daily,
+      shipping_flag_first_seen,
+      factory_order_lines,
+      factory_order_inputs,
+      factory_orders,
       raw_pulls
     CASCADE
   `);
