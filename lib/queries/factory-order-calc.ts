@@ -175,15 +175,14 @@ async function loadOrderMonth(orderId: string): Promise<string> {
 }
 
 /**
- * Default "as of" instant for the calc — first-of-month at UTC
- * midnight + 30 days. This gives a 30D sales window of the calendar
- * month immediately preceding the order (e.g., placing the May 1
- * order pulls Apr 1 → Apr 30 sales).
+ * Default "as of" instant for the calc — the first of the order
+ * month at UTC midnight. The trailing 30D sales window is then
+ * [first-of-month − 30d, first-of-month) — the calendar month
+ * immediately preceding the order (e.g., placing the May 1 order
+ * pulls Apr 1 → Apr 30 sales).
  */
 function defaultAsOfDate(orderMonth: string): Date {
-  const start = new Date(`${monthKey(orderMonth)}T00:00:00Z`);
-  start.setUTCDate(start.getUTCDate() + 30);
-  return start;
+  return new Date(`${monthKey(orderMonth)}T00:00:00Z`);
 }
 
 // Re-export for the tRPC layer + tests.

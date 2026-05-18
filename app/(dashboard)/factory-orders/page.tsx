@@ -148,6 +148,7 @@ export default function FactoryOrdersPage() {
       void calc.refetch();
     },
   });
+  const approve = trpc.factoryOrder.approve.useMutation();
 
   // Local mirror of the draft inputs so the inputs stay responsive
   // while save round-trips. Server-sourced values are merged in by
@@ -431,20 +432,51 @@ export default function FactoryOrdersPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            disabled
-            className="rounded border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-400"
-            title="Phase 4 will activate Approve + Generate"
-          >
-            Approve order
-          </button>
-          <button
-            disabled
-            className="rounded border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-400"
-            title="Phase 4 will activate Approve + Generate"
-          >
-            Generate Factory Sheets
-          </button>
+          {!isApproved && (
+            <button
+              onClick={() => {
+                const approver = window.prompt("Approve as (your name)?")?.trim();
+                if (!approver) return;
+                if (
+                  !window.confirm(
+                    "Approve and freeze this order? The inputs will become read-only.",
+                  )
+                ) {
+                  return;
+                }
+                approve.mutate(
+                  { orderId: draft.data!.header.id, approvedBy: approver },
+                  {
+                    onSuccess: () => {
+                      void utils.factoryOrder.getDraft.invalidate({ orderMonth });
+                    },
+                  },
+                );
+              }}
+              disabled={approve.isPending}
+              className="rounded border border-neutral-900 bg-neutral-900 px-3 py-1.5 text-sm text-white hover:bg-neutral-800 disabled:opacity-50"
+            >
+              {approve.isPending ? "Approving…" : "Approve order"}
+            </button>
+          )}
+          {isApproved && (
+            <>
+              <a
+                href={`/api/factory-orders/${draft.data!.header.id}/sheet/US`}
+                className="rounded border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
+                download
+              >
+                Download SB (US)
+              </a>
+              <a
+                href={`/api/factory-orders/${draft.data!.header.id}/sheet/INTL`}
+                className="rounded border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
+                download
+              >
+                Download MV (INTL)
+              </a>
+            </>
+          )}
         </div>
       </div>
 

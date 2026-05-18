@@ -13,6 +13,7 @@ import {
   type FactoryOrderInputs,
 } from "@/lib/queries/factory-order";
 import { calculateOrder } from "@/lib/queries/factory-order-calc";
+import { approveFactoryOrder } from "@/lib/jobs/factory-order-approve";
 
 // Zod shapes mirror lib/queries/factory-order.ts. Kept here so the
 // router file is the single source of validation for incoming
@@ -100,6 +101,25 @@ export const factoryOrderRouter = router({
   calculate: publicProcedure
     .input(z.object({ orderId: z.string().uuid() }))
     .query(({ input }) => calculateOrder({ orderId: input.orderId })),
+
+  // Freeze the calculated order: snapshot every per-SKU line into
+  // factory_order_lines and mark the header status = approved.
+  // Idempotent — re-approving an approved order returns the existing
+  // snapshot. Excel sheets are then downloadable from
+  // /api/factory-orders/<id>/sheet/<US|INTL>.
+  approve: publicProcedure
+    .input(
+      z.object({
+        orderId: z.string().uuid(),
+        approvedBy: z.string().min(1).max(120),
+      }),
+    )
+    .mutation(({ input }) =>
+      approveFactoryOrder({
+        orderId: input.orderId,
+        approvedBy: input.approvedBy,
+      }),
+    ),
 
   // List orders newest-first for the picker UI.
   list: publicProcedure.query(() => listOrders()),
