@@ -120,12 +120,24 @@ export function InventoryTable({
   }, [rows, sort, filter]);
 
   const exportCsv = () => {
+    // The velocity column honors the picker. velocityFor() returns the
+    // override value when the picker is non-default, otherwise the row's
+    // pre-computed 7d velocity. The accompanying velocity_window column
+    // labels which window the value represents so a CSV that lands on
+    // someone's desk is self-documenting (Grace 2026-05-19: CSV was
+    // silently always 7d regardless of picker).
+    //
+    // DOS / WOS / future_weeks_of_stock columns intentionally stay
+    // 7d-based — matches the UI contract that the picker only changes
+    // the velocity column.
+    const windowLabel = velocityLabel ?? "7d";
     const header = [
       "sku",
       "product",
       "location",
       "on_hand",
-      "velocity_per_day_7d",
+      "velocity_per_day",
+      "velocity_window",
       "days_of_stock",
       "weeks_of_stock",
       "future_weeks_of_stock",
@@ -138,13 +150,15 @@ export function InventoryTable({
       "snapshot_date",
     ];
     const lines = [header.join(",")].concat(
-      sorted.map((r) =>
-        [
+      sorted.map((r) => {
+        const v = velocityFor(r);
+        return [
           r.sku,
           `"${r.productName.replace(/"/g, '""')}"`,
           r.location,
           r.onHand,
-          r.velocityPerDay7d?.toFixed(4) ?? "",
+          v !== null && Number.isFinite(v) ? v.toFixed(4) : "",
+          `"${windowLabel}"`,
           r.daysOfStock !== null && Number.isFinite(r.daysOfStock)
             ? r.daysOfStock.toFixed(2)
             : "",
@@ -161,8 +175,8 @@ export function InventoryTable({
           r.unitCostUsd?.toFixed(4) ?? "",
           r.stockValueUsd.toFixed(2),
           r.snapshotDate,
-        ].join(",")
-      )
+        ].join(",");
+      })
     );
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
