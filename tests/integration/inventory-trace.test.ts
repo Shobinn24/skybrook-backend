@@ -16,7 +16,7 @@ describe("inventory row traces", () => {
   beforeEach(async () => {
     await resetDb();
     await seedBasic();
-    await runPhase2({ asOfDate: "2026-04-23" });
+    await runPhase2({ asOfDate: "2026-04-24" });
   });
 
   it("attaches a trace object with every required sub-trace", async () => {

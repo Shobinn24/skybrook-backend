@@ -32,7 +32,7 @@ describe("getOverstockRows (Phase 2 — product-level rollup)", () => {
   beforeEach(async () => {
     await resetDb();
     await seedBasic();
-    await runPhase2({ asOfDate: "2026-04-23" });
+    await runPhase2({ asOfDate: "2026-04-24" });
   });
 
   it("flags products whose rolled-up DOS exceeds the threshold", async () => {
@@ -64,7 +64,7 @@ describe("getOverstockRows (Phase 2 — product-level rollup)", () => {
           eq(stockSnapshots.location, "CN"),
         ),
       );
-    await runPhase2({ asOfDate: "2026-04-23" });
+    await runPhase2({ asOfDate: "2026-04-24" });
 
     const result = await getOverstockRows();
     // Alpha is overstocked; Beta has DOS = 20/3 ≈ 6.6d — fine.
@@ -115,7 +115,7 @@ describe("getOverstockRows (Phase 2 — product-level rollup)", () => {
       onHand: 50,
       sourcePullId: raw.id,
     });
-    await runPhase2({ asOfDate: "2026-04-23" });
+    await runPhase2({ asOfDate: "2026-04-24" });
 
     const result = await getOverstockRows();
     const productNames = new Set(result.rows.map((r) => r.productName));
@@ -174,7 +174,7 @@ describe("getOverstockRows (Phase 2 — product-level rollup)", () => {
       { sku: "EV-D1", location: "US", snapshotDate: "2026-04-23", onHand: 50, sourcePullId: raw.id },
       { sku: "EV-D2", location: "US", snapshotDate: "2026-04-23", onHand: 200, sourcePullId: raw.id },
     ]);
-    await runPhase2({ asOfDate: "2026-04-23" });
+    await runPhase2({ asOfDate: "2026-04-24" });
 
     const result = await getOverstockRows();
 

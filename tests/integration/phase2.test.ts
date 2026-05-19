@@ -20,7 +20,7 @@ describe("Phase 2 derive (MVP — no reconciliation)", () => {
   });
 
   it("writes sales_velocity rows for 3/7/30 day windows per SKU", async () => {
-    await runPhase2({ asOfDate: "2026-04-23" });
+    await runPhase2({ asOfDate: "2026-04-24" });
     const rows = await db.select().from(salesVelocity);
     const windows = new Set(rows.map((r) => r.windowDays));
     expect(windows).toEqual(new Set([3, 7, 30]));
@@ -30,7 +30,7 @@ describe("Phase 2 derive (MVP — no reconciliation)", () => {
   });
 
   it("writes per-channel velocity rows so US and CN can show different numbers", async () => {
-    await runPhase2({ asOfDate: "2026-04-23" });
+    await runPhase2({ asOfDate: "2026-04-24" });
     const rows = await db.select().from(salesVelocity);
     const channels = new Set(rows.map((r) => r.channel));
     expect(channels).toEqual(new Set(["all", "shopify_us", "shopify_intl"]));
@@ -42,7 +42,7 @@ describe("Phase 2 derive (MVP — no reconciliation)", () => {
   });
 
   it("writes days_of_stock rows for each (SKU, location) with a snapshot", async () => {
-    await runPhase2({ asOfDate: "2026-04-23" });
+    await runPhase2({ asOfDate: "2026-04-24" });
     const rows = await db.select().from(daysOfStock);
     // EV-A US: on_hand=100, velocity(US)=5/day (shopify_us only) → DOS = 20
     const evAUS = rows.find((r) => r.sku === "EV-A" && r.location === "US");
@@ -53,7 +53,7 @@ describe("Phase 2 derive (MVP — no reconciliation)", () => {
   });
 
   it("writes sustainability flag rows per (SKU, location)", async () => {
-    await runPhase2({ asOfDate: "2026-04-23" });
+    await runPhase2({ asOfDate: "2026-04-24" });
     const rows = await db.select().from(sustainabilityFlags);
     // EV-A US: DOS=20, healthy (>14, no incoming POs to consider)
     expect(
@@ -70,15 +70,15 @@ describe("Phase 2 derive (MVP — no reconciliation)", () => {
   });
 
   it("is idempotent — re-running produces the same rows, not duplicates", async () => {
-    await runPhase2({ asOfDate: "2026-04-23" });
+    await runPhase2({ asOfDate: "2026-04-24" });
     const firstCount = (await db.select().from(sustainabilityFlags)).length;
-    await runPhase2({ asOfDate: "2026-04-23" });
+    await runPhase2({ asOfDate: "2026-04-24" });
     const secondCount = (await db.select().from(sustainabilityFlags)).length;
     expect(secondCount).toBe(firstCount);
   });
 
   it("skips (SKU, location) combinations with no stock snapshot", async () => {
-    const result = await runPhase2({ asOfDate: "2026-04-23" });
+    const result = await runPhase2({ asOfDate: "2026-04-24" });
     // EV-B only has a US snapshot — CN should be skipped (1 skip).
     expect(result.skusSkipped).toBeGreaterThanOrEqual(1);
     const evBCn = await db

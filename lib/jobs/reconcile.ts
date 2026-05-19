@@ -96,13 +96,25 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
   let processed = 0;
   let skipped = 0;
 
+  // Velocity windows END at yesterday (the last complete sales day), not
+  // today. Including today's partial sales diluted the 7d average
+  // because today has near-zero sales by the time the 5am EDT cron
+  // runs (Grace 2026-05-19: UI 7d preset disagreed with the same-window
+  // Custom picker by 10-22%). This matches the on-demand
+  // `getVelocityForRange` query's `[yesterday-N, yesterday]` semantics so
+  // the two paths agree per SKU. `input.asOfDate` (today) is preserved
+  // as the row tag and as the analysis date for sustainability + DOS
+  // computation — they project forward from "today's stock at today's
+  // rate," and the rate is the trailing complete window.
+  const velocityWindowEnd = addDaysYmd(input.asOfDate, -1);
+
   for (const s of allSkus) {
     // Sales velocity — combined + per-channel at each window.
     for (const windowDays of VELOCITY_WINDOWS) {
       for (const agg of VELOCITY_AGGREGATIONS) {
         const perDay = computeVelocity({
           events: saleEvents,
-          asOfDate: input.asOfDate,
+          asOfDate: velocityWindowEnd,
           windowDays,
           sku: s.sku,
           routedLocation: agg.routedLocation,
@@ -145,7 +157,7 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
 
       const locVelocity = computeVelocity({
         events: saleEvents,
-        asOfDate: input.asOfDate,
+        asOfDate: velocityWindowEnd,
         windowDays: DOS_WINDOW,
         sku: s.sku,
         routedLocation: location,
