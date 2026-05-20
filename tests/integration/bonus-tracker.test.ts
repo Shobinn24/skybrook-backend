@@ -1,8 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { fbAdSpendDaily, rawPulls } from "@/lib/db/schema";
-import { getBonusTracker } from "@/lib/queries/bonus-tracker";
+import {
+  bonusAwards,
+  bonusNotificationBatches,
+  fbAdSpendDaily,
+  rawPulls,
+} from "@/lib/db/schema";
+import {
+  getBonusSummary,
+  getBonusTracker,
+  getPendingApprovals,
+  previewNotification,
+} from "@/lib/queries/bonus-tracker";
+import { detectAndInsertBonusCrossings } from "@/lib/jobs/bonus-crossings";
+import { approveBonus, sendNotification } from "@/lib/jobs/bonus-mutations";
 import { resetDb } from "@/tests/fixtures/seed";
 import { toEstDate } from "@/lib/tz";
 
@@ -363,6 +376,276 @@ describe("getBonusTracker", () => {
       const row = craig.rows.find((r) => r.adNumber === "901")!;
       expect(row.lifetimeSpendUsd).toBeCloseTo(30_000, 2);
       expect(row.past7dSpendUsd).toBe(0);
+    });
+  });
+
+  describe("getPendingApprovals marketer filter (Jasper 2026-05-20)", () => {
+    beforeEach(async () => {
+      // bonus_awards has no FK to raw_pulls so resetDb misses it.
+      await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+    });
+
+    async function seedPending(
+      adNumber: string,
+      marketers: string[],
+      totalUsd: number,
+    ) {
+      const [raw] = await db
+        .insert(rawPulls)
+        .values({
+          source: "sheets_fb_ads",
+          pullBatchId: randomUUID(),
+          payload: {},
+          rowCount: 0,
+          schemaFingerprint: "fp",
+        })
+        .returning({ id: rawPulls.id });
+      await seedAdSpend({
+        adNumber,
+        adName: `Ad ${adNumber}`,
+        marketers,
+        totalCostUsd: totalUsd,
+        sourcePullId: raw.id,
+      });
+      await detectAndInsertBonusCrossings({ asOfDate: "2026-05-13" });
+    }
+
+    it("returns all pending when marketer filter is omitted", async () => {
+      await seedPending("100", ["Craig"], 14_000);
+      await seedPending("101", ["Raul"], 14_000);
+
+      const all = await getPendingApprovals();
+      expect(all.map((p) => p.marketer).sort()).toEqual(["Craig", "Raul"]);
+    });
+
+    it("filters to a single marketer when specified", async () => {
+      await seedPending("200", ["Craig"], 14_000);
+      await seedPending("201", ["Raul"], 14_000);
+      await seedPending("1900", ["Jacob"], 14_000); // above Jacob's floor
+
+      const craigOnly = await getPendingApprovals({ marketer: "Craig" });
+      expect(craigOnly).toHaveLength(1);
+      expect(craigOnly[0].marketer).toBe("Craig");
+      expect(craigOnly[0].adNumber).toBe("200");
+
+      const jacobOnly = await getPendingApprovals({ marketer: "Jacob" });
+      expect(jacobOnly).toHaveLength(1);
+      expect(jacobOnly[0].marketer).toBe("Jacob");
+    });
+
+    it("returns empty when filtered marketer has no pending", async () => {
+      await seedPending("300", ["Craig"], 14_000);
+
+      const tylerOnly = await getPendingApprovals({ marketer: "Tyler" });
+      expect(tylerOnly).toHaveLength(0);
+    });
+  });
+
+  describe("previewNotification rich body (Jasper 2026-05-20)", () => {
+    beforeEach(async () => {
+      await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+      await db.execute(sql`TRUNCATE TABLE bonus_notification_batches CASCADE`);
+    });
+
+    it("includes per-award detail with adName + adLink", async () => {
+      const [raw] = await db
+        .insert(rawPulls)
+        .values({
+          source: "sheets_fb_ads",
+          pullBatchId: randomUUID(),
+          payload: {},
+          rowCount: 0,
+          schemaFingerprint: "fp",
+        })
+        .returning({ id: rawPulls.id });
+      await db.insert(fbAdSpendDaily).values({
+        adNumber: "1389",
+        adName: "Craig x Cat Brief 14",
+        adNameRaw: "(9055) Ad 1389 - Craig x Cat Brief 14",
+        adLink: "https://facebook.com/ads/library/?id=1389",
+        marketers: ["Craig"],
+        spendDate: "2026-04-01",
+        costUsd: "70000.0000",
+        sourcePullId: raw.id,
+      });
+
+      await detectAndInsertBonusCrossings({ asOfDate: "2026-05-13" });
+      const awards = await db.select().from(bonusAwards);
+      for (const a of awards) {
+        await approveBonus({
+          awardId: a.id,
+          approval: "approved_full",
+          approvedBy: "jasper",
+        });
+      }
+
+      const preview = await previewNotification({ periodLabel: "April 2026" });
+      expect(preview.awards.length).toBe(2); // T1 + T2 both approved
+      const t1 = preview.awards.find((a) => a.tier === "tier1")!;
+      expect(t1.adName).toBe("Craig x Cat Brief 14");
+      expect(t1.adLink).toBe("https://facebook.com/ads/library/?id=1389");
+      expect(t1.amountUsd).toBe(500);
+
+      expect(preview.messageBody).toContain("April 2026 Bonuses");
+      expect(preview.messageBody).toContain("Craig — Total: $3,500"); // $500 + $3000
+      expect(preview.messageBody).toContain("$13k · Ad 1389");
+      expect(preview.messageBody).toContain("$65k · Ad 1389");
+      expect(preview.messageBody).toContain("Craig x Cat Brief 14");
+      expect(preview.messageBody).toContain("https://facebook.com/ads/library/?id=1389");
+    });
+
+    it("labels half-rate awards with (half) marker", async () => {
+      const [raw] = await db
+        .insert(rawPulls)
+        .values({
+          source: "sheets_fb_ads",
+          pullBatchId: randomUUID(),
+          payload: {},
+          rowCount: 0,
+          schemaFingerprint: "fp",
+        })
+        .returning({ id: rawPulls.id });
+      await db.insert(fbAdSpendDaily).values({
+        adNumber: "500",
+        adName: "Craig Rehook",
+        adNameRaw: "Craig Rehook",
+        adLink: null,
+        marketers: ["Craig"],
+        spendDate: "2026-04-01",
+        costUsd: "14000.0000",
+        sourcePullId: raw.id,
+      });
+      await detectAndInsertBonusCrossings({ asOfDate: "2026-05-13" });
+      const [award] = await db.select().from(bonusAwards);
+      await approveBonus({
+        awardId: award.id,
+        approval: "approved_half",
+        approvedBy: "jasper",
+      });
+
+      const preview = await previewNotification({ periodLabel: "April 2026" });
+      expect(preview.messageBody).toContain("$13k (half) · Ad 500");
+      expect(preview.messageBody).toContain("Craig — Total: $250"); // half of $500
+    });
+
+    it("handles empty batch gracefully", async () => {
+      const preview = await previewNotification({ periodLabel: "May 2026" });
+      expect(preview.awards).toEqual([]);
+      expect(preview.messageBody).toContain("May 2026 Bonuses");
+      expect(preview.messageBody).toContain("(no approved bonuses this period)");
+    });
+  });
+
+  describe("getBonusSummary scoreboard (Jasper 2026-05-20)", () => {
+    beforeEach(async () => {
+      await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+      await db.execute(sql`TRUNCATE TABLE bonus_notification_batches CASCADE`);
+    });
+
+    async function approveAndSend(opts: {
+      adNumber: string;
+      marketer: string;
+      totalUsd: number;
+      sentAt: Date;
+    }) {
+      const [raw] = await db
+        .insert(rawPulls)
+        .values({
+          source: "sheets_fb_ads",
+          pullBatchId: randomUUID(),
+          payload: {},
+          rowCount: 0,
+          schemaFingerprint: "fp",
+        })
+        .returning({ id: rawPulls.id });
+      await db.insert(fbAdSpendDaily).values({
+        adNumber: opts.adNumber,
+        adName: `Ad ${opts.adNumber}`,
+        adNameRaw: `Ad ${opts.adNumber}`,
+        adLink: null,
+        marketers: [opts.marketer],
+        spendDate: "2026-04-01",
+        costUsd: opts.totalUsd.toFixed(4),
+        sourcePullId: raw.id,
+      });
+      await detectAndInsertBonusCrossings({ asOfDate: "2026-05-13" });
+      const awards = await db
+        .select()
+        .from(bonusAwards)
+        .where(sql`${bonusAwards.adNumber} = ${opts.adNumber}`);
+      for (const a of awards) {
+        await approveBonus({
+          awardId: a.id,
+          approval: "approved_full",
+          approvedBy: "jasper",
+        });
+      }
+      const result = await sendNotification({
+        sentBy: "jasper",
+        periodLabel: "test",
+        sendWhatsApp: async () => ({ ok: true }),
+      });
+      if (result.skipped) {
+        throw new Error(`sendNotification skipped: ${result.reason}`);
+      }
+      // Backdate ONLY the batch we just created — earlier batches must
+      // keep their original sent_at so multi-month aggregation works.
+      await db
+        .update(bonusNotificationBatches)
+        .set({ sentAt: opts.sentAt })
+        .where(sql`${bonusNotificationBatches.id} = ${result.batchId}`);
+    }
+
+    it("returns empty months/rows when nothing has been sent", async () => {
+      const summary = await getBonusSummary();
+      expect(summary.months).toEqual([]);
+      expect(summary.grandTotal).toBe(0);
+      // Roster preserved — each marketer has a row with zero total.
+      expect(summary.rows.map((r) => r.marketer)).toEqual([
+        "Craig",
+        "Raul",
+        "Tyler",
+        "Jacob",
+        "Dan",
+        "JW",
+      ]);
+      expect(summary.rows.every((r) => r.total === 0)).toBe(true);
+    });
+
+    it("aggregates totals per (marketer, month)", async () => {
+      // Craig: April batch + May batch
+      await approveAndSend({
+        adNumber: "100",
+        marketer: "Craig",
+        totalUsd: 14_000, // T1 → $500
+        sentAt: new Date("2026-04-30T12:00:00Z"),
+      });
+      await approveAndSend({
+        adNumber: "101",
+        marketer: "Craig",
+        totalUsd: 14_000, // another T1 → $500
+        sentAt: new Date("2026-05-15T12:00:00Z"),
+      });
+      // Raul: only April
+      await approveAndSend({
+        adNumber: "200",
+        marketer: "Raul",
+        totalUsd: 70_000, // T1 + T2 → $500 + $3000
+        sentAt: new Date("2026-04-25T12:00:00Z"),
+      });
+
+      const summary = await getBonusSummary();
+      expect(summary.months).toEqual(["2026-05", "2026-04"]); // newest first
+      const craig = summary.rows.find((r) => r.marketer === "Craig")!;
+      expect(craig.cells["2026-04"]).toBe(500);
+      expect(craig.cells["2026-05"]).toBe(500);
+      expect(craig.total).toBe(1000);
+      const raul = summary.rows.find((r) => r.marketer === "Raul")!;
+      expect(raul.cells["2026-04"]).toBe(3500);
+      expect(raul.total).toBe(3500);
+      expect(summary.monthTotals["2026-04"]).toBe(4000); // Craig 500 + Raul 3500
+      expect(summary.monthTotals["2026-05"]).toBe(500);
+      expect(summary.grandTotal).toBe(4500);
     });
   });
 });

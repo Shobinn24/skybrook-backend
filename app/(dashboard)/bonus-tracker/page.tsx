@@ -92,6 +92,9 @@ export default function BonusTrackerPage() {
     undefined,
     { refetchOnWindowFocus: false },
   );
+  const summary = trpc.inventory.getBonusSummary.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
   const utils = trpc.useUtils();
 
   const refreshAll = async () => {
@@ -100,6 +103,7 @@ export default function BonusTrackerPage() {
       utils.inventory.getPendingBonusApprovals.invalidate(),
       utils.inventory.previewBonusNotification.invalidate(),
       utils.inventory.getBonusNotificationHistory.invalidate(),
+      utils.inventory.getBonusSummary.invalidate(),
     ]);
   };
 
@@ -116,8 +120,9 @@ export default function BonusTrackerPage() {
     onSuccess: refreshAll,
   });
 
-  const [openMarketer, setOpenMarketer] = useState<BonusMarketer | null>(
-    BONUS_MARKETERS[0] ?? null,
+  type ActiveView = BonusMarketer | "summary";
+  const [activeView, setActiveView] = useState<ActiveView>(
+    BONUS_MARKETERS[0] ?? "summary",
   );
   const [showPreviewModal, setShowPreviewModal] = useState(false);
 
@@ -157,124 +162,21 @@ export default function BonusTrackerPage() {
         </div>
       )}
 
-      {/* Pending approvals queue */}
-      {pendingItems.length > 0 && (
-        <div className="overflow-hidden rounded-md border border-amber-300 bg-amber-50">
-          <div className="flex items-center justify-between border-b border-amber-300 bg-amber-100 px-4 py-2">
-            <div className="text-sm font-semibold text-amber-900">
-              Pending approvals · {pendingItems.length}
-            </div>
-            {pendingItems.length >= 5 && (
-              <button
-                type="button"
-                disabled={bulkApprove.isPending}
-                onClick={() => {
-                  if (
-                    confirm(
-                      `Bulk-approve all ${pendingItems.length} pending bonuses at full amount? Use this for historical backlog; per-ad triage is preferred for ongoing crossings.`,
-                    )
-                  ) {
-                    bulkApprove.mutate();
-                  }
-                }}
-                className="rounded-md border border-amber-400 bg-white px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
-              >
-                {bulkApprove.isPending ? "Approving…" : "Bulk-approve all at full"}
-              </button>
-            )}
-          </div>
-          <div className="divide-y divide-amber-200">
-            {pendingItems.map((p) => (
-              <div
-                key={p.awardId}
-                className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium text-neutral-900">
-                    {p.marketer}
-                    <span className="ml-3 text-neutral-500">·</span>
-                    <span className="ml-3 text-neutral-700">Ad {p.adNumber}</span>
-                    <span className="ml-3 text-neutral-500">·</span>
-                    <span className="ml-3">
-                      {p.tier === "tier1" ? "T1 ($13k)" : "T2 ($65k)"}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 text-xs text-neutral-600 truncate">
-                    {p.adName} · crossed {fmtDate(p.crossedAt)} · lifetime{" "}
-                    {fmtMoney(p.lifetimeSpendUsd)}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {p.adLink && (
-                    <a
-                      href={p.adLink}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs text-blue-600 hover:underline"
-                    >
-                      View ad ↗
-                    </a>
-                  )}
-                  <button
-                    type="button"
-                    disabled={approve.isPending}
-                    onClick={() =>
-                      approve.mutate({
-                        awardId: p.awardId,
-                        approval: "approved_full",
-                      })
-                    }
-                    className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
-                    title="Approve full"
-                  >
-                    Approve full
-                  </button>
-                  {bonusCategory(p.marketer) === "main" && (
-                    <button
-                      type="button"
-                      disabled={approve.isPending}
-                      onClick={() =>
-                        approve.mutate({
-                          awardId: p.awardId,
-                          approval: "approved_half",
-                        })
-                      }
-                      className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-                      title="Approve half (rehook / collab)"
-                    >
-                      Approve half
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    disabled={reject.isPending}
-                    onClick={() => reject.mutate({ awardId: p.awardId })}
-                    className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-100 disabled:opacity-50"
-                  >
-                    Reject
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {tracker.isLoading ? (
         <div className="text-sm text-neutral-500">Loading…</div>
       ) : (
         <div className="space-y-4">
-          {/* Marketer tab strip */}
+          {/* Marketer + Summary tab strip */}
           <div className="flex flex-wrap gap-2">
             {BONUS_MARKETERS.map((marketer) => {
               const section = sectionsByMarketer.get(marketer);
               const count = section?.rows.length ?? 0;
-              const isActive = openMarketer === marketer;
+              const isActive = activeView === marketer;
               return (
                 <button
                   key={marketer}
                   type="button"
-                  onClick={() => setOpenMarketer(marketer)}
+                  onClick={() => setActiveView(marketer)}
                   aria-pressed={isActive}
                   className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
                     isActive
@@ -295,12 +197,105 @@ export default function BonusTrackerPage() {
                 </button>
               );
             })}
+            {/* Summary tab — bonus paid per month per marketer (Jasper 2026-05-20). */}
+            <button
+              type="button"
+              onClick={() => setActiveView("summary")}
+              aria-pressed={activeView === "summary"}
+              className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                activeView === "summary"
+                  ? "bg-neutral-900 text-white"
+                  : "border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
+              }`}
+            >
+              Summary
+            </button>
           </div>
 
           {/* Active tab content */}
-          {(() => {
-            const marketer = openMarketer;
-            if (!marketer) return null;
+          {activeView === "summary" ? (
+            (() => {
+              const data = summary.data;
+              if (summary.isLoading) {
+                return <div className="text-sm text-neutral-500">Loading summary…</div>;
+              }
+              if (!data || data.months.length === 0) {
+                return (
+                  <div className="rounded-md border border-neutral-200 bg-white px-4 py-6 text-sm text-neutral-500">
+                    No notifications sent yet — the scoreboard fills in as monthly
+                    batches go out.
+                  </div>
+                );
+              }
+              return (
+                <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+                          <th className="px-3 py-2 font-medium">Marketer</th>
+                          {data.months.map((m) => (
+                            <th
+                              key={m}
+                              className="px-3 py-2 text-right font-medium tabular-nums"
+                            >
+                              {m}
+                            </th>
+                          ))}
+                          <th className="px-3 py-2 text-right font-medium">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.rows.map((r) => (
+                          <tr
+                            key={r.marketer}
+                            className="border-b border-neutral-100 last:border-b-0 hover:bg-neutral-50"
+                          >
+                            <td className="px-3 py-2 font-medium text-neutral-900">
+                              {r.marketer}
+                            </td>
+                            {data.months.map((m) => (
+                              <td
+                                key={m}
+                                className="px-3 py-2 text-right tabular-nums text-neutral-800"
+                              >
+                                {(r.cells[m] ?? 0) > 0 ? (
+                                  fmtMoney(r.cells[m] ?? 0)
+                                ) : (
+                                  <span className="text-neutral-300">—</span>
+                                )}
+                              </td>
+                            ))}
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
+                              {fmtMoney(r.total)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t-2 border-neutral-200 bg-neutral-50 text-sm font-semibold">
+                          <td className="px-3 py-2 text-neutral-700">Total</td>
+                          {data.months.map((m) => (
+                            <td
+                              key={m}
+                              className="px-3 py-2 text-right tabular-nums text-neutral-900"
+                            >
+                              {fmtMoney(data.monthTotals[m] ?? 0)}
+                            </td>
+                          ))}
+                          <td className="px-3 py-2 text-right tabular-nums text-neutral-900">
+                            {fmtMoney(data.grandTotal)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()
+          ) : (
+          (() => {
+            const marketer = activeView;
             const section = sectionsByMarketer.get(marketer);
             const rows = section?.rows ?? [];
             const totalAds = rows.length;
@@ -314,9 +309,116 @@ export default function BonusTrackerPage() {
               (sum, r) => sum + r.lifetimeSpendUsd,
               0,
             );
+            // Per-marketer pending — Jasper 2026-05-20: each tab shows
+            // only that marketer's pending queue.
+            const marketerPending = pendingItems.filter(
+              (p) => p.marketer === marketer,
+            );
 
             return (
               <div className="space-y-4">
+                {/* Per-marketer pending approvals */}
+                {marketerPending.length > 0 && (
+                  <div className="overflow-hidden rounded-md border border-amber-300 bg-amber-50">
+                    <div className="flex items-center justify-between border-b border-amber-300 bg-amber-100 px-4 py-2">
+                      <div className="text-sm font-semibold text-amber-900">
+                        {marketer} pending approvals · {marketerPending.length}
+                      </div>
+                      {marketerPending.length >= 5 && (
+                        <button
+                          type="button"
+                          disabled={bulkApprove.isPending}
+                          onClick={() => {
+                            if (
+                              confirm(
+                                `Bulk-approve ALL ${pendingItems.length} pending bonuses (across all marketers) at full amount? Use this for historical backlog only.`,
+                              )
+                            ) {
+                              bulkApprove.mutate();
+                            }
+                          }}
+                          className="rounded-md border border-amber-400 bg-white px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                        >
+                          {bulkApprove.isPending ? "Approving…" : "Bulk-approve all (every marketer) at full"}
+                        </button>
+                      )}
+                    </div>
+                    <div className="divide-y divide-amber-200">
+                      {marketerPending.map((p) => (
+                        <div
+                          key={p.awardId}
+                          className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="font-medium text-neutral-900">
+                              <span>Ad {p.adNumber}</span>
+                              <span className="ml-3 text-neutral-500">·</span>
+                              <span className="ml-3">
+                                {p.tier === "tier1"
+                                  ? "T1 ($13k)"
+                                  : "T2 ($65k)"}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 text-xs text-neutral-600 truncate">
+                              {p.adName} · crossed {fmtDate(p.crossedAt)} · lifetime {fmtMoney(p.lifetimeSpendUsd)}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {p.adLink && (
+                              <a
+                                href={p.adLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs text-blue-600 hover:underline"
+                              >
+                                View ad ↗
+                              </a>
+                            )}
+                            <button
+                              type="button"
+                              disabled={approve.isPending}
+                              onClick={() =>
+                                approve.mutate({
+                                  awardId: p.awardId,
+                                  approval: "approved_full",
+                                })
+                              }
+                              className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
+                              title="Approve full"
+                            >
+                              Approve full
+                            </button>
+                            {bonusCategory(p.marketer) === "main" && (
+                              <button
+                                type="button"
+                                disabled={approve.isPending}
+                                onClick={() =>
+                                  approve.mutate({
+                                    awardId: p.awardId,
+                                    approval: "approved_half",
+                                  })
+                                }
+                                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                                title="Approve half (rehook / collab)"
+                              >
+                                Approve half
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={reject.isPending}
+                              onClick={() => reject.mutate({ awardId: p.awardId })}
+                              className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-100 disabled:opacity-50"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Summary cards */}
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <div className="rounded-md border border-neutral-200 bg-white p-4">
@@ -478,7 +580,8 @@ export default function BonusTrackerPage() {
                 </div>
               </div>
             );
-          })()}
+          })()
+          )}
         </div>
       )}
 

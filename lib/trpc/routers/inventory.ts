@@ -17,11 +17,13 @@ import {
 } from "@/lib/queries/launches";
 import { getFbAdsRollup } from "@/lib/queries/fb-ads";
 import {
+  getBonusSummary,
   getBonusTracker,
   getNotificationHistory,
   getPendingApprovals,
   previewNotification,
 } from "@/lib/queries/bonus-tracker";
+import { BONUS_MARKETERS } from "@/lib/domain/bonus-tiers";
 import {
   approveBonus,
   bulkApprovePending,
@@ -495,7 +497,15 @@ export const inventoryRouter = router({
   getBonusTracker: publicProcedure.query(() => getBonusTracker()),
 
   // Pending bonuses awaiting Jasper's per-ad approval decision.
-  getPendingBonusApprovals: publicProcedure.query(() => getPendingApprovals()),
+  // Optional marketer filter — used by per-marketer tab views (Jasper
+  // 2026-05-20: each marketer's tab shows only their pending queue).
+  getPendingBonusApprovals: publicProcedure
+    .input(
+      z
+        .object({ marketer: z.enum(BONUS_MARKETERS).optional() })
+        .optional(),
+    )
+    .query(({ input }) => getPendingApprovals({ marketer: input?.marketer })),
 
   // Approve a single pending award at full or half rate.
   approveBonus: publicProcedure
@@ -552,4 +562,7 @@ export const inventoryRouter = router({
   getBonusNotificationHistory: publicProcedure.query(() =>
     getNotificationHistory(),
   ),
+
+  // Scoreboard: bonus paid per month per marketer (Jasper 2026-05-20).
+  getBonusSummary: publicProcedure.query(() => getBonusSummary()),
 });

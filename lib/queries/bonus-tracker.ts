@@ -161,12 +161,24 @@ export type PendingApproval = {
  * lifetime spend so Jasper can review without leaving the page.
  *
  * Sort: crossed_at desc (newest first), then lifetime spend desc.
+ *
+ * Optional `marketer` filter scopes the queue to a single marketer
+ * (Jasper 2026-05-20: each marketer's tab shows only their pending).
  */
-export async function getPendingApprovals(): Promise<PendingApproval[]> {
+export async function getPendingApprovals(opts?: {
+  marketer?: BonusMarketer;
+}): Promise<PendingApproval[]> {
+  const whereClause = opts?.marketer
+    ? and(
+        eq(bonusAwards.status, "pending"),
+        eq(bonusAwards.marketer, opts.marketer),
+      )
+    : eq(bonusAwards.status, "pending");
+
   const pending = await db
     .select()
     .from(bonusAwards)
-    .where(eq(bonusAwards.status, "pending"))
+    .where(whereClause)
     .orderBy(desc(bonusAwards.crossedAt));
 
   if (pending.length === 0) return [];
@@ -218,9 +230,24 @@ export async function getPendingApprovals(): Promise<PendingApproval[]> {
     );
 }
 
+export type NotificationAward = {
+  marketer: BonusMarketer;
+  tier: BonusAwardTier;
+  status: "approved_full" | "approved_half";
+  amountUsd: number;
+  adNumber: string;
+  adName: string;
+  adLink: string | null;
+};
+
 export type NotificationPreview = {
   periodLabel: string;
   messageBody: string;
+  // Per-award detail powers the rich WhatsApp message body
+  // (Jasper 2026-05-20: ad name + link per award + per-marketer total).
+  awards: NotificationAward[];
+  // Per-marketer roll-up — kept for backward compat with
+  // bonus_notification_batches.totals_json history records.
   totals: Array<{
     marketer: BonusMarketer;
     tier1FullCount: number;
@@ -254,6 +281,23 @@ export async function previewNotification(opts?: {
       ),
     );
 
+  // Pull ad metadata (name + link) for every ad in the batch in one
+  // query. Keyed by ad_number so we can hydrate each award.
+  const adNumbersInBatch = Array.from(new Set(unsent.map((a) => a.adNumber)));
+  const adMeta =
+    adNumbersInBatch.length > 0
+      ? await db
+          .select({
+            adNumber: fbAdSpendDaily.adNumber,
+            adName: sql<string>`max(${fbAdSpendDaily.adName})`,
+            adLink: sql<string | null>`max(${fbAdSpendDaily.adLink})`,
+          })
+          .from(fbAdSpendDaily)
+          .where(inArray(fbAdSpendDaily.adNumber, adNumbersInBatch))
+          .groupBy(fbAdSpendDaily.adNumber)
+      : [];
+  const metaByAd = new Map(adMeta.map((m) => [m.adNumber, m]));
+
   type Bucket = NotificationPreview["totals"][number];
   const byMarketer = new Map<BonusMarketer, Bucket>();
   for (const m of BONUS_MARKETERS) {
@@ -267,10 +311,13 @@ export async function previewNotification(opts?: {
     });
   }
 
+  const awards: NotificationAward[] = [];
   const awardIds: string[] = [];
   for (const a of unsent) {
-    const bucket = byMarketer.get(a.marketer as BonusMarketer);
+    if (!isBonusMarketer(a.marketer)) continue;
+    const bucket = byMarketer.get(a.marketer);
     if (!bucket) continue;
+    if (a.status !== "approved_full" && a.status !== "approved_half") continue;
     const amount = Number(a.amountUsd);
     if (a.tier === "tier1") {
       if (a.status === "approved_half") bucket.tier1HalfCount++;
@@ -280,31 +327,65 @@ export async function previewNotification(opts?: {
       else bucket.tier2FullCount++;
     }
     bucket.totalUsd += amount;
+    const meta = metaByAd.get(a.adNumber);
+    awards.push({
+      marketer: a.marketer,
+      tier: a.tier,
+      status: a.status,
+      amountUsd: amount,
+      adNumber: a.adNumber,
+      adName: meta?.adName ?? `Ad ${a.adNumber}`,
+      adLink: meta?.adLink ?? null,
+    });
     awardIds.push(a.id);
   }
 
   const totals = Array.from(byMarketer.values());
   const grandTotalUsd = totals.reduce((s, t) => s + t.totalUsd, 0);
-  const messageBody = renderNotificationMessage(periodLabel, totals);
+  const messageBody = renderNotificationMessage(periodLabel, awards);
 
-  return { periodLabel, messageBody, totals, awardIds, grandTotalUsd };
+  return {
+    periodLabel,
+    messageBody,
+    awards,
+    totals,
+    awardIds,
+    grandTotalUsd,
+  };
 }
 
-/** Render the WhatsApp message body in Jasper's April-example format. */
+/**
+ * Render the WhatsApp message body: per-marketer total followed by an
+ * itemized list of awards (tier + ad number + ad name + link).
+ * Jasper 2026-05-20: "ad name + ad link for those hit".
+ */
 function renderNotificationMessage(
   periodLabel: string,
-  totals: NotificationPreview["totals"],
+  awards: NotificationAward[],
 ): string {
   const lines: string[] = [`${periodLabel} Bonuses`, ""];
-  for (const t of totals) {
-    lines.push(t.marketer);
-    if (t.tier1FullCount > 0) lines.push(`${t.tier1FullCount}x 13k bonus`);
-    if (t.tier1HalfCount > 0)
-      lines.push(`${t.tier1HalfCount}x 13k 50% bonus`);
-    if (t.tier2FullCount > 0) lines.push(`${t.tier2FullCount}x 65k bonus`);
-    if (t.tier2HalfCount > 0)
-      lines.push(`${t.tier2HalfCount}x 65k 50% bonus`);
-    lines.push(`Total: $${t.totalUsd.toLocaleString("en-US")}`);
+  if (awards.length === 0) {
+    lines.push("(no approved bonuses this period)");
+    return lines.join("\n").trimEnd();
+  }
+  // Preserve BONUS_MARKETERS roster order (Craig, Raul, Tyler, Jacob, Dan, JW).
+  const byMarketer = new Map<BonusMarketer, NotificationAward[]>();
+  for (const m of BONUS_MARKETERS) byMarketer.set(m, []);
+  for (const a of awards) byMarketer.get(a.marketer)?.push(a);
+
+  for (const marketer of BONUS_MARKETERS) {
+    const list = byMarketer.get(marketer) ?? [];
+    if (list.length === 0) continue;
+    const total = list.reduce((s, a) => s + a.amountUsd, 0);
+    lines.push(`${marketer} — Total: $${total.toLocaleString("en-US")}`);
+    for (const a of list) {
+      const tierLabel = a.tier === "tier1" ? "$13k" : "$65k";
+      const halfMarker = a.status === "approved_half" ? " (half)" : "";
+      lines.push(
+        `• ${tierLabel}${halfMarker} · Ad ${a.adNumber} — ${a.adName}`,
+      );
+      if (a.adLink) lines.push(`  ${a.adLink}`);
+    }
     lines.push("");
   }
   return lines.join("\n").trimEnd();
@@ -351,4 +432,81 @@ export async function getNotificationHistory(): Promise<NotificationHistoryRow[]
       grandTotalUsd: grand,
     };
   });
+}
+
+export type BonusSummaryRow = {
+  marketer: BonusMarketer;
+  // Map of "YYYY-MM" → total approved bonus amount sent that month.
+  cells: Record<string, number>;
+  total: number;
+};
+
+export type BonusSummary = {
+  // Months that have any sent batch — sorted DESC (newest first).
+  months: string[];
+  rows: BonusSummaryRow[];
+  // Column totals (per month).
+  monthTotals: Record<string, number>;
+  grandTotal: number;
+};
+
+/**
+ * Scoreboard view (Jasper 2026-05-20): bonus paid per month per marketer.
+ * Reads from `bonus_awards` joined to `bonus_notification_batches` —
+ * unsent approved awards are intentionally excluded; only what has
+ * actually been notified counts on the scoreboard.
+ *
+ * Returns one row per marketer in roster order, with cells keyed by
+ * "YYYY-MM" derived from the batch's `sent_at` in EST.
+ */
+export async function getBonusSummary(): Promise<BonusSummary> {
+  // Aggregate amounts at (marketer × YYYY-MM) granularity. EST month
+  // bucket matches the FB ad-spend day boundary used elsewhere.
+  const rows = await db
+    .select({
+      marketer: bonusAwards.marketer,
+      month: sql<string>`to_char(${bonusNotificationBatches.sentAt} at time zone 'America/New_York', 'YYYY-MM')`,
+      totalUsd: sql<string>`sum(${bonusAwards.amountUsd})`,
+    })
+    .from(bonusAwards)
+    .innerJoin(
+      bonusNotificationBatches,
+      eq(bonusAwards.notificationBatchId, bonusNotificationBatches.id),
+    )
+    .where(sql`${bonusAwards.status} IN ('approved_full','approved_half')`)
+    .groupBy(
+      bonusAwards.marketer,
+      sql`to_char(${bonusNotificationBatches.sentAt} at time zone 'America/New_York', 'YYYY-MM')`,
+    );
+
+  const monthSet = new Set<string>();
+  const cellByMarketer = new Map<BonusMarketer, Record<string, number>>();
+  for (const m of BONUS_MARKETERS) cellByMarketer.set(m, {});
+
+  for (const r of rows) {
+    if (!isBonusMarketer(r.marketer)) continue;
+    monthSet.add(r.month);
+    const cells = cellByMarketer.get(r.marketer)!;
+    cells[r.month] = (cells[r.month] ?? 0) + Number(r.totalUsd);
+  }
+
+  const months = Array.from(monthSet).sort().reverse();
+
+  const monthTotals: Record<string, number> = {};
+  for (const month of months) monthTotals[month] = 0;
+
+  const resultRows: BonusSummaryRow[] = BONUS_MARKETERS.map((marketer) => {
+    const cells = cellByMarketer.get(marketer)!;
+    let total = 0;
+    for (const month of months) {
+      const v = cells[month] ?? 0;
+      total += v;
+      monthTotals[month] += v;
+    }
+    return { marketer, cells, total };
+  });
+
+  const grandTotal = Object.values(monthTotals).reduce((s, v) => s + v, 0);
+
+  return { months, rows: resultRows, monthTotals, grandTotal };
 }
