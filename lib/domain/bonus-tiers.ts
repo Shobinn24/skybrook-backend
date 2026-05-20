@@ -20,6 +20,31 @@ export function isBonusMarketer(name: string): name is BonusMarketer {
   return BONUS_SET.has(name);
 }
 
+// Per-marketer hard floor on ad numbers — ads below this are excluded
+// from BOTH display AND crossing detection (Scott 2026-05-20). Earlier
+// ads under these marketers' names were either mis-attributed or
+// pre-date the bonus program. Existing approved/rejected rows stay for
+// history; only pending rows below the floor get cleaned up.
+export const BONUS_AD_FLOOR = {
+  Craig: 0,
+  Raul: 0,
+  Tyler: 0,
+  Jacob: 1896,
+  Dan: 1944,
+  JW: 1907,
+} as const satisfies Record<BonusMarketer, number>;
+
+// `adNumber` is stored as text in fb_ad_spend_daily; parseInt with a
+// NaN guard treats malformed values as below-floor (excluded).
+export function isAboveBonusFloor(
+  marketer: BonusMarketer,
+  adNumber: string,
+): boolean {
+  const n = parseInt(adNumber, 10);
+  if (Number.isNaN(n)) return false;
+  return n >= BONUS_AD_FLOOR[marketer];
+}
+
 // Lifetime-spend thresholds drive row coloring: ≥ TIER_2 → green,
 // ≥ TIER_1 → orange, otherwise neutral. No bonus $ amounts surface
 // in the UI per spec — only tier progress.

@@ -6,6 +6,7 @@ import {
   BONUS_TIER_1_USD,
   BONUS_TIER_2_USD,
   bonusAmountAtFullUsd,
+  isAboveBonusFloor,
   type BonusMarketer,
 } from "@/lib/domain/bonus-tiers";
 import { logger } from "@/lib/logger";
@@ -81,6 +82,9 @@ export async function detectAndInsertBonusCrossings(opts?: {
 
     scanned++;
     for (const marketer of marketers) {
+      // Hard floor per marketer — silently skip below-floor ads so they
+      // never enter the pending queue (Scott 2026-05-20).
+      if (!isAboveBonusFloor(marketer, row.adNumber)) continue;
       if (hitTier1) {
         candidates.push({
           adNumber: row.adNumber,

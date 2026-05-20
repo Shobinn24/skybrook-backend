@@ -364,64 +364,113 @@ export default function BonusTrackerPage() {
                       <table className="w-full text-sm">
                         <thead>
                           <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
-                            <th className="w-24 px-3 py-2 font-medium">Ad #</th>
+                            <th className="w-20 px-3 py-2 font-medium">Ad #</th>
                             <th className="px-3 py-2 font-medium">Ad name</th>
-                            <th className="w-24 px-3 py-2 font-medium">Link</th>
-                            <th className="w-40 px-3 py-2 font-medium">Status</th>
-                            <th className="w-40 px-3 py-2 text-right font-medium">
+                            <th className="w-20 px-3 py-2 font-medium">Link</th>
+                            <th className="w-32 px-3 py-2 text-right font-medium">
                               Lifetime spend
+                            </th>
+                            <th className="w-28 px-3 py-2 text-right font-medium">
+                              Past 7D spend
+                            </th>
+                            <th className="w-56 px-3 py-2 font-medium">
+                              Progress to tiers
                             </th>
                           </tr>
                         </thead>
                         <tbody>
-                          {rows.map((r) => (
-                            <tr
-                              key={r.adNumber}
-                              className={`border-b border-neutral-100 last:border-b-0 ${rowClass({
-                                tier1Status: r.awards.tier1?.status,
-                                tier2Status: r.awards.tier2?.status,
-                              })}`}
-                            >
-                              <td className="px-3 py-2 font-medium text-neutral-900 tabular-nums">
-                                {r.adNumber}
-                              </td>
-                              <td className="px-3 py-2 text-neutral-800">
-                                <div title={r.adNameRaw}>{r.adName}</div>
-                                <div
-                                  className="text-[11px] text-neutral-400 truncate max-w-md"
-                                  title={r.adNameRaw}
-                                >
-                                  {r.adNameRaw}
-                                </div>
-                              </td>
-                              <td className="px-3 py-2">
-                                {r.adLink ? (
-                                  <a
-                                    href={r.adLink}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-blue-600 hover:underline"
+                          {rows.map((r) => {
+                            const t1Pct = Math.min(
+                              100,
+                              Math.round(
+                                (r.lifetimeSpendUsd / BONUS_TIER_1_USD) * 100,
+                              ),
+                            );
+                            const t2Pct = Math.min(
+                              100,
+                              Math.round(
+                                (r.lifetimeSpendUsd / BONUS_TIER_2_USD) * 100,
+                              ),
+                            );
+                            return (
+                              <tr
+                                key={r.adNumber}
+                                className={`border-b border-neutral-100 last:border-b-0 ${rowClass({
+                                  tier1Status: r.awards.tier1?.status,
+                                  tier2Status: r.awards.tier2?.status,
+                                })}`}
+                              >
+                                <td className="px-3 py-2 font-medium text-neutral-900 tabular-nums">
+                                  {r.adNumber}
+                                </td>
+                                <td className="px-3 py-2 text-neutral-800">
+                                  <div title={r.adNameRaw}>{r.adName}</div>
+                                  <div
+                                    className="text-[11px] text-neutral-400 truncate max-w-md"
+                                    title={r.adNameRaw}
                                   >
-                                    Open ↗
-                                  </a>
-                                ) : (
-                                  <span className="text-neutral-400">—</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-2">
-                                <div className="flex flex-wrap gap-1">
-                                  {tierBadge(r.awards.tier1?.status, "T1")}
-                                  {tierBadge(r.awards.tier2?.status, "T2")}
-                                  {!r.awards.tier1 && !r.awards.tier2 && (
-                                    <span className="text-xs text-neutral-400">—</span>
+                                    {r.adNameRaw}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2">
+                                  {r.adLink ? (
+                                    <a
+                                      href={r.adLink}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-blue-600 hover:underline"
+                                    >
+                                      Open ↗
+                                    </a>
+                                  ) : (
+                                    <span className="text-neutral-400">—</span>
                                   )}
-                                </div>
-                              </td>
-                              <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
-                                {fmtMoney(r.lifetimeSpendUsd)}
-                              </td>
-                            </tr>
-                          ))}
+                                </td>
+                                <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
+                                  {fmtMoney(r.lifetimeSpendUsd)}
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums text-neutral-700">
+                                  {r.past7dSpendUsd > 0 ? (
+                                    fmtMoney(r.past7dSpendUsd)
+                                  ) : (
+                                    <span className="text-neutral-300">—</span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2">
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center gap-2 text-[11px]">
+                                      <span className="w-9 text-right text-neutral-500 tabular-nums">
+                                        $13k
+                                      </span>
+                                      <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
+                                        <div
+                                          className="absolute inset-y-0 left-0 bg-orange-500"
+                                          style={{ width: `${t1Pct}%` }}
+                                        />
+                                      </div>
+                                      <span className="w-10 text-right text-neutral-500 tabular-nums">
+                                        {t1Pct}%
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-2 text-[11px]">
+                                      <span className="w-9 text-right text-neutral-500 tabular-nums">
+                                        $65k
+                                      </span>
+                                      <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
+                                        <div
+                                          className="absolute inset-y-0 left-0 bg-green-500"
+                                          style={{ width: `${t2Pct}%` }}
+                                        />
+                                      </div>
+                                      <span className="w-10 text-right text-neutral-500 tabular-nums">
+                                        {t2Pct}%
+                                      </span>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

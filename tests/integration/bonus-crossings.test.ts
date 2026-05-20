@@ -113,7 +113,7 @@ describe("detectAndInsertBonusCrossings", () => {
   it("uses secondary marketer rates for Jacob / Dan / JW", async () => {
     const rawId = await makeRawPull();
     await seedFbAdSpend({
-      adNumber: "300",
+      adNumber: "1900", // above Jacob's BONUS_AD_FLOOR of 1896
       marketers: ["Jacob"],
       totalCostUsd: 70_000,
       sourcePullId: rawId,
@@ -225,5 +225,78 @@ describe("detectAndInsertBonusCrossings", () => {
     const result = await detectAndInsertBonusCrossings();
     expect(result.inserted).toBe(0);
     expect(result.scanned).toBe(0);
+  });
+
+  describe("BONUS_AD_FLOOR filter (Scott 2026-05-20)", () => {
+    it("skips Jacob ad numbers strictly below 1896 even when spend crosses T1", async () => {
+      const rawId = await makeRawPull();
+      await seedFbAdSpend({
+        adNumber: "1895",
+        marketers: ["Jacob"],
+        totalCostUsd: 20_000, // above T1 but below floor
+        sourcePullId: rawId,
+      });
+
+      const result = await detectAndInsertBonusCrossings();
+      expect(result.inserted).toBe(0);
+
+      const rows = await db.select().from(bonusAwards);
+      expect(rows).toHaveLength(0);
+    });
+
+    it("includes Jacob ad numbers at or above 1896", async () => {
+      const rawId = await makeRawPull();
+      await seedFbAdSpend({
+        adNumber: "1896",
+        marketers: ["Jacob"],
+        totalCostUsd: 20_000,
+        sourcePullId: rawId,
+      });
+
+      const result = await detectAndInsertBonusCrossings();
+      expect(result.inserted).toBe(1);
+
+      const rows = await db.select().from(bonusAwards);
+      expect(rows[0].marketer).toBe("Jacob");
+      expect(rows[0].adNumber).toBe("1896");
+    });
+
+    it("skips JW below 1907 and Dan below 1944", async () => {
+      const rawId = await makeRawPull();
+      await seedFbAdSpend({
+        adNumber: "1906",
+        marketers: ["JW"],
+        totalCostUsd: 20_000,
+        sourcePullId: rawId,
+      });
+      await seedFbAdSpend({
+        adNumber: "1943",
+        marketers: ["Dan"],
+        totalCostUsd: 20_000,
+        sourcePullId: rawId,
+      });
+
+      const result = await detectAndInsertBonusCrossings();
+      expect(result.inserted).toBe(0);
+
+      const rows = await db.select().from(bonusAwards);
+      expect(rows).toHaveLength(0);
+    });
+
+    it("on a multi-marketer ad, includes Craig (no floor) but skips Jacob (below floor)", async () => {
+      const rawId = await makeRawPull();
+      await seedFbAdSpend({
+        adNumber: "1500", // below Jacob's floor, but Craig has no floor
+        marketers: ["Craig", "Jacob"],
+        totalCostUsd: 20_000,
+        sourcePullId: rawId,
+      });
+
+      const result = await detectAndInsertBonusCrossings();
+      expect(result.inserted).toBe(1); // only Craig
+
+      const rows = await db.select().from(bonusAwards);
+      expect(rows[0].marketer).toBe("Craig");
+    });
   });
 });

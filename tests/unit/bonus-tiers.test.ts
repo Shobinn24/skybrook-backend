@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  BONUS_AD_FLOOR,
   BONUS_MARKETERS,
   BONUS_TIER_1_USD,
   BONUS_TIER_2_USD,
@@ -7,6 +8,7 @@ import {
   bonusAmountUsd,
   bonusCategory,
   bonusTier,
+  isAboveBonusFloor,
   isBonusMarketer,
 } from "@/lib/domain/bonus-tiers";
 
@@ -118,5 +120,60 @@ describe("bonusAmountAtFullUsd()", () => {
   it("returns the full rate for the pre-approval pending row default", () => {
     expect(bonusAmountAtFullUsd({ marketer: "Craig", tier: "tier1" })).toBe(500);
     expect(bonusAmountAtFullUsd({ marketer: "Jacob", tier: "tier2" })).toBe(1500);
+  });
+});
+
+describe("BONUS_AD_FLOOR", () => {
+  it("sets Jacob floor at 1896, Dan at 1944, JW at 1907 (Scott 2026-05-20)", () => {
+    expect(BONUS_AD_FLOOR.Jacob).toBe(1896);
+    expect(BONUS_AD_FLOOR.Dan).toBe(1944);
+    expect(BONUS_AD_FLOOR.JW).toBe(1907);
+  });
+
+  it("keeps Craig, Raul, Tyler at floor 0 (no exclusion)", () => {
+    expect(BONUS_AD_FLOOR.Craig).toBe(0);
+    expect(BONUS_AD_FLOOR.Raul).toBe(0);
+    expect(BONUS_AD_FLOOR.Tyler).toBe(0);
+  });
+});
+
+describe("isAboveBonusFloor()", () => {
+  it("excludes Jacob ads strictly below 1896", () => {
+    expect(isAboveBonusFloor("Jacob", "1")).toBe(false);
+    expect(isAboveBonusFloor("Jacob", "1895")).toBe(false);
+  });
+
+  it("includes Jacob ads at or above 1896", () => {
+    expect(isAboveBonusFloor("Jacob", "1896")).toBe(true);
+    expect(isAboveBonusFloor("Jacob", "9999")).toBe(true);
+  });
+
+  it("excludes JW ads strictly below 1907", () => {
+    expect(isAboveBonusFloor("JW", "1906")).toBe(false);
+  });
+
+  it("includes JW ads at or above 1907", () => {
+    expect(isAboveBonusFloor("JW", "1907")).toBe(true);
+  });
+
+  it("excludes Dan ads strictly below 1944", () => {
+    expect(isAboveBonusFloor("Dan", "1943")).toBe(false);
+  });
+
+  it("includes Dan ads at or above 1944", () => {
+    expect(isAboveBonusFloor("Dan", "1944")).toBe(true);
+  });
+
+  it("always includes Craig/Raul/Tyler ads (floor is 0)", () => {
+    expect(isAboveBonusFloor("Craig", "1")).toBe(true);
+    expect(isAboveBonusFloor("Raul", "1")).toBe(true);
+    expect(isAboveBonusFloor("Tyler", "1")).toBe(true);
+    expect(isAboveBonusFloor("Craig", "0")).toBe(true);
+  });
+
+  it("excludes non-numeric ad numbers safely (NaN guard)", () => {
+    expect(isAboveBonusFloor("Jacob", "abc")).toBe(false);
+    expect(isAboveBonusFloor("Jacob", "")).toBe(false);
+    expect(isAboveBonusFloor("Craig", "x")).toBe(false);
   });
 });

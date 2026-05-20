@@ -8,7 +8,19 @@ import {
 import {
   BONUS_MARKETERS,
   type BonusMarketer,
+  isAboveBonusFloor,
+  isBonusMarketer,
 } from "@/lib/domain/bonus-tiers";
+import { toEstDate } from "@/lib/tz";
+
+// Date-only arithmetic in UTC to avoid host-TZ drift (mirrors the
+// helper pattern used in queries/performance.ts and sustainability-
+// timeline.ts).
+function addDays(ymd: string, days: number): string {
+  const dt = new Date(`${ymd}T00:00:00Z`);
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
+}
 
 export type BonusAwardStatus =
   | "pending"
@@ -34,6 +46,8 @@ export type BonusAdRow = {
   adLink: string | null;
   marketers: string[];
   lifetimeSpendUsd: number;
+  // Rolling 7-day window: spend in [today-6, today] EST inclusive.
+  past7dSpendUsd: number;
   // Per (ad × THIS section's marketer × tier) award. Null when no
   // crossing has been detected for that tier yet.
   awards: { tier1: BonusAwardForRow | null; tier2: BonusAwardForRow | null };
@@ -57,7 +71,12 @@ export type BonusTrackerResult = {
  * Sort within a section: lifetime spend descending.
  */
 export async function getBonusTracker(): Promise<BonusTrackerResult> {
-  // Per-ad lifetime spend + marketers array.
+  // 7-day rolling window in EST: [today-6, today] inclusive. Same SQL
+  // FILTER trick keeps it to a single scan, so cost is unchanged.
+  const todayEst = toEstDate(new Date());
+  const sevenDaysAgoEst = addDays(todayEst, -6);
+
+  // Per-ad lifetime spend + 7d spend + marketers array.
   const adRows = await db
     .select({
       adNumber: fbAdSpendDaily.adNumber,
@@ -66,6 +85,7 @@ export async function getBonusTracker(): Promise<BonusTrackerResult> {
       adLink: sql<string | null>`max(${fbAdSpendDaily.adLink})`,
       marketers: sql<string[]>`min(${fbAdSpendDaily.marketers})`,
       lifetimeSpendUsd: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}), 0)`,
+      past7dSpendUsd: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}) filter (where ${fbAdSpendDaily.spendDate} >= ${sevenDaysAgoEst}), 0)`,
     })
     .from(fbAdSpendDaily)
     .groupBy(fbAdSpendDaily.adNumber)
@@ -99,6 +119,7 @@ export async function getBonusTracker(): Promise<BonusTrackerResult> {
     for (const name of adMarketers) {
       const section = sectionByMarketer.get(name as BonusMarketer);
       if (!section) continue;
+      if (!isAboveBonusFloor(name as BonusMarketer, r.adNumber)) continue;
       const row: BonusAdRow = {
         adNumber: r.adNumber,
         adName: r.adName,
@@ -106,6 +127,7 @@ export async function getBonusTracker(): Promise<BonusTrackerResult> {
         adLink: r.adLink,
         marketers: adMarketers,
         lifetimeSpendUsd: Number(r.lifetimeSpendUsd),
+        past7dSpendUsd: Number(r.past7dSpendUsd),
         awards: {
           tier1: awardByKey.get(`${r.adNumber}|${name}|tier1`) ?? null,
           tier2: awardByKey.get(`${r.adNumber}|${name}|tier2`) ?? null,
@@ -168,6 +190,8 @@ export async function getPendingApprovals(): Promise<PendingApproval[]> {
 
   return pending
     .map<PendingApproval | null>((p) => {
+      if (!isBonusMarketer(p.marketer)) return null;
+      if (!isAboveBonusFloor(p.marketer, p.adNumber)) return null;
       const m = metaByAd.get(p.adNumber);
       if (!m) return null;
       const full = Number(p.amountUsd);
@@ -177,7 +201,7 @@ export async function getPendingApprovals(): Promise<PendingApproval[]> {
         adName: m.adName,
         adNameRaw: m.adNameRaw,
         adLink: m.adLink,
-        marketer: p.marketer as BonusMarketer,
+        marketer: p.marketer,
         tier: p.tier,
         defaultAmountUsd: full,
         halfAmountUsd: full / 2,
