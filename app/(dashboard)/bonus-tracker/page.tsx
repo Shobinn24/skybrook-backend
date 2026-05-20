@@ -192,9 +192,6 @@ export default function BonusTrackerPage() {
                 <div className="min-w-0 flex-1">
                   <div className="font-medium text-neutral-900">
                     {p.marketer}
-                    <span className="ml-2 text-xs text-neutral-500">
-                      {bonusCategory(p.marketer) === "main" ? "main" : "secondary"}
-                    </span>
                     <span className="ml-3 text-neutral-500">·</span>
                     <span className="ml-3 text-neutral-700">Ad {p.adNumber}</span>
                     <span className="ml-3 text-neutral-500">·</span>
@@ -228,9 +225,9 @@ export default function BonusTrackerPage() {
                       })
                     }
                     className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
-                    title={`Approve at full $${p.defaultAmountUsd}`}
+                    title="Approve full"
                   >
-                    Full ${p.defaultAmountUsd}
+                    Approve full
                   </button>
                   {bonusCategory(p.marketer) === "main" && (
                     <button
@@ -242,10 +239,10 @@ export default function BonusTrackerPage() {
                           approval: "approved_half",
                         })
                       }
-                      className="rounded-md bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-400 disabled:opacity-50"
-                      title="Approve at 50% (rehook / collab)"
+                      className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                      title="Approve half (rehook / collab)"
                     >
-                      Half ${p.halfAmountUsd}
+                      Approve half
                     </button>
                   )}
                   <button
@@ -266,141 +263,173 @@ export default function BonusTrackerPage() {
       {tracker.isLoading ? (
         <div className="text-sm text-neutral-500">Loading…</div>
       ) : (
-        <div className="space-y-3">
-          {BONUS_MARKETERS.map((marketer) => {
+        <div className="space-y-4">
+          {/* Marketer tab strip */}
+          <div className="flex flex-wrap gap-2">
+            {BONUS_MARKETERS.map((marketer) => {
+              const section = sectionsByMarketer.get(marketer);
+              const count = section?.rows.length ?? 0;
+              const isActive = openMarketer === marketer;
+              return (
+                <button
+                  key={marketer}
+                  type="button"
+                  onClick={() => setOpenMarketer(marketer)}
+                  aria-pressed={isActive}
+                  className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                    isActive
+                      ? "bg-neutral-900 text-white"
+                      : "border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
+                  }`}
+                >
+                  {marketer}
+                  <span
+                    className={`inline-flex min-w-[1.5rem] items-center justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${
+                      isActive
+                        ? "bg-white/20 text-white"
+                        : "bg-neutral-100 text-neutral-600"
+                    }`}
+                  >
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Active tab content */}
+          {(() => {
+            const marketer = openMarketer;
+            if (!marketer) return null;
             const section = sectionsByMarketer.get(marketer);
             const rows = section?.rows ?? [];
-            const isOpen = openMarketer === marketer;
-            const approvedT1 = rows.filter(
-              (r) =>
-                r.awards.tier1?.status === "approved_full" ||
-                r.awards.tier1?.status === "approved_half",
+            const totalAds = rows.length;
+            const hitT1 = rows.filter(
+              (r) => r.lifetimeSpendUsd >= BONUS_TIER_1_USD,
             ).length;
-            const approvedT2 = rows.filter(
-              (r) =>
-                r.awards.tier2?.status === "approved_full" ||
-                r.awards.tier2?.status === "approved_half",
+            const hitT2 = rows.filter(
+              (r) => r.lifetimeSpendUsd >= BONUS_TIER_2_USD,
             ).length;
+            const totalLifetime = rows.reduce(
+              (sum, r) => sum + r.lifetimeSpendUsd,
+              0,
+            );
 
             return (
-              <div
-                key={marketer}
-                className="overflow-hidden rounded-md border border-neutral-200 bg-white"
-              >
-                <button
-                  type="button"
-                  onClick={() => setOpenMarketer(isOpen ? null : marketer)}
-                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-neutral-50"
-                  aria-expanded={isOpen}
-                >
-                  <div className="flex items-center gap-3">
-                    <span aria-hidden className="text-neutral-400 tabular-nums">
-                      {isOpen ? "▾" : "▸"}
-                    </span>
-                    <span className="font-semibold text-neutral-900">
-                      {marketer}
-                    </span>
-                    <span className="text-xs text-neutral-500">
-                      {bonusCategory(marketer) === "main"
-                        ? "main · $500/$3k"
-                        : "secondary · $250/$1.5k"}
-                    </span>
-                    <span className="text-xs text-neutral-500">
-                      {rows.length} {rows.length === 1 ? "ad" : "ads"}
-                    </span>
+              <div className="space-y-4">
+                {/* Summary cards */}
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <div className="rounded-md border border-neutral-200 bg-white p-4">
+                    <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                      Total ads
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                      {totalAds}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 text-xs">
-                    {approvedT2 > 0 && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 font-medium text-green-900">
-                        {approvedT2} @ T2
-                      </span>
-                    )}
-                    {approvedT1 > 0 && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 font-medium text-orange-900">
-                        {approvedT1} @ T1
-                      </span>
-                    )}
+                  <div className="rounded-md border border-orange-200 bg-orange-50 p-4">
+                    <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                      Hit $13k tier
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                      {hitT1}
+                    </div>
                   </div>
-                </button>
+                  <div className="rounded-md border border-green-200 bg-green-50 p-4">
+                    <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                      Hit $65k tier
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                      {hitT2}
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-neutral-200 bg-white p-4">
+                    <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                      Total lifetime spend
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                      {fmtMoney(totalLifetime)}
+                    </div>
+                  </div>
+                </div>
 
-                {isOpen && (
-                  <div className="border-t border-neutral-200">
-                    {rows.length === 0 ? (
-                      <div className="px-4 py-6 text-sm text-neutral-500">
-                        No ads attributed to {marketer} yet.
-                      </div>
-                    ) : (
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
-                              <th className="w-24 px-3 py-2 font-medium">Ad #</th>
-                              <th className="px-3 py-2 font-medium">Ad name</th>
-                              <th className="w-24 px-3 py-2 font-medium">Link</th>
-                              <th className="w-40 px-3 py-2 font-medium">Status</th>
-                              <th className="w-40 px-3 py-2 text-right font-medium">
-                                Lifetime spend
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {rows.map((r) => (
-                              <tr
-                                key={r.adNumber}
-                                className={`border-b border-neutral-100 last:border-b-0 ${rowClass({
-                                  tier1Status: r.awards.tier1?.status,
-                                  tier2Status: r.awards.tier2?.status,
-                                })}`}
-                              >
-                                <td className="px-3 py-2 font-medium text-neutral-900 tabular-nums">
-                                  {r.adNumber}
-                                </td>
-                                <td className="px-3 py-2 text-neutral-800">
-                                  <div title={r.adNameRaw}>{r.adName}</div>
-                                  <div
-                                    className="text-[11px] text-neutral-400 truncate max-w-md"
-                                    title={r.adNameRaw}
+                {/* Ad table */}
+                <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
+                  {rows.length === 0 ? (
+                    <div className="px-4 py-6 text-sm text-neutral-500">
+                      No ads attributed to {marketer} yet.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+                            <th className="w-24 px-3 py-2 font-medium">Ad #</th>
+                            <th className="px-3 py-2 font-medium">Ad name</th>
+                            <th className="w-24 px-3 py-2 font-medium">Link</th>
+                            <th className="w-40 px-3 py-2 font-medium">Status</th>
+                            <th className="w-40 px-3 py-2 text-right font-medium">
+                              Lifetime spend
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((r) => (
+                            <tr
+                              key={r.adNumber}
+                              className={`border-b border-neutral-100 last:border-b-0 ${rowClass({
+                                tier1Status: r.awards.tier1?.status,
+                                tier2Status: r.awards.tier2?.status,
+                              })}`}
+                            >
+                              <td className="px-3 py-2 font-medium text-neutral-900 tabular-nums">
+                                {r.adNumber}
+                              </td>
+                              <td className="px-3 py-2 text-neutral-800">
+                                <div title={r.adNameRaw}>{r.adName}</div>
+                                <div
+                                  className="text-[11px] text-neutral-400 truncate max-w-md"
+                                  title={r.adNameRaw}
+                                >
+                                  {r.adNameRaw}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2">
+                                {r.adLink ? (
+                                  <a
+                                    href={r.adLink}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-600 hover:underline"
                                   >
-                                    {r.adNameRaw}
-                                  </div>
-                                </td>
-                                <td className="px-3 py-2">
-                                  {r.adLink ? (
-                                    <a
-                                      href={r.adLink}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-blue-600 hover:underline"
-                                    >
-                                      Open ↗
-                                    </a>
-                                  ) : (
-                                    <span className="text-neutral-400">—</span>
+                                    Open ↗
+                                  </a>
+                                ) : (
+                                  <span className="text-neutral-400">—</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2">
+                                <div className="flex flex-wrap gap-1">
+                                  {tierBadge(r.awards.tier1?.status, "T1")}
+                                  {tierBadge(r.awards.tier2?.status, "T2")}
+                                  {!r.awards.tier1 && !r.awards.tier2 && (
+                                    <span className="text-xs text-neutral-400">—</span>
                                   )}
-                                </td>
-                                <td className="px-3 py-2">
-                                  <div className="flex flex-wrap gap-1">
-                                    {tierBadge(r.awards.tier1?.status, "T1")}
-                                    {tierBadge(r.awards.tier2?.status, "T2")}
-                                    {!r.awards.tier1 && !r.awards.tier2 && (
-                                      <span className="text-xs text-neutral-400">—</span>
-                                    )}
-                                  </div>
-                                </td>
-                                <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
-                                  {fmtMoney(r.lifetimeSpendUsd)}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                )}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
+                                {fmtMoney(r.lifetimeSpendUsd)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               </div>
             );
-          })}
+          })()}
         </div>
       )}
 
@@ -421,9 +450,6 @@ export default function BonusTrackerPage() {
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="font-semibold tabular-nums text-neutral-900">
-                      {fmtMoney(h.grandTotalUsd)}
-                    </span>
                     {h.whatsappStatus === "sent" ? (
                       <span className="text-xs text-green-700">✓ WhatsApp sent</span>
                     ) : (
@@ -472,15 +498,9 @@ export default function BonusTrackerPage() {
                   {previewData.messageBody}
                 </pre>
               </div>
-              <div className="text-sm text-neutral-700">
-                <span className="font-medium">Grand total:</span>{" "}
-                <span className="font-semibold tabular-nums text-neutral-900">
-                  {fmtMoney(previewData.grandTotalUsd)}
-                </span>{" "}
-                <span className="text-neutral-500">
-                  across {previewData.awardIds.length} bonus
-                  {previewData.awardIds.length === 1 ? "" : "es"}
-                </span>
+              <div className="text-sm text-neutral-500">
+                {previewData.awardIds.length} bonus
+                {previewData.awardIds.length === 1 ? "" : "es"} in this batch
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-neutral-200 px-4 py-3">
