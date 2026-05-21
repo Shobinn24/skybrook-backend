@@ -1027,12 +1027,15 @@ export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
 
   const sheets = buildSheetsClient();
 
-  // 3015 rows × 132 cols ≈ 400K cells — well within Sheets API range
-  // limits. Pull A:EZ (col 156) to cover future date columns without
-  // needing to re-check the schema every pull.
+  // Pull A:ANK (col 1027) so the ingest is ready for a 3-year date
+  // window when Scott widens the Supermetrics FB Ads export. ANK
+  // covers 1025 date columns — roughly 2.8 years of daily slots — and
+  // ~3015 rows × 1027 cols ≈ 3.1M cells is comfortably under the
+  // Sheets API 10M-cell range cap. Until then this is a no-op widening:
+  // empty trailing columns get skipped by parseFbAdsSheet.
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `'${tab}'!A1:EZ`,
+    range: `'${tab}'!A1:ANK`,
   });
   const grid = (resp.data.values ?? []) as unknown[][];
 
