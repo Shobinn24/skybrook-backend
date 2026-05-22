@@ -29,7 +29,7 @@ export function canonicalizeInventorySku(rawSku: string): string {
 
 const INCOMING_TAB = "Incoming_new";
 
-function buildSheetsClient() {
+export function buildSheetsClient() {
   const scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"];
   const jsonContent = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
   const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
@@ -670,7 +670,7 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
 // loud instead of silently dropping a product. Update here when Scott
 // adds a new tab.
 // ============================================================================
-const AD_SPEND_TABS = [
+export const AD_SPEND_TABS = [
   "Men",
   "Shapewear",
   "SuperHW",
@@ -678,6 +678,42 @@ const AD_SPEND_TABS = [
   "Shapewear AL",
   "Super HW AL",
 ] as const;
+
+export type AdSpendTab = (typeof AD_SPEND_TABS)[number];
+
+// Supermetrics returns error messages INLINE in the value cells when a
+// data source goes offline (license lapse, quota exceeded, connector
+// auth expired). E.g. on 2026-05-05 the AppLovin license was dropped
+// and all 3 AL tabs started returning "Error: Your license doesn't
+// include the Axon by AppLovin data source (user: scott@..., team: ...,
+// team ID: ...). Learn more at: https://hub.supermetrics.com".
+//
+// We detect these explicitly so the ingest can surface a Slack alert
+// instead of silently treating the row as "unparseable date" and
+// dropping it (which masks the outage — see 2026-05-22 incident).
+const SUPERMETRICS_ERROR_PREFIX = /^Error[:\s]/i;
+const SUPERMETRICS_HINT = /license|data source|quota|Supermetrics/i;
+
+function detectSupermetricsError(
+  rawDate: string,
+  rawCost: string,
+): string | null {
+  const combined = `${rawDate} ${rawCost}`.trim();
+  if (
+    !SUPERMETRICS_ERROR_PREFIX.test(rawDate) &&
+    !SUPERMETRICS_ERROR_PREFIX.test(rawCost) &&
+    !SUPERMETRICS_HINT.test(combined)
+  ) {
+    return null;
+  }
+  // Strip parenthetical sub-clauses (user IDs, team IDs vary per env) so
+  // the signature is stable for Slack dedup across accounts and re-runs.
+  return combined
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
+}
 
 export type AdSpendRow = {
   product: string;
@@ -692,12 +728,23 @@ export type AdSpendRow = {
 // come back as either plain numbers ("2791.18") or formatted
 // currency ("$2,791.18") depending on cell formatting — strip
 // non-numeric characters before Number().
+export type AdSpendSourceError = {
+  rowIdx: number;
+  signature: string;
+  sample: string;
+};
+
 export function parseAdSpendTab(
   tabName: string,
   grid: ReadonlyArray<ReadonlyArray<unknown>>,
-): { rows: AdSpendRow[]; skipped: Array<{ rowIdx: number; reason: string }> } {
+): {
+  rows: AdSpendRow[];
+  skipped: Array<{ rowIdx: number; reason: string }>;
+  sourceErrors: AdSpendSourceError[];
+} {
   const rows: AdSpendRow[] = [];
   const skipped: Array<{ rowIdx: number; reason: string }> = [];
+  const sourceErrors: AdSpendSourceError[] = [];
 
   // Row 0 is header. Bail if header doesn't look right.
   const header = (grid[0] ?? []).map((c) => String(c ?? "").trim().toLowerCase());
@@ -707,7 +754,7 @@ export function parseAdSpendTab(
       rowIdx: 0,
       reason: `unexpected header: ${JSON.stringify(grid[0] ?? [])}`,
     });
-    return { rows, skipped };
+    return { rows, skipped, sourceErrors };
   }
 
   for (let r = 1; r < grid.length; r++) {
@@ -715,6 +762,21 @@ export function parseAdSpendTab(
     const rawDate = String(row[0] ?? "").trim();
     const rawCost = String(row[1] ?? "").trim();
     if (!rawDate && !rawCost) continue; // blank row
+
+    // Supermetrics surfaces upstream failures (license lapse, quota,
+    // auth) as error strings INSIDE the value cells. Detect explicitly
+    // so the cron can Slack-alert instead of silently skipping the row
+    // as "unparseable date". This is what made the 2026-05-05 AppLovin
+    // license lapse invisible for 17 days until Scott eyeballed it.
+    const errSig = detectSupermetricsError(rawDate, rawCost);
+    if (errSig) {
+      sourceErrors.push({
+        rowIdx: r,
+        signature: errSig,
+        sample: `${rawDate} | ${rawCost}`.slice(0, 300),
+      });
+      continue;
+    }
 
     // Date: accept ISO YYYY-MM-DD verbatim; if it's a different format
     // we flag it (Supermetrics outputs ISO, but defensive in case
@@ -739,7 +801,7 @@ export function parseAdSpendTab(
     });
   }
 
-  return { rows, skipped };
+  return { rows, skipped, sourceErrors };
 }
 
 /** Collapse rows that share a (product, spendDate) key into a single
@@ -801,13 +863,20 @@ export const sheetsAdSpendRunner: SourceRunner = async (_batchId) => {
 
   const allRows: AdSpendRow[] = [];
   const allSkipped: Array<{ tab: string; rowIdx: number; reason: string }> = [];
+  const allSourceErrors: Array<{
+    tab: string;
+    rowIdx: number;
+    signature: string;
+    sample: string;
+  }> = [];
 
   for (let i = 0; i < AD_SPEND_TABS.length; i++) {
     const tab = AD_SPEND_TABS[i];
     const grid = (resp.data.valueRanges?.[i]?.values ?? []) as unknown[][];
-    const { rows, skipped } = parseAdSpendTab(tab, grid);
+    const { rows, skipped, sourceErrors } = parseAdSpendTab(tab, grid);
     allRows.push(...rows);
     for (const s of skipped) allSkipped.push({ tab, ...s });
+    for (const e of sourceErrors) allSourceErrors.push({ tab, ...e });
   }
 
   const { dedupedRows, dupesCollapsed } = dedupeAdSpendRows(allRows);
@@ -830,8 +899,14 @@ export const sheetsAdSpendRunner: SourceRunner = async (_batchId) => {
       sample: dedupedRows.slice(0, 5),
       skipped: allSkipped,
       dupesCollapsed,
+      sourceErrors: allSourceErrors,
     },
     schemaFingerprint: fingerprint,
+    sourceErrors: allSourceErrors.map((e) => ({
+      tab: e.tab,
+      signature: e.signature,
+      sample: e.sample,
+    })),
     async normalize(rawId) {
       // Truncate-replace per pull. Supermetrics history is ~30-90 days
       // depending on Scott's query config; refreshing the whole table

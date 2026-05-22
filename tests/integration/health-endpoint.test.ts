@@ -9,6 +9,7 @@ import {
   rawPulls,
 } from "@/lib/db/schema";
 import { GET } from "@/app/api/health/route";
+import { AD_SPEND_TABS } from "@/lib/sources/sheets";
 import "dotenv/config";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -146,12 +147,17 @@ describe("GET /api/health", () => {
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000)
       .toISOString()
       .slice(0, 10);
-    await db.insert(adSpendDaily).values({
-      product: "p",
-      spendDate: yesterday,
-      costUsd: "1",
-      sourcePullId: rawPullId,
-    });
+    // Per-product freshness check (added 2026-05-22) requires every
+    // canonical Supermetrics tab to have fresh data — seeding a single
+    // synthetic product no longer counts as "ad_spend is healthy".
+    for (const product of AD_SPEND_TABS) {
+      await db.insert(adSpendDaily).values({
+        product,
+        spendDate: yesterday,
+        costUsd: "1",
+        sourcePullId: rawPullId,
+      });
+    }
     await db.execute(sql`
       INSERT INTO fb_ad_spend_daily (ad_number, ad_name, ad_name_raw, marketers, spend_date, cost_usd, source_pull_id)
       VALUES ('1', 'x', 'x', '{}', ${yesterday}, '1', ${rawPullId})

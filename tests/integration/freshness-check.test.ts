@@ -73,38 +73,86 @@ describe("runFreshnessCheck", () => {
     vi.unstubAllGlobals();
   });
 
+  // The 6 canonical Supermetrics tabs we check per-product. Tests use
+  // these names instead of made-up products so the per-product freshness
+  // check actually evaluates them (it iterates the canonical list).
+  const FB_PRODUCT = "Men";
+  const AL_PRODUCT = "Super HW AL";
+  const FB_CHECK_NAME = "ad_spend_daily.product.men";
+  const AL_CHECK_NAME = "ad_spend_daily.product.super_hw_al";
+
   it("fails ad_spend_daily and stock_snapshots when both are empty", async () => {
     const result = await runFreshnessCheck({ now: fixedNow });
     expect(result.asOfDate).toBe(TODAY_EST);
     const failedNames = result.checks.filter((c) => c.status === "fail").map((c) => c.name);
-    expect(failedNames).toContain("ad_spend_daily");
+    // All 6 per-product ad_spend checks should fail when the table is empty.
+    expect(failedNames).toContain(FB_CHECK_NAME);
+    expect(failedNames).toContain(AL_CHECK_NAME);
     expect(failedNames).toContain("stock_snapshots");
     expect(result.alertsFired).toBeGreaterThan(0);
   });
 
-  it("passes ad_spend_daily when max(spend_date) is yesterday EST", async () => {
+  it("passes the per-product check when max(spend_date) is yesterday EST", async () => {
     await db.insert(adSpendDaily).values({
-      product: "test-product",
+      product: FB_PRODUCT,
       spendDate: YESTERDAY_EST,
       costUsd: "10.0",
       sourcePullId: seededRawPullId,
     });
     const result = await runFreshnessCheck({ now: fixedNow });
-    const adSpend = result.checks.find((c) => c.name === "ad_spend_daily");
-    expect(adSpend?.status).toBe("pass");
+    const fbCheck = result.checks.find((c) => c.name === FB_CHECK_NAME);
+    expect(fbCheck?.status).toBe("pass");
   });
 
-  it("fails ad_spend_daily when max(spend_date) is older than yesterday", async () => {
+  it("fails the per-product check when max(spend_date) is older than yesterday", async () => {
     await db.insert(adSpendDaily).values({
-      product: "test-product",
+      product: FB_PRODUCT,
       spendDate: TWO_DAYS_AGO_EST,
       costUsd: "10.0",
       sourcePullId: seededRawPullId,
     });
     const result = await runFreshnessCheck({ now: fixedNow });
-    const adSpend = result.checks.find((c) => c.name === "ad_spend_daily");
-    expect(adSpend?.status).toBe("fail");
-    expect(adSpend?.maxDate).toBe(TWO_DAYS_AGO_EST);
+    const fbCheck = result.checks.find((c) => c.name === FB_CHECK_NAME);
+    expect(fbCheck?.status).toBe("fail");
+    expect(fbCheck?.maxDate).toBe(TWO_DAYS_AGO_EST);
+  });
+
+  // This is the 2026-05-22 incident reproduced: AppLovin license lapsed
+  // on 2026-05-05, FB tabs kept refreshing daily, AL tabs froze. The OLD
+  // table-wide max(date) check passed (since FB was fresh) and the
+  // outage went unnoticed for 17 days. The NEW per-product check fires
+  // a P1 specifically for the stale AL product.
+  it("flags a stale AL product while FB products are fresh (2026-05-22 regression)", async () => {
+    // Seed every FB tab fresh + every AL tab stale, mirroring the prod state.
+    const FRESH_FB = ["Men", "Shapewear", "SuperHW"];
+    const STALE_AL = ["Men AL", "Shapewear AL", "Super HW AL"];
+    for (const p of FRESH_FB) {
+      await db.insert(adSpendDaily).values({
+        product: p,
+        spendDate: YESTERDAY_EST,
+        costUsd: "100.0",
+        sourcePullId: seededRawPullId,
+      });
+    }
+    for (const p of STALE_AL) {
+      await db.insert(adSpendDaily).values({
+        product: p,
+        spendDate: "2026-05-05", // license lapse date
+        costUsd: "50.0",
+        sourcePullId: seededRawPullId,
+      });
+    }
+    const result = await runFreshnessCheck({ now: fixedNow });
+    const byName = (n: string) => result.checks.find((c) => c.name === n)?.status;
+    expect(byName("ad_spend_daily.product.men")).toBe("pass");
+    expect(byName("ad_spend_daily.product.shapewear")).toBe("pass");
+    expect(byName("ad_spend_daily.product.superhw")).toBe("pass");
+    expect(byName("ad_spend_daily.product.men_al")).toBe("fail");
+    expect(byName("ad_spend_daily.product.shapewear_al")).toBe("fail");
+    expect(byName("ad_spend_daily.product.super_hw_al")).toBe("fail");
+    // At least one alert fired (one per stale product, but dedup may
+    // collapse — we just need the path to have triggered).
+    expect(result.alertsFired).toBeGreaterThan(0);
   });
 
   it("detects cross-channel skew when shopify_us is fresh but shopify_intl lags >1 day", async () => {
@@ -161,18 +209,20 @@ describe("runFreshnessCheck", () => {
     expect(skew?.status).toBe("pass");
   });
 
-  it("auto-resolves a previously-fired alert when the table recovers", async () => {
+  it("auto-resolves a previously-fired per-product alert when the source recovers", async () => {
     // Fire it first by leaving the table empty.
     await runFreshnessCheck({ now: fixedNow });
     const openAfterFirst = await db
       .select()
       .from(alertEvents)
-      .where(sql`dedup_key = 'freshness:ad_spend_daily' AND resolved_at IS NULL`);
+      .where(
+        sql`dedup_key = 'freshness:ad_spend_daily:product:men' AND resolved_at IS NULL`,
+      );
     expect(openAfterFirst.length).toBe(1);
 
-    // Now seed fresh data and re-run.
+    // Now seed fresh data for the "Men" product and re-run.
     await db.insert(adSpendDaily).values({
-      product: "test-product",
+      product: FB_PRODUCT,
       spendDate: YESTERDAY_EST,
       costUsd: "10.0",
       sourcePullId: seededRawPullId,
@@ -183,7 +233,9 @@ describe("runFreshnessCheck", () => {
     const openAfterSecond = await db
       .select()
       .from(alertEvents)
-      .where(sql`dedup_key = 'freshness:ad_spend_daily' AND resolved_at IS NULL`);
+      .where(
+        sql`dedup_key = 'freshness:ad_spend_daily:product:men' AND resolved_at IS NULL`,
+      );
     expect(openAfterSecond.length).toBe(0);
   });
 
@@ -195,7 +247,7 @@ describe("runFreshnessCheck", () => {
     expect(secondCount).toBe(firstCount);
   });
 
-  it("uses fb_ad_spend_daily separately from ad_spend_daily", async () => {
+  it("uses fb_ad_spend_daily separately from ad_spend_daily per-product checks", async () => {
     await db.insert(fbAdSpendDaily).values({
       adNumber: "999",
       adName: "test ad",
@@ -208,7 +260,10 @@ describe("runFreshnessCheck", () => {
     });
     const result = await runFreshnessCheck({ now: fixedNow });
     expect(result.checks.find((c) => c.name === "fb_ad_spend_daily")?.status).toBe("pass");
-    expect(result.checks.find((c) => c.name === "ad_spend_daily")?.status).toBe("fail");
+    // Every per-product ad_spend_daily check should fail since we
+    // didn't seed anything in that table.
+    expect(result.checks.find((c) => c.name === FB_CHECK_NAME)?.status).toBe("fail");
+    expect(result.checks.find((c) => c.name === AL_CHECK_NAME)?.status).toBe("fail");
   });
 
   it("handles stock_snapshots freshness via snapshot_date", async () => {

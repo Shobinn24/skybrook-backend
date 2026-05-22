@@ -45,6 +45,7 @@ import {
 } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
 import { postAlert, resolveAlert } from "@/lib/notifications/slack";
+import { AD_SPEND_TABS } from "@/lib/sources/sheets";
 import { toEstDate } from "@/lib/tz";
 
 export type FreshnessCheck = {
@@ -121,18 +122,39 @@ export async function evaluateFreshness(opts?: {
 
   const checks: EvaluatedCheck[] = [];
 
-  const [adSpendRow] = await db
-    .select({ max: max(adSpendDaily.spendDate) })
-    .from(adSpendDaily);
-  checks.push(
-    evalOne(
-      "ad_spend_daily",
-      "freshness:ad_spend_daily",
-      "ad_spend_daily is stale",
-      adSpendRow?.max ?? null,
-      { table: "ad_spend_daily" },
-    ),
-  );
+  // Per-product (== per-tab == per-platform) freshness check for ad
+  // spend. FB tabs (Men, Shapewear, SuperHW) and AppLovin tabs (Men AL,
+  // Shapewear AL, Super HW AL) share `ad_spend_daily`, so a table-wide
+  // max(date) check passes as long as ANY tab is updating — the very
+  // failure mode that hid the 2026-05-05 AppLovin license lapse for 17
+  // days (FB stayed fresh, AL silently froze, /performance showed AL=0).
+  // Per-product max(date) flags a partial freeze immediately. Each
+  // product carries its own dedup key so a single dead source pages
+  // once and resolves independently when it recovers.
+  const adSpendProductRows = await db
+    .select({
+      product: adSpendDaily.product,
+      max: max(adSpendDaily.spendDate),
+    })
+    .from(adSpendDaily)
+    .groupBy(adSpendDaily.product);
+  const adSpendMaxByProduct = new Map<string, string | null>();
+  for (const row of adSpendProductRows) {
+    adSpendMaxByProduct.set(row.product, row.max);
+  }
+  for (const tab of AD_SPEND_TABS) {
+    // Slugify for dedup key — Slack-safe (no spaces) and readable.
+    const slug = tab.replace(/\s+/g, "_").toLowerCase();
+    checks.push(
+      evalOne(
+        `ad_spend_daily.product.${slug}`,
+        `freshness:ad_spend_daily:product:${slug}`,
+        `ad_spend_daily (${tab}) is stale`,
+        adSpendMaxByProduct.get(tab) ?? null,
+        { table: "ad_spend_daily", product: tab },
+      ),
+    );
+  }
 
   const [fbAdSpendRow] = await db
     .select({ max: max(fbAdSpendDaily.spendDate) })
@@ -333,8 +355,30 @@ export async function evaluateFreshness(opts?: {
 
 export async function runFreshnessCheck(opts?: {
   now?: () => Date;
+  // Caller can disable the sheets-API portion when running from
+  // /api/health (DB-only, fast) vs the cron (full sweep including
+  // reference tabs). Defaults to enabled — explicit `false` opts out.
+  includeReferenceTabs?: boolean;
 }): Promise<FreshnessCheckResult> {
-  const { asOfDate: today, checks: evaluated } = await evaluateFreshness(opts);
+  const { asOfDate: today, checks: evaluatedBase } = await evaluateFreshness(opts);
+
+  // Reference-tab sweep — alerts when a sheet tab Scott looks at
+  // directly (Sheet7, FB Ads Tracker 2's `2026`) silently stops
+  // updating. Sheets API calls are sequential + best-effort; one bad
+  // tab surfaces its own check entry rather than failing the sweep.
+  let evaluatedRefTabs: EvaluatedCheck[] = [];
+  if (opts?.includeReferenceTabs !== false) {
+    try {
+      const { evaluateReferenceTabsFreshness } = await import("./sheet-tab-freshness");
+      evaluatedRefTabs = await evaluateReferenceTabsFreshness({ now: opts?.now });
+    } catch (err) {
+      logger.warn("freshness.reference_tabs.skipped", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const evaluated = [...evaluatedBase, ...evaluatedRefTabs];
   let alertsFired = 0;
   let alertsResolved = 0;
 

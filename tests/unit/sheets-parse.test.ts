@@ -566,6 +566,78 @@ describe("parseAdSpendTab", () => {
     expect(skipped).toEqual([]);
     expect(rows.map((r) => r.costUsd)).toEqual([88.11, 105.47]);
   });
+
+  // The 2026-05-22 incident: Scott's Supermetrics license stopped
+  // covering "Axon by AppLovin" on 2026-05-05, and the 3 AL tabs
+  // started returning the error string below in row 1 instead of data.
+  // Old behavior: the row failed the date regex and was silently
+  // skipped → /performance showed AL=0 for 17 days. New behavior: the
+  // row is captured as a sourceError and the ingest fires a Slack alert.
+  const SUPERMETRICS_LICENSE_ERROR =
+    "Error: Your license doesn't include the Axon by AppLovin data source " +
+    "(user: scott@skybrookecommerce.com, team: Team skybrookecommerce, " +
+    "team ID: ua6hqzZIJYcoyI0Tv4Eh). Learn more about your license at: " +
+    "https://hub.supermetrics.com";
+
+  it("captures a Supermetrics 'Error:' row as a sourceError, not a skipped row", () => {
+    const grid = [
+      ["Date", "Spend"],
+      [SUPERMETRICS_LICENSE_ERROR, ""],
+    ];
+    const { rows, skipped, sourceErrors } = parseAdSpendTab("Super HW AL", grid);
+    expect(rows).toEqual([]);
+    expect(skipped).toEqual([]);
+    expect(sourceErrors).toHaveLength(1);
+    expect(sourceErrors[0].rowIdx).toBe(1);
+    expect(sourceErrors[0].signature).toContain("Axon by AppLovin");
+    // Parenthetical user/team IDs are stripped so the signature is
+    // stable across accounts (Slack dedup key derives from it).
+    expect(sourceErrors[0].signature).not.toContain("ua6hqzZIJYcoyI0Tv4Eh");
+    expect(sourceErrors[0].signature).not.toContain("scott@skybrookecommerce.com");
+  });
+
+  it("still parses valid rows when an error row is interspersed", () => {
+    // Defensive: if Supermetrics returns mostly-good data with one
+    // error row in the middle, we want the good rows landed AND an
+    // alert fired — not all-or-nothing.
+    const grid = [
+      ["Date", "Spend"],
+      ["2026-04-28", "100"],
+      [SUPERMETRICS_LICENSE_ERROR, ""],
+      ["2026-04-30", "150"],
+    ];
+    const { rows, sourceErrors } = parseAdSpendTab("Men AL", grid);
+    expect(rows.map((r) => r.spendDate)).toEqual(["2026-04-28", "2026-04-30"]);
+    expect(sourceErrors).toHaveLength(1);
+  });
+
+  it("captures the 'quota exceeded' Supermetrics shape too (different prefix)", () => {
+    // The license error starts with "Error:"; quota errors observed in
+    // other Supermetrics deployments start with the resource name and
+    // include "quota". The combined-text hint regex catches both.
+    const grid = [
+      ["Date", "Cost"],
+      ["AppLovin daily quota exceeded for query 'Shapewear AL'", ""],
+    ];
+    const { rows, skipped, sourceErrors } = parseAdSpendTab("Shapewear AL", grid);
+    expect(rows).toEqual([]);
+    expect(skipped).toEqual([]);
+    expect(sourceErrors).toHaveLength(1);
+    expect(sourceErrors[0].signature).toContain("quota");
+  });
+
+  it("does not flag genuinely malformed-but-non-error rows as sourceErrors", () => {
+    // "4/28/2026" is a date-format regression, not an upstream error
+    // — keep the old skipped behavior so we don't muddy the alert path.
+    const grid = [
+      ["Date", "Cost"],
+      ["4/28/2026", "100"],
+    ];
+    const { rows, skipped, sourceErrors } = parseAdSpendTab("Men", grid);
+    expect(rows).toEqual([]);
+    expect(skipped).toHaveLength(1);
+    expect(sourceErrors).toEqual([]);
+  });
 });
 
 describe("trimFbAdDisplayName", () => {

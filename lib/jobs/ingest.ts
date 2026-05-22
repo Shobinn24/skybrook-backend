@@ -18,6 +18,18 @@ export type SourceRunResult = {
   rowCount: number;
   rawPayload: unknown;
   schemaFingerprint: string;
+  // Optional list of per-source data-quality issues detected during the
+  // run but NOT severe enough to fail the whole source. Today this is
+  // Supermetrics inline error rows (license lapse, quota exhaustion,
+  // connector auth expired) — the source pull "succeeded" in that good
+  // rows landed, but a subset of tabs returned error strings instead of
+  // data. Each entry triggers a P1 Slack alert with a stable dedup key
+  // so the same upstream error doesn't re-page on every cron.
+  sourceErrors?: Array<{
+    tab: string;
+    signature: string;
+    sample: string;
+  }>;
   normalize: (rawId: string) => Promise<void>;
 };
 
@@ -88,6 +100,37 @@ export async function runIngest(input: {
               return { kind: "noop" as const };
             }),
         );
+        // Surface per-tab source errors (Supermetrics inline error rows).
+        // Source pull as a whole succeeded — good tabs landed — but one
+        // or more tabs returned error strings instead of data. Dedup
+        // per (source, tab, signature) so Slack pages once per distinct
+        // upstream error, not once per cron tick.
+        for (const e of result.sourceErrors ?? []) {
+          const dedupKey = `ingest.source.row_error:${source}:${e.tab}:${e.signature.slice(0, 80)}`;
+          alertPromises.push(
+            postAlert({
+              severity: "p1",
+              title: `${source} / ${e.tab}: upstream returned an error row`,
+              dedupKey,
+              fields: {
+                source,
+                tab: e.tab,
+                signature: e.signature,
+                sample: e.sample,
+                batchId,
+              },
+            })
+              .then((r) => ({ kind: r.fired ? ("fired" as const) : ("noop" as const) }))
+              .catch((alertErr) => {
+                logger.warn("alert.post.threw", {
+                  source,
+                  tab: e.tab,
+                  error: alertErr instanceof Error ? alertErr.message : String(alertErr),
+                });
+                return { kind: "noop" as const };
+              }),
+          );
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await db.insert(dataPulls).values({
