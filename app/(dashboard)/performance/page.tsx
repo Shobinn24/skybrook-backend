@@ -186,6 +186,39 @@ export default function PerformancePage() {
               cron picks up new spend daily.
             </div>
           )}
+          {data && data.sourceErrors.length > 0 && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+              <div className="flex items-start gap-2">
+                <span aria-hidden="true">⚠</span>
+                <div>
+                  <div className="font-semibold">
+                    Upstream ad-spend feed broken — ROAS values below may be
+                    understated for affected products.
+                  </div>
+                  <div className="mt-1 text-red-800">
+                    Latest Supermetrics pull returned an error for:{" "}
+                    {data.sourceErrors.map((e, i) => (
+                      <span key={e.tab}>
+                        {i > 0 && ", "}
+                        <code className="rounded bg-red-100 px-1">{e.tab}</code>
+                      </span>
+                    ))}
+                    . Reason:{" "}
+                    {data.sourceErrors[0].reason === "license"
+                      ? "Supermetrics license / trial issue (Axon by AppLovin) — check hub.supermetrics.com → Data sources."
+                      : data.sourceErrors[0].reason === "quota"
+                      ? "Daily API quota exceeded — wait for reset or upgrade tier."
+                      : data.sourceErrors[0].reason === "auth"
+                      ? "Connector auth expired — re-authorize the data source."
+                      : "Unknown upstream error — see Slack alert details."}
+                  </div>
+                  <div className="mt-1 text-[11px] text-red-700">
+                    Full error: {data.sourceErrors[0].signature}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             {rows.map((r) => (
@@ -226,8 +259,25 @@ export default function PerformancePage() {
                   <div className="mt-4 border-t border-neutral-100 pt-2 space-y-0.5 text-[11px]">
                     <div className="text-neutral-500">Spend breakdown:</div>
                     {r.spendByTab.map((b) => (
-                      <div key={b.tab} className="flex justify-between text-neutral-600">
-                        <span>{shortTabLabel(b.tab)}</span>
+                      <div
+                        key={b.tab}
+                        className={
+                          "flex justify-between " +
+                          (b.sourceError ? "text-red-700" : "text-neutral-600")
+                        }
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          {shortTabLabel(b.tab)}
+                          {b.sourceError && (
+                            <span
+                              aria-hidden="true"
+                              title={b.sourceError.signature}
+                              className="cursor-help"
+                            >
+                              ⚠
+                            </span>
+                          )}
+                        </span>
                         <span className="tabular-nums">{fmtMoney(b.spendUsd)}</span>
                       </div>
                     ))}

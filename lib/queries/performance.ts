@@ -1,6 +1,6 @@
-import { and, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { adSpendDaily, dailySales, skus } from "@/lib/db/schema";
+import { adSpendDaily, dailySales, rawPulls, skus } from "@/lib/db/schema";
 
 export type SalesChannel = "shopify_us" | "shopify_intl";
 
@@ -34,6 +34,20 @@ const PRODUCT_CONFIG = {
 
 type ProductKey = keyof typeof PRODUCT_CONFIG;
 
+/** Upstream error detected in the latest sheets_ad_spend pull for a
+ * specific tab. Sourced from rawPulls.payload.sourceErrors which is
+ * populated by parseAdSpendTab when Supermetrics returns an inline
+ * error string instead of data (license expired, quota exceeded,
+ * connector deauthorized). The page uses this to surface a per-tab
+ * badge so $0 spend caused by an upstream outage is visually
+ * distinguishable from a real $0 spend day. */
+export type AdSpendSourceErrorSummary = {
+  /** Stable dedup-friendly text — used to render a one-line reason. */
+  signature: string;
+  /** Approx human reason, derived from signature (license / quota / auth / unknown). */
+  reason: "license" | "quota" | "auth" | "unknown";
+};
+
 export type PerformanceRow = {
   key: ProductKey;
   label: string;
@@ -41,7 +55,14 @@ export type PerformanceRow = {
   spendUsd: number;
   /** ROAS = revenue / spend. Null when spend is 0 (avoid divide-by-zero). */
   roas: number | null;
-  spendByTab: Array<{ tab: string; spendUsd: number }>;
+  spendByTab: Array<{
+    tab: string;
+    spendUsd: number;
+    /** When set, the LATEST upstream pull returned an error for this
+     * tab. Spend value above is from prior successful pulls; future
+     * dates won't fill until the upstream issue is fixed. */
+    sourceError?: AdSpendSourceErrorSummary;
+  }>;
 };
 
 export type PerformanceResult = {
@@ -54,6 +75,10 @@ export type PerformanceResult = {
    * hasn't refreshed yet today or (b) the product mapping is wrong.
    * Page can show a hint. */
   warnEmpty: boolean;
+  /** Distinct tabs with an upstream error in the latest pull. Set even
+   * when no PerformanceRow shows the error inline — drives the page-
+   * level banner that surfaces "AL data unavailable" prominently. */
+  sourceErrors: Array<{ tab: string; signature: string; reason: AdSpendSourceErrorSummary["reason"] }>;
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -65,6 +90,44 @@ function ymdToUtcMs(ymd: string): number {
 
 function addDays(ymd: string, days: number): string {
   return new Date(ymdToUtcMs(ymd) + days * MS_PER_DAY).toISOString().slice(0, 10);
+}
+
+/** Pulls the most-recent sheets_ad_spend rawPull and extracts a map of
+ * tab → error signature for any upstream-error rows the parser saw. A
+ * tab appears here when Supermetrics returned an inline error string
+ * (license expired, quota, auth) in place of data on that ingest.
+ *
+ * Cheap: one indexed lookup + JSON access on a single payload. Called
+ * once per /performance render so the page can render per-tab badges
+ * + a top-level banner. Returns an empty map when (a) no sourceErrors
+ * field exists (pre-monitoring-2026-05-23 pulls), (b) the field is
+ * empty, or (c) the table has no rows. */
+function classifyReason(signature: string): AdSpendSourceErrorSummary["reason"] {
+  const s = signature.toLowerCase();
+  if (s.includes("license")) return "license";
+  if (s.includes("quota")) return "quota";
+  if (s.includes("auth") || s.includes("token") || s.includes("permission")) return "auth";
+  return "unknown";
+}
+
+export async function getLatestAdSpendSourceErrors(): Promise<
+  Map<string, AdSpendSourceErrorSummary>
+> {
+  const [row] = await db
+    .select({ payload: rawPulls.payload })
+    .from(rawPulls)
+    .where(eq(rawPulls.source, "sheets_ad_spend"))
+    .orderBy(desc(rawPulls.pulledAt))
+    .limit(1);
+  const errs = (row?.payload as { sourceErrors?: Array<{ tab: string; signature: string }> } | null)?.sourceErrors;
+  const out = new Map<string, AdSpendSourceErrorSummary>();
+  if (!errs?.length) return out;
+  // Multiple rows per tab possible (rare — same tab returning two
+  // error variants). Last write wins, signature stays deterministic.
+  for (const e of errs) {
+    out.set(e.tab, { signature: e.signature, reason: classifyReason(e.signature) });
+  }
+  return out;
 }
 
 /** Returns per-product revenue + spend totals for the trailing N days
@@ -106,6 +169,13 @@ export async function getPerformanceRollup(opts: {
     spendByTab.set(r.product, Number(r.total));
   }
 
+  // 1b. Upstream-error map from the latest sheets_ad_spend pull. When
+  // a tab is here, its spend value above reflects ONLY prior successful
+  // pulls — future dates won't fill until the upstream issue is fixed.
+  // UI surfaces this via per-tab badge + page-level banner so $0 caused
+  // by a broken feed is visually distinct from a real $0 spend day.
+  const errorByTab = await getLatestAdSpendSourceErrors();
+
   // 2. Revenue: for each canonical product, find matching SKUs by
   // productName pattern, then sum daily_sales.netSalesUsd in the
   // window across all channels.
@@ -144,10 +214,12 @@ export async function getPerformanceRollup(opts: {
       revenueUsd = Number(rev?.total ?? 0);
     }
 
-    const spendBreakdown = cfg.spendTabs.map((tab) => ({
-      tab,
-      spendUsd: spendByTab.get(tab) ?? 0,
-    }));
+    const spendBreakdown = cfg.spendTabs.map((tab) => {
+      const sourceError = errorByTab.get(tab);
+      return sourceError
+        ? { tab, spendUsd: spendByTab.get(tab) ?? 0, sourceError }
+        : { tab, spendUsd: spendByTab.get(tab) ?? 0 };
+    });
     const spendUsd = spendBreakdown.reduce((s, b) => s + b.spendUsd, 0);
     const roas = spendUsd > 0 ? revenueUsd / spendUsd : null;
 
@@ -166,12 +238,19 @@ export async function getPerformanceRollup(opts: {
   ).length;
   const warnEmpty = productsWithoutData >= rows.length / 2;
 
+  const sourceErrors = Array.from(errorByTab.entries()).map(([tab, sum]) => ({
+    tab,
+    signature: sum.signature,
+    reason: sum.reason,
+  }));
+
   return {
     rangeDays: opts.rangeDays,
     rangeStart,
     rangeEnd,
     rows,
     warnEmpty,
+    sourceErrors,
   };
 }
 
