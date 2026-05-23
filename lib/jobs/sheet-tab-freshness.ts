@@ -33,13 +33,14 @@ export type MonitoredReferenceTab = {
 // Add a tab here when Scott (or anyone) starts using a new sheet view
 // as their daily reference. Format: stable slug as `label` — it becomes
 // the alert dedup key, so don't rename casually.
+//
+// Dropped 2026-05-23:
+//   - `fb_ads_tracker.sheet7` — orphaned tab. Grid was sized at 132 cols
+//     so it filled by 2026-05-09 and stopped. Not populated by any
+//     Supermetrics query (not in SupermetricsQueries metadata), not
+//     hand-maintained going forward, no consumer reading from it. The
+//     daily P1 was pure noise burying real alerts.
 export const MONITORED_REFERENCE_TABS: ReadonlyArray<MonitoredReferenceTab> = [
-  {
-    label: "fb_ads_tracker.sheet7",
-    sheetId: "1lya_-S-r57Xt60biwU3adOsbnDZatP_AoERB2hjMzJo",
-    tabName: "Sheet7",
-    layout: "headerHasDates",
-  },
   {
     label: "fb_ads_tracker_2.2026",
     sheetId: "1L-1NUuB46Vi4yzTCmzFG1f8MptEsr44ewKsVqlDfGOI",
