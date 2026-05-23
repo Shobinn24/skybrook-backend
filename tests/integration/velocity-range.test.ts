@@ -144,6 +144,9 @@ describe("getVelocityForRange", () => {
 
     await seedSku("EV-A");
     await seedSale({ sku: "EV-A", salesDate: "2026-04-03", unitsSold: 21, channel: "shopify_us", routedLocation: "US", rawId: raw.id });
+    // Seed a marker sale on the end date to ensure the freshness clamp
+    // doesn't trim the window — this test exercises swap behavior only.
+    await seedSale({ sku: "EV-A", salesDate: "2026-04-07", unitsSold: 0, channel: "shopify_us", routedLocation: "US", rawId: raw.id });
 
     const result = await getVelocityForRange({
       location: "US",
@@ -187,5 +190,131 @@ describe("getVelocityForRange", () => {
     expect(bySku.get("EV-A")?.unitsSold).toBe(10);
     expect(bySku.get("EV-B")?.unitsSold).toBe(21);
     expect(bySku.has("EV-C")).toBe(false);
+  });
+
+  // --- 2026-05-23: freshness-day clamping ---
+  // Bug: when the caller's window extends past the last complete sales
+  // day, the denominator (rangeDays) included empty future days and
+  // velocity got silently diluted. The UI's preset windows disagreed
+  // with the same-window Custom picker by 10–22% during cron-stale
+  // stretches. Fix: clamp rangeEnd to per-location max(salesDate).
+
+  it("clamps rangeEnd to max(salesDate) at the location when the request extends past it", async () => {
+    const [raw] = await db
+      .insert(rawPulls)
+      .values({
+        source: "shopify_us",
+        pullBatchId: randomUUID(),
+        payload: {},
+        rowCount: 0,
+        schemaFingerprint: "fp",
+      })
+      .returning({ id: rawPulls.id });
+
+    await seedSku("EV-A");
+    // 3 days of sales, latest is 2026-04-05. Caller asks for window
+    // ending 2026-04-08 — 3 days past actual data.
+    await seedSale({ sku: "EV-A", salesDate: "2026-04-03", unitsSold: 10, channel: "shopify_us", routedLocation: "US", rawId: raw.id });
+    await seedSale({ sku: "EV-A", salesDate: "2026-04-04", unitsSold: 10, channel: "shopify_us", routedLocation: "US", rawId: raw.id });
+    await seedSale({ sku: "EV-A", salesDate: "2026-04-05", unitsSold: 10, channel: "shopify_us", routedLocation: "US", rawId: raw.id });
+
+    const result = await getVelocityForRange({
+      location: "US",
+      rangeStart: "2026-04-03",
+      rangeEnd: "2026-04-08", // 3 days past last complete day
+    });
+    // Effective window is 4/3–4/5 (3 days), NOT 4/3–4/8 (6 days).
+    // 30 units / 3 days = 10/day (correct), NOT 30 / 6 = 5/day (wrong).
+    expect(result.rangeEnd).toBe("2026-04-05");
+    expect(result.requestedRangeEnd).toBe("2026-04-08");
+    expect(result.rangeDays).toBe(3);
+    expect(result.rows[0].unitsSold).toBe(30);
+    expect(result.rows[0].unitsPerDay).toBeCloseTo(10, 4);
+  });
+
+  it("does NOT clamp when the requested rangeEnd is already within complete-data days", async () => {
+    const [raw] = await db
+      .insert(rawPulls)
+      .values({
+        source: "shopify_us",
+        pullBatchId: randomUUID(),
+        payload: {},
+        rowCount: 0,
+        schemaFingerprint: "fp",
+      })
+      .returning({ id: rawPulls.id });
+
+    await seedSku("EV-A");
+    await seedSale({ sku: "EV-A", salesDate: "2026-04-01", unitsSold: 7, channel: "shopify_us", routedLocation: "US", rawId: raw.id });
+    await seedSale({ sku: "EV-A", salesDate: "2026-04-10", unitsSold: 7, channel: "shopify_us", routedLocation: "US", rawId: raw.id });
+
+    // Caller's window 4/1–4/7 ends 3 days BEFORE latest data (4/10).
+    // No clamping should occur.
+    const result = await getVelocityForRange({
+      location: "US",
+      rangeStart: "2026-04-01",
+      rangeEnd: "2026-04-07",
+    });
+    expect(result.rangeEnd).toBe("2026-04-07");
+    expect(result.requestedRangeEnd).toBe("2026-04-07");
+    expect(result.rangeDays).toBe(7);
+  });
+
+  it("clamps per-location independently — CN's max doesn't affect US's window", async () => {
+    const [raw] = await db
+      .insert(rawPulls)
+      .values({
+        source: "shopify_us",
+        pullBatchId: randomUUID(),
+        payload: {},
+        rowCount: 0,
+        schemaFingerprint: "fp",
+      })
+      .returning({ id: rawPulls.id });
+
+    await seedSku("EV-A");
+    // US has data through 4/05, CN has data through 4/10.
+    await seedSale({ sku: "EV-A", salesDate: "2026-04-05", unitsSold: 10, channel: "shopify_us", routedLocation: "US", rawId: raw.id });
+    await seedSale({ sku: "EV-A", salesDate: "2026-04-10", unitsSold: 10, channel: "shopify_intl", routedLocation: "CN", rawId: raw.id });
+
+    const us = await getVelocityForRange({
+      location: "US",
+      rangeStart: "2026-04-01",
+      rangeEnd: "2026-04-15",
+    });
+    const cn = await getVelocityForRange({
+      location: "CN",
+      rangeStart: "2026-04-01",
+      rangeEnd: "2026-04-15",
+    });
+    expect(us.rangeEnd).toBe("2026-04-05"); // clamped to US max
+    expect(cn.rangeEnd).toBe("2026-04-10"); // clamped to CN max
+  });
+
+  it("returns zero rows + rangeDays=0 when the entire window is past the last complete day", async () => {
+    const [raw] = await db
+      .insert(rawPulls)
+      .values({
+        source: "shopify_us",
+        pullBatchId: randomUUID(),
+        payload: {},
+        rowCount: 0,
+        schemaFingerprint: "fp",
+      })
+      .returning({ id: rawPulls.id });
+
+    await seedSku("EV-A");
+    await seedSale({ sku: "EV-A", salesDate: "2026-04-01", unitsSold: 10, channel: "shopify_us", routedLocation: "US", rawId: raw.id });
+
+    // Window 4/05–4/10 is entirely past the 4/01 last complete day.
+    const result = await getVelocityForRange({
+      location: "US",
+      rangeStart: "2026-04-05",
+      rangeEnd: "2026-04-10",
+    });
+    expect(result.rows).toEqual([]);
+    expect(result.rangeDays).toBe(0);
+    expect(result.rangeEnd).toBe("2026-04-01"); // clamped, now < rangeStart
+    expect(result.requestedRangeEnd).toBe("2026-04-10");
   });
 });

@@ -12,7 +12,17 @@ export type VelocityForRangeRow = {
 export type VelocityForRangeResult = {
   location: Location;
   rangeStart: string;
+  /** Effective inclusive rangeEnd actually used in the SQL window — may
+   * be earlier than what the caller asked for if their request extended
+   * past the last complete sales day. */
   rangeEnd: string;
+  /** What the caller requested before clamping. Equal to `rangeEnd`
+   * when no clamping happened; UI compares the two to decide whether
+   * to show a "computed through X" hint. */
+  requestedRangeEnd: string;
+  /** Inclusive day count between rangeStart and (clamped) rangeEnd.
+   * Reflects the EFFECTIVE window, so unitsSold / rangeDays is the
+   * true average over complete-data days only. */
   rangeDays: number;
   rows: VelocityForRangeRow[];
 };
@@ -37,6 +47,19 @@ function inclusiveDayCount(rangeStart: string, rangeEnd: string): number {
  * runPhase2 applies to `sales_velocity`. SKUs with no sales in the
  * window are omitted from the result (caller should treat absence as
  * zero velocity, same convention as the pre-computed path).
+ *
+ * **Freshness-day clamping** (2026-05-19 ops feedback): the input
+ * `rangeEnd` is clamped to `max(salesDate)` for the requested location.
+ * Without this clamp, a window that extends past the last complete
+ * sales day silently inflates the denominator (e.g., 7-day window
+ * containing 1 empty future day = sums/7 instead of sums/6) and the
+ * UI's preset windows visibly disagreed with the same-window Custom
+ * picker by 10–22% during cron-stale stretches. After clamping, both
+ * paths agree per SKU and reflect "true average over complete data."
+ *
+ * The original requested rangeEnd is preserved in `requestedRangeEnd`
+ * so the picker can render a hint like "computed through 2026-05-21
+ * (request was 2026-05-22)" when clamping happened.
  */
 export async function getVelocityForRange(opts: {
   location: Location;
@@ -44,10 +67,43 @@ export async function getVelocityForRange(opts: {
   rangeEnd: string; // YYYY-MM-DD inclusive
 }): Promise<VelocityForRangeResult> {
   const { location } = opts;
-  const [rangeStart, rangeEnd] =
+  const [rangeStart, requestedRangeEnd] =
     opts.rangeStart <= opts.rangeEnd
       ? [opts.rangeStart, opts.rangeEnd]
       : [opts.rangeEnd, opts.rangeStart];
+
+  // Per-location last complete sales day. Clamp the requested rangeEnd
+  // to this when the caller's window extends past it. When the location
+  // has no sales rows at all (rare — new warehouse, test fixture), the
+  // max returns null and we skip clamping; the SQL window then returns
+  // an empty result and unitsPerDay defaults sensibly.
+  const [maxRow] = await db
+    .select({ max: sql<string | null>`max(${dailySales.salesDate})` })
+    .from(dailySales)
+    .where(eq(dailySales.routedLocation, location));
+  const lastCompleteDay = maxRow?.max ?? null;
+
+  let rangeEnd = requestedRangeEnd;
+  if (lastCompleteDay && lastCompleteDay < requestedRangeEnd) {
+    rangeEnd = lastCompleteDay;
+  }
+
+  // Pathological case: caller asked for a window entirely past the last
+  // complete day (e.g., rangeStart=2026-06-01 when latest sale is
+  // 2026-05-21). Returning zero rows + rangeDays=0 keeps the math sane
+  // (callers compute unitsSold/rangeDays in their own derived views;
+  // we never divide here at the SQL level — `unitsPerDay` below uses
+  // the clamped count, with a 1-min guard against div-by-zero).
+  if (rangeEnd < rangeStart) {
+    return {
+      location,
+      rangeStart,
+      rangeEnd,
+      requestedRangeEnd,
+      rangeDays: 0,
+      rows: [],
+    };
+  }
 
   const rangeDays = inclusiveDayCount(rangeStart, rangeEnd);
 
@@ -69,8 +125,8 @@ export async function getVelocityForRange(opts: {
   const rows: VelocityForRangeRow[] = result.map((r) => ({
     sku: r.sku,
     unitsSold: r.unitsSold,
-    unitsPerDay: r.unitsSold / rangeDays,
+    unitsPerDay: rangeDays > 0 ? r.unitsSold / rangeDays : 0,
   }));
 
-  return { location, rangeStart, rangeEnd, rangeDays, rows };
+  return { location, rangeStart, rangeEnd, requestedRangeEnd, rangeDays, rows };
 }
