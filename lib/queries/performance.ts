@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { adSpendDaily, dailySales, rawPulls, skus } from "@/lib/db/schema";
+import { toEstDate } from "@/lib/tz";
 
 export type SalesChannel = "shopify_us" | "shopify_intl";
 
@@ -48,6 +49,22 @@ export type AdSpendSourceErrorSummary = {
   reason: "license" | "quota" | "auth" | "unknown";
 };
 
+/** Per-tab summary for a tab whose data hasn't refreshed in N+ days.
+ * Catches the failure mode where Supermetrics silently fails to write
+ * (no error row appears in the tab) — e.g. when the upstream license
+ * fails before a query writes anything, the sheet keeps stale data
+ * from prior runs and there's nothing for `sourceErrors` to flag.
+ * Render an amber badge so a quietly-broken feed surfaces visually
+ * the same way a loud-broken one does. */
+export type AdSpendStalenessSummary = {
+  /** Latest spend_date present in our DB for this tab, or null when
+   * the tab has never landed any data. */
+  latestDate: string | null;
+  /** Days behind yesterday-EST. >= 2 when surfaced (1-day lag is
+   * normal cron timing and not flagged). */
+  daysBehind: number;
+};
+
 export type PerformanceRow = {
   key: ProductKey;
   label: string;
@@ -62,6 +79,12 @@ export type PerformanceRow = {
      * tab. Spend value above is from prior successful pulls; future
      * dates won't fill until the upstream issue is fixed. */
     sourceError?: AdSpendSourceErrorSummary;
+    /** When set, this tab's data is more than 1 day behind. Distinct
+     * from `sourceError` — staleness can happen WITHOUT an explicit
+     * error row (silent upstream failure that doesn't even write an
+     * error string). Both may be set if the feed both errored AND is
+     * stale. */
+    staleness?: AdSpendStalenessSummary;
   }>;
 };
 
@@ -75,10 +98,13 @@ export type PerformanceResult = {
    * hasn't refreshed yet today or (b) the product mapping is wrong.
    * Page can show a hint. */
   warnEmpty: boolean;
-  /** Distinct tabs with an upstream error in the latest pull. Set even
-   * when no PerformanceRow shows the error inline — drives the page-
-   * level banner that surfaces "AL data unavailable" prominently. */
+  /** Distinct tabs with an upstream error in the latest pull. Drives
+   * the red page-level banner. */
   sourceErrors: Array<{ tab: string; signature: string; reason: AdSpendSourceErrorSummary["reason"] }>;
+  /** Distinct tabs whose data is silently stale (no explicit error
+   * but max(spend_date) is >= 2 days behind yesterday EST). Drives
+   * the amber page-level banner. */
+  staleTabs: Array<{ tab: string; latestDate: string | null; daysBehind: number }>;
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -130,6 +156,36 @@ export async function getLatestAdSpendSourceErrors(): Promise<
   return out;
 }
 
+/** Per-tab max(spend_date) in ad_spend_daily. Used to surface silent
+ * staleness — the case where Supermetrics fails to refresh but doesn't
+ * write an error row to the sheet either (license dropped mid-batch,
+ * connector deauth in such a way the query never executes). In that
+ * case `getLatestAdSpendSourceErrors` returns nothing for the tab, but
+ * its max(spend_date) keeps drifting back from yesterday — that's the
+ * signal this query exposes. One indexed groupBy, no joins. */
+export async function getAdSpendMaxDateByTab(): Promise<Map<string, string>> {
+  const rows = await db
+    .select({
+      product: adSpendDaily.product,
+      max: sql<string | null>`max(${adSpendDaily.spendDate})`,
+    })
+    .from(adSpendDaily)
+    .groupBy(adSpendDaily.product);
+  const out = new Map<string, string>();
+  for (const r of rows) {
+    if (r.max) out.set(r.product, r.max);
+  }
+  return out;
+}
+
+// Compute how many whole days `maxDate` (YYYY-MM-DD) lags behind
+// `threshold` (also YYYY-MM-DD). Positive number = stale; <=0 = fresh.
+// `maxDate=null` returns Infinity (never landed, maximally stale).
+function daysBehind(maxDate: string | null, threshold: string): number {
+  if (!maxDate) return Infinity;
+  return Math.round((ymdToUtcMs(threshold) - ymdToUtcMs(maxDate)) / MS_PER_DAY);
+}
+
 /** Returns per-product revenue + spend totals for the trailing N days
  * ending `today`. `rangeDays === 1` is "yesterday" — the single most
  * recent fully-complete day, which is what Scott's daily report shows.
@@ -176,6 +232,22 @@ export async function getPerformanceRollup(opts: {
   // by a broken feed is visually distinct from a real $0 spend day.
   const errorByTab = await getLatestAdSpendSourceErrors();
 
+  // 1c. Per-tab max(spend_date) — used to detect SILENT staleness, the
+  // case where Supermetrics never wrote an error row to the sheet so
+  // errorByTab is empty, but the data hasn't refreshed in days either
+  // (e.g., upstream license failed before the query could execute). A
+  // tab is "stale" when its max is >= 2 days behind real-world
+  // yesterday-EST; 1 day behind is normal cron lag and not flagged.
+  //
+  // Threshold is REAL-WORLD yesterday (server clock), not the user's
+  // selected end-date — staleness is about whether the pipeline is
+  // healthy now, not whether the user's historical window has data.
+  // (A user looking at 5/15 still wants to know "the feed has been
+  // broken for 3 days" so they don't trust today's report either.)
+  const maxDateByTab = await getAdSpendMaxDateByTab();
+  const realYesterdayEst = toEstDate(new Date(Date.now() - MS_PER_DAY));
+  const STALE_DAYS = 2;
+
   // 2. Revenue: for each canonical product, find matching SKUs by
   // productName pattern, then sum daily_sales.netSalesUsd in the
   // window across all channels.
@@ -215,10 +287,18 @@ export async function getPerformanceRollup(opts: {
     }
 
     const spendBreakdown = cfg.spendTabs.map((tab) => {
+      const spendUsdForTab = spendByTab.get(tab) ?? 0;
       const sourceError = errorByTab.get(tab);
-      return sourceError
-        ? { tab, spendUsd: spendByTab.get(tab) ?? 0, sourceError }
-        : { tab, spendUsd: spendByTab.get(tab) ?? 0 };
+      const latestDate = maxDateByTab.get(tab) ?? null;
+      const behind = daysBehind(latestDate, realYesterdayEst);
+      const staleness =
+        behind >= STALE_DAYS
+          ? { latestDate, daysBehind: behind === Infinity ? -1 : behind }
+          : undefined;
+      const entry: PerformanceRow["spendByTab"][number] = { tab, spendUsd: spendUsdForTab };
+      if (sourceError) entry.sourceError = sourceError;
+      if (staleness) entry.staleness = staleness;
+      return entry;
     });
     const spendUsd = spendBreakdown.reduce((s, b) => s + b.spendUsd, 0);
     const roas = spendUsd > 0 ? revenueUsd / spendUsd : null;
@@ -244,6 +324,21 @@ export async function getPerformanceRollup(opts: {
     reason: sum.reason,
   }));
 
+  // Stale tabs: only include canonical tabs from PRODUCT_CONFIG (skip
+  // any non-tracked products). Excludes tabs already in sourceErrors —
+  // the red error banner already covers them; no need to double-flag.
+  const errorTabs = new Set(sourceErrors.map((e) => e.tab));
+  const allTrackedTabs = (Object.values(PRODUCT_CONFIG) as Array<{ spendTabs: ReadonlyArray<string> }>)
+    .flatMap((c) => c.spendTabs);
+  const staleTabs = allTrackedTabs
+    .filter((tab) => !errorTabs.has(tab))
+    .map((tab) => {
+      const latestDate = maxDateByTab.get(tab) ?? null;
+      const behind = daysBehind(latestDate, realYesterdayEst);
+      return { tab, latestDate, daysBehind: behind === Infinity ? -1 : behind };
+    })
+    .filter((s) => s.daysBehind === -1 || s.daysBehind >= STALE_DAYS);
+
   return {
     rangeDays: opts.rangeDays,
     rangeStart,
@@ -251,6 +346,7 @@ export async function getPerformanceRollup(opts: {
     rows,
     warnEmpty,
     sourceErrors,
+    staleTabs,
   };
 }
 

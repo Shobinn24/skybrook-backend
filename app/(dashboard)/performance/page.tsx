@@ -205,7 +205,7 @@ export default function PerformancePage() {
                     ))}
                     . Reason:{" "}
                     {data.sourceErrors[0].reason === "license"
-                      ? "Supermetrics license / trial issue (Axon by AppLovin) — check hub.supermetrics.com → Data sources."
+                      ? "Supermetrics license / trial issue — check hub.supermetrics.com → Data sources."
                       : data.sourceErrors[0].reason === "quota"
                       ? "Daily API quota exceeded — wait for reset or upgrade tier."
                       : data.sourceErrors[0].reason === "auth"
@@ -214,6 +214,39 @@ export default function PerformancePage() {
                   </div>
                   <div className="mt-1 text-[11px] text-red-700">
                     Full error: {data.sourceErrors[0].signature}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {data && data.staleTabs.length > 0 && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <div className="flex items-start gap-2">
+                <span aria-hidden="true">⏰</span>
+                <div>
+                  <div className="font-semibold">
+                    Spend data has stopped refreshing for one or more tabs.
+                  </div>
+                  <div className="mt-1 text-amber-800">
+                    No explicit upstream error, but these tabs haven&apos;t
+                    received fresh data in 2+ days:{" "}
+                    {data.staleTabs.map((s, i) => (
+                      <span key={s.tab}>
+                        {i > 0 && ", "}
+                        <code className="rounded bg-amber-100 px-1">{s.tab}</code>
+                        <span className="text-amber-700">
+                          {" "}
+                          (
+                          {s.latestDate
+                            ? `last data ${fmtDate(s.latestDate)}, ${s.daysBehind} days behind`
+                            : "never landed any data"}
+                          )
+                        </span>
+                      </span>
+                    ))}
+                    . Usually means the Supermetrics scheduled refresh is
+                    failing silently — check hub.supermetrics.com → schedule
+                    status, or try a manual refresh.
                   </div>
                 </div>
               </div>
@@ -258,29 +291,43 @@ export default function PerformancePage() {
                 {r.spendByTab.length > 1 && (
                   <div className="mt-4 border-t border-neutral-100 pt-2 space-y-0.5 text-[11px]">
                     <div className="text-neutral-500">Spend breakdown:</div>
-                    {r.spendByTab.map((b) => (
-                      <div
-                        key={b.tab}
-                        className={
-                          "flex justify-between " +
-                          (b.sourceError ? "text-red-700" : "text-neutral-600")
-                        }
-                      >
-                        <span className="inline-flex items-center gap-1">
-                          {shortTabLabel(b.tab)}
-                          {b.sourceError && (
-                            <span
-                              aria-hidden="true"
-                              title={b.sourceError.signature}
-                              className="cursor-help"
-                            >
-                              ⚠
-                            </span>
-                          )}
-                        </span>
-                        <span className="tabular-nums">{fmtMoney(b.spendUsd)}</span>
-                      </div>
-                    ))}
+                    {r.spendByTab.map((b) => {
+                      const rowColor = b.sourceError
+                        ? "text-red-700"
+                        : b.staleness
+                        ? "text-amber-700"
+                        : "text-neutral-600";
+                      return (
+                        <div key={b.tab} className={"flex justify-between " + rowColor}>
+                          <span className="inline-flex items-center gap-1">
+                            {shortTabLabel(b.tab)}
+                            {b.sourceError && (
+                              <span
+                                aria-hidden="true"
+                                title={b.sourceError.signature}
+                                className="cursor-help"
+                              >
+                                ⚠
+                              </span>
+                            )}
+                            {!b.sourceError && b.staleness && (
+                              <span
+                                aria-hidden="true"
+                                title={
+                                  b.staleness.latestDate
+                                    ? `Last data ${b.staleness.latestDate} (${b.staleness.daysBehind} days behind)`
+                                    : "Never received any data"
+                                }
+                                className="cursor-help"
+                              >
+                                ⏰
+                              </span>
+                            )}
+                          </span>
+                          <span className="tabular-nums">{fmtMoney(b.spendUsd)}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
