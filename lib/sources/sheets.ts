@@ -1027,15 +1027,22 @@ export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
 
   const sheets = buildSheetsClient();
 
-  // Pull A:ANK (col 1027) so the ingest is ready for a 3-year date
-  // window when Scott widens the Supermetrics FB Ads export. ANK
-  // covers 1025 date columns — roughly 2.8 years of daily slots — and
-  // ~3015 rows × 1027 cols ≈ 3.1M cells is comfortably under the
-  // Sheets API 10M-cell range cap. Until then this is a no-op widening:
-  // empty trailing columns get skipped by parseFbAdsSheet.
+  // Pull A:AZZ (col 1378 = 1376 date slots, ~3.77 years of daily data)
+  // so the ingest covers Supermetrics's full 36-month FB Ads history
+  // window with safe headroom. Scott confirmed 2026-05-22 that
+  // Supermetrics caps FB export at 36 months (~1097 date cols), and our
+  // prior A:ANK guess (col 1051) would clip ~46 cols off the right edge
+  // of the sheet — i.e., we'd silently lose the most recent ~6 weeks of
+  // spend on every cron after he widens the source. AZZ gives us
+  // ~9 months of headroom past the 36-month max.
+  //
+  // ~3015 rows × 1378 cols ≈ 4.2M cells is comfortably under the
+  // Sheets API 10M-cell range cap. Until Scott actually widens the
+  // Supermetrics query, this is a no-op widening — empty trailing
+  // columns get skipped by parseFbAdsSheet.
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `'${tab}'!A1:ANK`,
+    range: `'${tab}'!A1:AZZ`,
   });
   const grid = (resp.data.values ?? []) as unknown[][];
 
