@@ -101,10 +101,6 @@ export type PerformanceResult = {
   /** Distinct tabs with an upstream error in the latest pull. Drives
    * the red page-level banner. */
   sourceErrors: Array<{ tab: string; signature: string; reason: AdSpendSourceErrorSummary["reason"] }>;
-  /** Distinct tabs whose data is silently stale (no explicit error
-   * but max(spend_date) is >= 2 days behind yesterday EST). Drives
-   * the amber page-level banner. */
-  staleTabs: Array<{ tab: string; latestDate: string | null; daysBehind: number }>;
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -324,21 +320,6 @@ export async function getPerformanceRollup(opts: {
     reason: sum.reason,
   }));
 
-  // Stale tabs: only include canonical tabs from PRODUCT_CONFIG (skip
-  // any non-tracked products). Excludes tabs already in sourceErrors —
-  // the red error banner already covers them; no need to double-flag.
-  const errorTabs = new Set(sourceErrors.map((e) => e.tab));
-  const allTrackedTabs = (Object.values(PRODUCT_CONFIG) as Array<{ spendTabs: ReadonlyArray<string> }>)
-    .flatMap((c) => c.spendTabs);
-  const staleTabs = allTrackedTabs
-    .filter((tab) => !errorTabs.has(tab))
-    .map((tab) => {
-      const latestDate = maxDateByTab.get(tab) ?? null;
-      const behind = daysBehind(latestDate, realYesterdayEst);
-      return { tab, latestDate, daysBehind: behind === Infinity ? -1 : behind };
-    })
-    .filter((s) => s.daysBehind === -1 || s.daysBehind >= STALE_DAYS);
-
   return {
     rangeDays: opts.rangeDays,
     rangeStart,
@@ -346,7 +327,6 @@ export async function getPerformanceRollup(opts: {
     rows,
     warnEmpty,
     sourceErrors,
-    staleTabs,
   };
 }
 

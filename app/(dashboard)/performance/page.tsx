@@ -219,39 +219,6 @@ export default function PerformancePage() {
               </div>
             </div>
           )}
-          {data && data.staleTabs.length > 0 && (
-            <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              <div className="flex items-start gap-2">
-                <span aria-hidden="true">⏰</span>
-                <div>
-                  <div className="font-semibold">
-                    Spend data has stopped refreshing for one or more tabs.
-                  </div>
-                  <div className="mt-1 text-amber-800">
-                    No explicit upstream error, but these tabs haven&apos;t
-                    received fresh data in 2+ days:{" "}
-                    {data.staleTabs.map((s, i) => (
-                      <span key={s.tab}>
-                        {i > 0 && ", "}
-                        <code className="rounded bg-amber-100 px-1">{s.tab}</code>
-                        <span className="text-amber-700">
-                          {" "}
-                          (
-                          {s.latestDate
-                            ? `last data ${fmtDate(s.latestDate)}, ${s.daysBehind} days behind`
-                            : "never landed any data"}
-                          )
-                        </span>
-                      </span>
-                    ))}
-                    . Usually means the Supermetrics scheduled refresh is
-                    failing silently — check hub.supermetrics.com → schedule
-                    status, or try a manual refresh.
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             {rows.map((r) => (
