@@ -6,6 +6,7 @@ import {
   adSpendDaily,
   alertEvents,
   dailySales,
+  dataPulls,
   factoryOrderLines,
   factoryOrders,
   fbAdSpendDaily,
@@ -14,7 +15,7 @@ import {
   skus,
   stockSnapshots,
 } from "@/lib/db/schema";
-import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
+import { evaluateFreshness, runFreshnessCheck } from "@/lib/jobs/freshness-check";
 import "dotenv/config";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -503,5 +504,68 @@ describe("runFreshnessCheck", () => {
         sql`dedup_key = 'ingest.source.failed:shopify_us' AND resolved_at IS NULL`,
       );
     expect(ingestStillOpen.length).toBe(1);
+  });
+
+  // --- Schema-drift detection -------------------------------------------
+  async function insertSuccessPull(
+    source: "sheets_ad_spend" | "sheets_fb_ads" | "shopify_us",
+    fingerprint: string,
+    startedAt: Date,
+  ) {
+    const [raw] = await db
+      .insert(rawPulls)
+      .values({
+        source,
+        pullBatchId: randomUUID(),
+        payload: {},
+        rowCount: 0,
+        schemaFingerprint: fingerprint,
+      })
+      .returning({ id: rawPulls.id });
+    await db.insert(dataPulls).values({
+      pullBatchId: randomUUID(),
+      source,
+      startedAt,
+      finishedAt: startedAt,
+      status: "success",
+      rowCount: 0,
+      rawPullId: raw.id,
+    });
+  }
+
+  it("flags schema drift when a source's fingerprint changes between successful pulls", async () => {
+    const t0 = new Date(FAKE_NOW.getTime() - 48 * 60 * 60 * 1000);
+    const t1 = new Date(FAKE_NOW.getTime() - 24 * 60 * 60 * 1000);
+    await insertSuccessPull("sheets_ad_spend", "fp_old", t0);
+    await insertSuccessPull("sheets_ad_spend", "fp_new", t1);
+
+    const { checks } = await evaluateFreshness({ now: fixedNow });
+    const drift = checks.find((c) => c.name === "schema_drift.sheets_ad_spend");
+    expect(drift?.status).toBe("fail");
+    expect(drift?.fields.priorFingerprint).toBe("fp_old");
+    expect(drift?.fields.currentFingerprint).toBe("fp_new");
+  });
+
+  it("passes schema drift when consecutive successful pulls share a fingerprint", async () => {
+    const t0 = new Date(FAKE_NOW.getTime() - 48 * 60 * 60 * 1000);
+    const t1 = new Date(FAKE_NOW.getTime() - 24 * 60 * 60 * 1000);
+    await insertSuccessPull("sheets_fb_ads", "fp_same", t0);
+    await insertSuccessPull("sheets_fb_ads", "fp_same", t1);
+
+    const { checks } = await evaluateFreshness({ now: fixedNow });
+    const drift = checks.find((c) => c.name === "schema_drift.sheets_fb_ads");
+    expect(drift?.status).toBe("pass");
+  });
+
+  it("does not flag drift on a source's first successful pull", async () => {
+    await insertSuccessPull(
+      "shopify_us",
+      "fp_first",
+      new Date(FAKE_NOW.getTime() - 24 * 60 * 60 * 1000),
+    );
+
+    const { checks } = await evaluateFreshness({ now: fixedNow });
+    const drift = checks.find((c) => c.name === "schema_drift.shopify_us");
+    expect(drift?.status).toBe("pass");
   });
 });

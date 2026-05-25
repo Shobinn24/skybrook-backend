@@ -870,9 +870,17 @@ export const sheetsAdSpendRunner: SourceRunner = async (_batchId) => {
     sample: string;
   }> = [];
 
+  // Header row per tab — the SCHEMA signal for drift detection. We
+  // deliberately do NOT mix row count into the fingerprint: ad_spend
+  // grows by a row every day (MERGE_RESULTS append), so a count-based
+  // fingerprint would "drift" on every single pull and make the
+  // schema-drift alert useless. Tab set + column headers only.
+  const headerByTab: Record<string, string[]> = {};
+
   for (let i = 0; i < AD_SPEND_TABS.length; i++) {
     const tab = AD_SPEND_TABS[i];
     const grid = (resp.data.valueRanges?.[i]?.values ?? []) as unknown[][];
+    headerByTab[tab] = (grid[0] ?? []).map((c) => String(c ?? "").trim());
     const { rows, skipped, sourceErrors } = parseAdSpendTab(tab, grid);
     allRows.push(...rows);
     for (const s of skipped) allSkipped.push({ tab, ...s });
@@ -885,7 +893,7 @@ export const sheetsAdSpendRunner: SourceRunner = async (_batchId) => {
     .update(
       JSON.stringify({
         tabs: AD_SPEND_TABS,
-        rowCount: dedupedRows.length,
+        headers: headerByTab,
       }),
     )
     .digest("hex")
@@ -1123,12 +1131,24 @@ export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
 
   const { variants, aggregated, skipped } = parseFbAdsSheet(grid);
 
+  // SCHEMA signal = the leading structural header columns (e.g.
+  // "Ad name", "Promoted post") BEFORE the date columns. Date columns
+  // grow by one every day, and variant/ad counts grow with volume —
+  // neither is schema drift, so a count/date-based fingerprint would
+  // false-fire daily. Hash only the fixed structural prefix so drift
+  // fires when those columns actually change shape.
+  const fbHeader = (grid[0] ?? []).map((c) => String(c ?? "").trim());
+  const structuralHeader: string[] = [];
+  for (const h of fbHeader) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(h)) break;
+    structuralHeader.push(h);
+  }
+
   const fingerprint = createHash("sha256")
     .update(
       JSON.stringify({
         tab,
-        variantCount: variants.length,
-        adCount: aggregated.length,
+        structuralHeader,
       }),
     )
     .digest("hex")

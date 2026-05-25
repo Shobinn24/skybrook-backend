@@ -45,6 +45,7 @@ import {
 } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
 import { postAlert, resolveAlert } from "@/lib/notifications/slack";
+import { getPullHistoryWithDriftForSource } from "@/lib/queries/pipeline";
 import { AD_SPEND_TABS } from "@/lib/sources/sheets";
 import { toEstDate } from "@/lib/tz";
 
@@ -349,6 +350,62 @@ export async function evaluateFreshness(opts?: {
       table: "skus",
     },
   });
+
+  // (c) Schema-drift detection. Each pull stores a `schema_fingerprint`
+  // computed from the upstream COLUMN/TAB shape (not row counts — the
+  // runners deliberately exclude volume so daily growth doesn't look
+  // like drift). When the latest successful pull's fingerprint differs
+  // from the prior successful pull's, the source changed shape: a
+  // renamed column, a dropped/renamed tab, a Shopify API-version bump.
+  // That silently corrupts ingest (null fields, dropped rows) WITHOUT
+  // tripping the success/failure alert. Alert-only (no halt): the
+  // delete-replace writes are idempotent and a genuine change
+  // auto-re-baselines on the next pull, so halting would risk a
+  // self-inflicted outage on a one-time legit change.
+  //
+  // sheets_incoming is intentionally excluded — its fingerprint still
+  // folds in PO-column count, so it would false-fire whenever a PO is
+  // added. Make that fingerprint schema-only before adding it here.
+  const DRIFT_SOURCES = [
+    "sheets_inventory",
+    "sheets_ad_spend",
+    "sheets_fb_ads",
+    "shopify_us",
+    "shopify_intl",
+  ] as const;
+  const driftResults = await Promise.all(
+    DRIFT_SOURCES.map(async (source) => {
+      const hist = await getPullHistoryWithDriftForSource(source, 5);
+      const latest = hist.find(
+        (r) => r.status === "success" && r.fingerprint !== null,
+      );
+      return { source, latest };
+    }),
+  );
+  for (const { source, latest } of driftResults) {
+    const drifted = latest?.schemaDrifted === true;
+    checks.push({
+      name: `schema_drift.${source}`,
+      status: drifted ? "fail" : "pass",
+      maxDate: null,
+      threshold: "schema_fingerprint == prior successful pull",
+      dedupKey: `schema_drift:${source}`,
+      title: `Schema drift on ${source} — upstream column/tab shape changed`,
+      // p2 → #skybrook-digest, not an @mention page. Schema drift is
+      // "look at this", and on the first deploy that changes a
+      // fingerprint format it fires once then auto-resolves next tick.
+      // Raise to p1 once it's proven quiet in production.
+      severity: "p2",
+      detail: drifted
+        ? `fingerprint ${latest?.priorFingerprint} -> ${latest?.fingerprint}`
+        : undefined,
+      fields: {
+        source,
+        currentFingerprint: latest?.fingerprint ?? null,
+        priorFingerprint: latest?.priorFingerprint ?? null,
+      },
+    });
+  }
 
   return { asOfDate: today, threshold, checks };
 }
