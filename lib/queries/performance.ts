@@ -31,6 +31,15 @@ const PRODUCT_CONFIG = {
     spendTabs: ["SuperHW", "Super HW AL"],
     productNamePatterns: ["Super High-Waist%"],
   },
+  // High Rise Short — EV INTL launch. spendTabs match the Supermetrics
+  // tabs (filter "HRS", confirmed by Jasper 2026-05-25); productName
+  // pattern matches the ev-hrshort-* SKUs that resolve to "High Rise
+  // Short". Shows $0 spend until the HRS tabs are wired + ads run.
+  hrs: {
+    label: "HRS",
+    spendTabs: ["HRS", "HRS AL"],
+    productNamePatterns: ["High Rise Short%"],
+  },
 } as const;
 
 type ProductKey = keyof typeof PRODUCT_CONFIG;

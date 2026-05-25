@@ -677,6 +677,15 @@ export const AD_SPEND_TABS = [
   "Men AL",
   "Shapewear AL",
   "Super HW AL",
+  // High Rise Short (launching EV INTL). Jasper confirmed the ad-name
+  // filter is "HRS" (2026-05-25). DO NOT ship these until BOTH (1) the
+  // "HRS" / "HRS AL" tabs exist in the Supermetrics sheet (else the
+  // batchGet 400s and breaks the whole ad-spend pull) AND (2) HRS ads
+  // are live producing spend (else the per-tab freshness check below
+  // false-fires "HRS stale" daily on null max date). If AppLovin HRS
+  // isn't running, drop "HRS AL".
+  "HRS",
+  "HRS AL",
 ] as const;
 
 export type AdSpendTab = (typeof AD_SPEND_TABS)[number];
