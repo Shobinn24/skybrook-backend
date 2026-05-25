@@ -363,11 +363,15 @@ export async function evaluateFreshness(opts?: {
   // auto-re-baselines on the next pull, so halting would risk a
   // self-inflicted outage on a one-time legit change.
   //
-  // sheets_incoming is intentionally excluded — its fingerprint still
-  // folds in PO-column count, so it would false-fire whenever a PO is
-  // added. Make that fingerprint schema-only before adding it here.
+  // sheets_incoming and sheets_inventory are intentionally excluded: their
+  // fingerprints still fold in VOLUME/position, so they'd false-fire daily.
+  //   - incoming: hashes PO-column count (changes when a PO is added)
+  //   - inventory: hashes headerSummary = "<latest date> -> col X" per tab,
+  //     and the latest date column advances every day
+  // Make both fingerprints schema-only (hash tab/column STRUCTURE, not the
+  // moving date pointer or counts) before adding them here. ad_spend and
+  // fb_ads were just fixed to schema-only; shopify is stable by design.
   const DRIFT_SOURCES = [
-    "sheets_inventory",
     "sheets_ad_spend",
     "sheets_fb_ads",
     "shopify_us",
