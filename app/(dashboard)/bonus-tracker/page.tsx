@@ -121,9 +121,8 @@ export default function BonusTrackerPage() {
   });
 
   type ActiveView = BonusMarketer | "summary";
-  const [activeView, setActiveView] = useState<ActiveView>(
-    BONUS_MARKETERS[0] ?? "summary",
-  );
+  // Summary is the default landing view and the leftmost tab (Jasper 2026-05-26).
+  const [activeView, setActiveView] = useState<ActiveView>("summary");
   const [showPreviewModal, setShowPreviewModal] = useState(false);
 
   const sectionsByMarketer = new Map(
@@ -166,8 +165,21 @@ export default function BonusTrackerPage() {
         <div className="text-sm text-neutral-500">Loading…</div>
       ) : (
         <div className="space-y-4">
-          {/* Marketer + Summary tab strip */}
+          {/* Summary + marketer tab strip — Summary first (Jasper 2026-05-26). */}
           <div className="flex flex-wrap gap-2">
+            {/* Summary tab — bonus paid per month per marketer (Jasper 2026-05-20). */}
+            <button
+              type="button"
+              onClick={() => setActiveView("summary")}
+              aria-pressed={activeView === "summary"}
+              className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                activeView === "summary"
+                  ? "bg-neutral-900 text-white"
+                  : "border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
+              }`}
+            >
+              Summary
+            </button>
             {BONUS_MARKETERS.map((marketer) => {
               const section = sectionsByMarketer.get(marketer);
               const count = section?.rows.length ?? 0;
@@ -197,19 +209,6 @@ export default function BonusTrackerPage() {
                 </button>
               );
             })}
-            {/* Summary tab — bonus paid per month per marketer (Jasper 2026-05-20). */}
-            <button
-              type="button"
-              onClick={() => setActiveView("summary")}
-              aria-pressed={activeView === "summary"}
-              className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                activeView === "summary"
-                  ? "bg-neutral-900 text-white"
-                  : "border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
-              }`}
-            >
-              Summary
-            </button>
           </div>
 
           {/* Active tab content */}
@@ -384,9 +383,9 @@ export default function BonusTrackerPage() {
                                 })
                               }
                               className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
-                              title="Approve full"
+                              title="Approve"
                             >
-                              Approve full
+                              Approve
                             </button>
                             {bonusCategory(p.marketer) === "main" && (
                               <button
@@ -691,8 +690,8 @@ export default function BonusTrackerPage() {
 
       <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
         <strong>How this works:</strong> An ad crosses $13k or $65k lifetime
-        spend → it appears in <em>Pending approvals</em>. Jasper picks Full /
-        Half / Reject per ad (Half is main-marketer only — rehook or collab).
+        spend → it appears in <em>Pending approvals</em>. Jasper picks Approve /
+        Approve half / Reject per ad (Approve half is main-marketer only — rehook or collab).
         Approved bonuses queue for the next notification. Click{" "}
         <em>Generate notification</em> to render the WhatsApp message and lock
         the batch.
