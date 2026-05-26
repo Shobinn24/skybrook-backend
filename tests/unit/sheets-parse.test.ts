@@ -7,6 +7,7 @@ import {
   parseAdSpendTab,
   parseDayMonth,
   parseFbAdsSheet,
+  mergeFbAggregated,
   parseIncomingGrid,
   parseQty,
   pickArrivalDate,
@@ -779,6 +780,76 @@ describe("parseFbAdsSheet", () => {
       { spendDate: "2026-01-01", costUsd: 10 },
       { spendDate: "2026-01-03", costUsd: 30 },
     ]);
+  });
+});
+
+describe("mergeFbAggregated", () => {
+  const ad = (
+    adNumber: string,
+    adName: string,
+    daily: Array<[string, number]>,
+    adLink: string | null = null,
+  ) => ({
+    adNumber,
+    adName,
+    adNameRaw: `raw ${adName}`,
+    adLink,
+    dailySpend: daily.map(([spendDate, costUsd]) => ({ spendDate, costUsd })),
+  });
+
+  it("passes a single list through (live-only path unchanged)", () => {
+    const live = [ad("100", "X", [["2026-01-02", 5], ["2026-01-01", 3]])];
+    const out = mergeFbAggregated([live]);
+    expect(out).toHaveLength(1);
+    // dailySpend comes back sorted by date
+    expect(out[0].dailySpend).toEqual([
+      { spendDate: "2026-01-01", costUsd: 3 },
+      { spendDate: "2026-01-02", costUsd: 5 },
+    ]);
+  });
+
+  it("recombines one ad across tabs by adNumber, unioning non-overlapping dates", () => {
+    const live = [ad("537", "OG Lavender", [["2026-01-01", 100]])];
+    const hist2023 = [ad("537", "OG Lav old", [["2023-07-01", 40]])];
+    const hist2024 = [ad("537", "OG Lav mid", [["2024-03-01", 60]])];
+    const out = mergeFbAggregated([live, hist2023, hist2024]);
+    expect(out).toHaveLength(1);
+    expect(out[0].adNumber).toBe("537");
+    expect(out[0].dailySpend).toEqual([
+      { spendDate: "2023-07-01", costUsd: 40 },
+      { spendDate: "2024-03-01", costUsd: 60 },
+      { spendDate: "2026-01-01", costUsd: 100 },
+    ]);
+  });
+
+  it("picks the canonical name/link from the highest-total-spend appearance", () => {
+    const live = [ad("9", "small recent", [["2026-01-01", 10]], "live-link")];
+    const hist = [ad("9", "big historical", [["2024-01-01", 5000]], "hist-link")];
+    const [merged] = mergeFbAggregated([live, hist]);
+    expect(merged.adName).toBe("big historical");
+    expect(merged.adLink).toBe("hist-link");
+  });
+
+  it("breaks name ties in favor of the first (live) list", () => {
+    const live = [ad("7", "live name", [["2026-01-01", 50]], "live")];
+    const hist = [ad("7", "hist name", [["2024-01-01", 50]], "hist")];
+    const [merged] = mergeFbAggregated([live, hist]);
+    expect(merged.adName).toBe("live name");
+  });
+
+  it("sums spend if the same date somehow appears in two tabs (boundary guard)", () => {
+    const a = [ad("3", "A", [["2025-12-31", 10]])];
+    const b = [ad("3", "A", [["2025-12-31", 5]])];
+    const [merged] = mergeFbAggregated([a, b]);
+    expect(merged.dailySpend).toEqual([{ spendDate: "2025-12-31", costUsd: 15 }]);
+  });
+
+  it("keeps distinct ads separate", () => {
+    const out = mergeFbAggregated([
+      [ad("1", "A", [["2026-01-01", 1]])],
+      [ad("2", "B", [["2024-01-01", 2]])],
+    ]);
+    expect(out.map((a) => a.adNumber).sort()).toEqual(["1", "2"]);
   });
 });
 

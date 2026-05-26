@@ -13,6 +13,7 @@ import { decomposePackSku } from "@/lib/domain/sku-pack";
 import { extractMarketers } from "@/lib/domain/fb-marketers";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { toEstDate } from "@/lib/tz";
+import { logger } from "@/lib/logger";
 
 // Take the dash→x cosmetic rename from `decomposePackSku` but skip the
 // 10/15 → 5x decomposition. Scott tracks inventory at the 5-pack level
@@ -1103,6 +1104,70 @@ export function parseFbAdsSheet(
   return { variants, aggregated, skipped };
 }
 
+/**
+ * Merge several `parseFbAdsSheet` aggregated lists (the live current-year
+ * tab + the frozen static history tabs) into one per-ad list.
+ *
+ * The tabs cover non-overlapping date ranges (history ≤ end of last year,
+ * live = current year), so an ad that ran across multiple periods is
+ * recombined by `adNumber`: its daily spend is unioned across tabs (summed
+ * per date as a guard against any boundary overlap), and the canonical
+ * name/link is taken from the appearance with the highest total spend —
+ * the same "best variant" rule `parseFbAdsSheet` applies within one tab.
+ *
+ * Pass the live list FIRST so name/link ties resolve to the most current
+ * tab. With a single list this is a no-op passthrough (re-sorted), so the
+ * live-only path is unchanged.
+ */
+export function mergeFbAggregated(
+  lists: ReadonlyArray<ReadonlyArray<FbAdAggregated>>,
+): FbAdAggregated[] {
+  const datesByAd = new Map<string, Map<string, number>>();
+  const bestByAd = new Map<
+    string,
+    { total: number; adName: string; adNameRaw: string; adLink: string | null }
+  >();
+
+  for (const list of lists) {
+    for (const ad of list) {
+      const dates = datesByAd.get(ad.adNumber) ?? new Map<string, number>();
+      let total = 0;
+      for (const d of ad.dailySpend) {
+        dates.set(d.spendDate, (dates.get(d.spendDate) ?? 0) + d.costUsd);
+        total += d.costUsd;
+      }
+      datesByAd.set(ad.adNumber, dates);
+
+      const cur = bestByAd.get(ad.adNumber);
+      // `>` (not `>=`) keeps the first list's name on ties → live wins.
+      if (!cur || total > cur.total) {
+        bestByAd.set(ad.adNumber, {
+          total,
+          adName: ad.adName,
+          adNameRaw: ad.adNameRaw,
+          adLink: ad.adLink,
+        });
+      }
+    }
+  }
+
+  const out: FbAdAggregated[] = [];
+  for (const [adNumber, dates] of datesByAd) {
+    const best = bestByAd.get(adNumber)!;
+    const dailySpend = Array.from(dates.entries())
+      .map(([spendDate, costUsd]) => ({ spendDate, costUsd }))
+      .sort((a, b) => a.spendDate.localeCompare(b.spendDate));
+    out.push({
+      adNumber,
+      adName: best.adName,
+      adNameRaw: best.adNameRaw,
+      adLink: best.adLink,
+      dailySpend,
+    });
+  }
+  return out;
+}
+
 export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
   const sheetId = process.env.FB_ADS_SHEET_ID;
   if (!sheetId) throw new Error("sheets_fb_ads: missing FB_ADS_SHEET_ID");
@@ -1129,7 +1194,44 @@ export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
   });
   const grid = (resp.data.values ?? []) as unknown[][];
 
-  const { variants, aggregated, skipped } = parseFbAdsSheet(grid);
+  const live = parseFbAdsSheet(grid);
+  const { variants, skipped } = live;
+
+  // Static history merge: the live tab pulls only the current year (fast
+  // daily refresh); FB_ADS_HISTORY_TABS names frozen one-time Supermetrics
+  // exports of prior years (Jun 2023 →), so the daily cron never re-pulls
+  // 3 years. We read each, parse it the same way, and merge by ad number
+  // (see mergeFbAggregated). Comma-separated; unset = live-only (no-op, so
+  // this is safe to deploy before the tabs exist). A missing/renamed tab
+  // is logged and skipped — it must never break the daily ingest.
+  const historyTabs = (process.env.FB_ADS_HISTORY_TABS ?? "")
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const historyAggregated: FbAdAggregated[][] = [];
+  for (const ht of historyTabs) {
+    try {
+      const hr = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `'${ht}'!A1:AZZ`,
+      });
+      const parsed = parseFbAdsSheet((hr.data.values ?? []) as unknown[][]);
+      if (parsed.aggregated.length > 0) {
+        historyAggregated.push(parsed.aggregated);
+      } else {
+        logger.warn("fb_ads.history.empty", {
+          tab: ht,
+          skipped: parsed.skipped.slice(0, 3),
+        });
+      }
+    } catch (e) {
+      logger.warn("fb_ads.history.read_failed", {
+        tab: ht,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  const aggregated = mergeFbAggregated([live.aggregated, ...historyAggregated]);
 
   // SCHEMA signal = the leading structural header columns (e.g.
   // "Ad name", "Promoted post") BEFORE the date columns. Date columns
@@ -1161,6 +1263,8 @@ export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
     rowCount,
     rawPayload: {
       tab,
+      historyTabs,
+      historyTabsLoaded: historyAggregated.length,
       variantCount: variants.length,
       adCount: aggregated.length,
       sample: aggregated.slice(0, 5).map((a) => ({
