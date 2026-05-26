@@ -52,9 +52,9 @@ describe("parseCostSheetRows", () => {
   it("canonicalizes mixed-case dash-form pack SKUs to lowercase x-form", () => {
     const out = parseCostSheetRows(makeGrid());
     const skus = out.rows.map((r) => r.sku);
-    // EV-OG-5-l → ev-pp-og-l (no-color OG bare-size 5-pack folds to
-    // the canonical ev-pp-og-{size} inventory key per Scott 4/30 + 5/02)
-    expect(skus).toContain("ev-pp-og-l");
+    // EV-OG-5-l → ev-mixed-l (no-color OG bare-size 5-pack folds to the
+    // canonical OG 5-Pack key ev-mixed-{size} per Scott 2026-05-26)
+    expect(skus).toContain("ev-mixed-l");
     // ev-9055-hf-5-3xl → ev-9055-hf-5x-3xl (already lowercase, dash→x)
     expect(skus).toContain("ev-9055-hf-5x-3xl");
     // every emitted SKU is lowercase
@@ -77,14 +77,14 @@ describe("parseCostSheetRows", () => {
 
   it("returns valid cost numbers for the canonical SKUs", () => {
     const out = parseCostSheetRows(makeGrid());
-    const og = out.rows.find((r) => r.sku === "ev-pp-og-l");
+    const og = out.rows.find((r) => r.sku === "ev-mixed-l");
     expect(og).toBeDefined();
     expect(og!.costUsd).toBeCloseTo(6.73);
   });
 
   it("captures the paired INTL cost from the latest column", () => {
     const out = parseCostSheetRows(makeGrid());
-    const og = out.rows.find((r) => r.sku === "ev-pp-og-l");
+    const og = out.rows.find((r) => r.sku === "ev-mixed-l");
     expect(og!.costIntlUsd).toBeCloseTo(6.04);
     const hf = out.rows.find((r) => r.sku === "ev-9055-hf-5x-3xl");
     expect(hf!.costIntlUsd).toBeCloseTo(7.2);

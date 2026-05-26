@@ -55,10 +55,10 @@ describe("decomposePackSku", () => {
       multiplier: 2,
     });
     // No-color OG: 15-pack decomposes to 3× 5-packs, then the bare-size
-    // 5-pack rename folds the result onto `ev-pp-og-{size}` per Scott
-    // (4/30 + 5/02). 1× 15-pack = 3× ev-pp-og-xxl.
+    // 5-pack rename folds the result onto the canonical OG 5-Pack row
+    // `ev-mixed-{size}` (Scott 2026-05-26). 1× 15-pack = 3× ev-mixed-xxl.
     expect(decomposePackSku("EV-OG-15-xxl")).toEqual({
-      canonicalSku: "ev-pp-og-xxl",
+      canonicalSku: "ev-mixed-xxl",
       multiplier: 3,
     });
   });
@@ -320,21 +320,59 @@ describe("decomposePackSku", () => {
     });
   });
 
-  it("remaps bare-size og 5-packs to ev-pp-og inventory rows (Scott 4/30 + 5/02)", () => {
-    // OG no-color sales (`ev-og-5x-{size}`) attribute to `ev-pp-og-{size}`
-    // — same physical product as OG Main "no color" line per Scott.
+  it("remaps bare-size og 5-packs to the canonical ev-mixed OG 5-Pack (Scott 2026-05-26)", () => {
+    // OG no-color sales (`ev-og-5x-{size}`) attribute to `ev-mixed-{size}`
+    // — the canonical OG 5-Pack per EVSKUmap + stock_snapshots. Supersedes
+    // the earlier ev-pp-og target (which had no matching stock row).
     expect(decomposePackSku("ev-og-5x-l")).toEqual({
-      canonicalSku: "ev-pp-og-l",
+      canonicalSku: "ev-mixed-l",
       multiplier: 1,
     });
     expect(decomposePackSku("ev-og-5x-xxl")).toEqual({
-      canonicalSku: "ev-pp-og-xxl",
+      canonicalSku: "ev-mixed-xxl",
       multiplier: 1,
     });
     expect(decomposePackSku("ev-og-5-xs")).toEqual({
-      canonicalSku: "ev-pp-og-xs",
+      canonicalSku: "ev-mixed-xs",
       multiplier: 1,
     });
+  });
+
+  it("normalizes the OG line's 3xl token to ev-mixed's xxxl (Scott 2026-05-26)", () => {
+    // The OG/pp-og line writes `3xl`; the canonical ev-mixed OG 5-Pack
+    // spells it `xxxl`. Only this remap path normalizes it — 9055 etc.
+    // keep their own `3xl`.
+    expect(decomposePackSku("ev-og-5x-3xl")).toEqual({
+      canonicalSku: "ev-mixed-xxxl",
+      multiplier: 1,
+    });
+    // EV-OG-10 / EV-OG-15 decompose to the 5x base (×2 / ×3) then fold in.
+    expect(decomposePackSku("EV-OG-10-3xl")).toEqual({
+      canonicalSku: "ev-mixed-xxxl",
+      multiplier: 2,
+    });
+    expect(decomposePackSku("EV-OG-15-l")).toEqual({
+      canonicalSku: "ev-mixed-l",
+      multiplier: 3,
+    });
+    // 9055 keeps 3xl (its own stock + inventory use 3xl).
+    expect(decomposePackSku("ev-9055-5x-3xl")).toBeNull();
+  });
+
+  it("folds the legacy ev-pp-og alias into ev-mixed (incoming-PO sheet)", () => {
+    // The incoming-PO sheet still keys on `ev-pp-og-{size}`; fold it onto
+    // the canonical OG 5-Pack so incoming matches sales + stock.
+    expect(decomposePackSku("ev-pp-og-l")).toEqual({
+      canonicalSku: "ev-mixed-l",
+      multiplier: 1,
+    });
+    // pp-og's 3xl also normalizes to xxxl.
+    expect(decomposePackSku("ev-pp-og-3xl")).toEqual({
+      canonicalSku: "ev-mixed-xxxl",
+      multiplier: 1,
+    });
+    // Already-canonical ev-mixed passes through untouched (no pack token).
+    expect(decomposePackSku("ev-mixed-l")).toBeNull();
   });
 
   it("preserves og colored 5-packs (keeps the 5x token)", () => {

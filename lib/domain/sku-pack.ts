@@ -41,14 +41,20 @@
 // 5-packs (`ev-hw-5x-{color}-{size}`) keep their separate identity —
 // only the bare-size form gets collapsed.
 //
-// OG no-color → ev-pp-og collapse: Shopify sells `ev-og-5x-{size}`
-// (no color) — 9 SKUs, 748 units / 30d as of 2026-04-30 — that don't
-// match any inventory row. Scott (4/30 morning + 5/02 confirm:
-// "Think that's another sku for the same thing") confirmed they're
-// the same physical product as the OG Main "no color" line, which
-// inventory tracks under `ev-pp-og-{size}` (sometimes also mirrored
-// as `EV-mixed-{size}`). We map sales to `ev-pp-og-{size}` since
-// Scott pointed at that one explicitly ("set up as OG regular too").
+// OG no-color → ev-mixed collapse: Shopify sells `ev-og-5x-{size}`
+// (no color) that is the same physical product as the OG Main "no
+// color" line. The canonical home for that line is `ev-mixed-{size}`:
+// EVSKUmap lists `EV-mixed-{size}` as product "EV-OG" (the OG 5-Pack),
+// `stock_snapshots` is keyed exclusively on `ev-mixed`, and the
+// inventory sheet carries an explicit "replace pp-og to mixed" note
+// (Scott 2026-05-26 confirmed canonical = "OG 5-Pack"). This SUPERSEDES
+// the earlier `ev-pp-og` target (4/30 + 5/02): pp-og had no matching
+// stock row, so its sales were orphaned from days-of-stock AND were
+// missing from the `ev-mixed` velocity the tool displays, undercounting
+// the OG line. The legacy `ev-pp-og-{size}` form (still used by the
+// incoming-PO sheet) is also folded into `ev-mixed-{size}` here so
+// sales, stock, and incoming all land on one row. The OG line writes
+// `3xl` where ev-mixed spells `xxxl` — normalized only on this path.
 // Colored OG 5-packs (`ev-og-5x-{color}-{size}`) keep their identity
 // — only the bare-size form gets remapped.
 
@@ -122,6 +128,15 @@ export type DecomposedSku = {
 
 export function decomposePackSku(sku: string): DecomposedSku | null {
   const lower = sku.toLowerCase();
+  // Legacy `ev-pp-og-{size}` is an old alias of the OG 5-Pack; its
+  // canonical home is `ev-mixed-{size}` (see top-of-file note). Bare-size
+  // only — pp-og never carries a color segment. Rename with no
+  // multiplier so the incoming-PO sheet (which still keys on pp-og)
+  // lands on the same canonical row as sales and stock.
+  const ppOg = lower.match(/^ev-pp-og-([a-z0-9]+)$/);
+  if (ppOg) {
+    return { canonicalSku: `ev-mixed-${ogSizeToMixed(ppOg[1])}`, multiplier: 1 };
+  }
   const m = lower.match(PACK_TOKEN_RE);
   if (!m) return null;
   const [, family, packMatch, rest] = m;
@@ -140,15 +155,18 @@ export function decomposePackSku(sku: string): DecomposedSku | null {
   ) {
     canonicalSku = `ev-hw-${canonicalRest}`;
   }
-  // OG no-color → ev-pp-og rename: bare-size OG 5-packs (no color
-  // segment in `rest`) get re-keyed onto the inventory's canonical
-  // `ev-pp-og-{size}` row. Colored OG 5-packs keep their identity.
+  // OG no-color → ev-mixed rename: bare-size OG 5-packs (no color
+  // segment in `rest`) get re-keyed onto the canonical OG 5-Pack row,
+  // `ev-mixed-{size}`. 10/15-packs reach here already decomposed to the
+  // 5x base (×2 / ×3), so EV-OG-10/15 sales fold into ev-mixed too.
+  // `ogSizeToMixed` maps `3xl`→`xxxl` for this line only. Colored OG
+  // 5-packs keep their identity.
   if (
     family === "og" &&
     target.canonicalToken === "5x" &&
     !canonicalRest.includes("-")
   ) {
-    canonicalSku = `ev-pp-og-${canonicalRest}`;
+    canonicalSku = `ev-mixed-${ogSizeToMixed(canonicalRest)}`;
   }
   // Already canonical and no multiplier needed → caller treats as no-op.
   if (canonicalSku === lower && target.multiplier === 1) return null;
@@ -159,6 +177,15 @@ export function decomposePackSku(sku: string): DecomposedSku | null {
 // conventions in the data.
 function canonicalizeSizeToken(rest: string): string {
   return rest.replace(/(^|-)2xl$/i, "$1xxl");
+}
+
+// The OG line (og / pp-og) writes `3xl` for the size that `ev-mixed` —
+// the canonical OG 5-Pack — spells `xxxl`. Applied ONLY when remapping
+// onto ev-mixed, so 9055/hw and others keep their own `3xl` token (which
+// matches their own inventory + stock rows). 2xl is already folded to
+// xxl upstream by canonicalizeSizeToken.
+function ogSizeToMixed(size: string): string {
+  return size === "3xl" ? "xxxl" : size;
 }
 
 // Color token: UK `grey` → US `gray`. Production tabs (`EV Sec CN`,
@@ -206,11 +233,17 @@ export const PACK_SKU_DB_PATTERNS: ReadonlyArray<string> = [
   "ev-og-hf-9x-%",
   "ev-og-hf-9-%",
   "ev-%-2xl",
+  // Legacy `ev-pp-og-{size}` rows — the OG no-color line now lands on
+  // `ev-mixed-{size}` (Scott 2026-05-26). Purge any daily_sales rows an
+  // earlier ingest wrote under the old pp-og canonical so velocity
+  // recomputes cleanly on `ev-mixed`. `ev-pp-og-{color}-%` never existed
+  // (pp-og is bare-size only), so the `%` is safe.
+  "ev-pp-og-%",
   // OG no-color 5-packs (`ev-og-5x-{size}`, no color segment) — now
-  // remapped to `ev-pp-og-{size}` per Scott's 4/30 + 5/02 confirms.
-  // Pattern matches sizes only (s/m/l/xl/xxl/3xl/4xl/5xl/xxs/xs) —
-  // `ev-og-5x-{color}-%` rows are unaffected because the % wildcard
-  // requires content where these end at the size token.
+  // remapped to `ev-mixed-{size}` (was `ev-pp-og`). Pattern matches
+  // sizes only (s/m/l/xl/xxl/3xl/4xl/5xl/xxs/xs) — `ev-og-5x-{color}-%`
+  // rows are unaffected because the `%` wildcard requires content where
+  // these end at the size token.
   "ev-og-5x-s",
   "ev-og-5x-m",
   "ev-og-5x-l",
