@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { runArrivalEvidenceCheck } from "@/lib/jobs/arrival-evidence-check";
 import { runAutoReceiptDetection } from "@/lib/jobs/auto-receipt";
 import { detectAndInsertBonusCrossings } from "@/lib/jobs/bonus-crossings";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
@@ -51,6 +52,35 @@ export async function POST(req: Request) {
   // is fresh) and before phase2 (so derived metrics see the updated
   // receipt state, e.g. incoming projections drop the auto-marked POs).
   const autoReceipts = await runAutoReceiptDetection({ asOfDate });
+  // Safety net for the conservative auto-receipt detector: flag overdue
+  // shipments whose stock actually jumped on/after their ETA (i.e. they
+  // arrived but weren't confidently auto-matched — partial / spread /
+  // post-gap deliveries). Read-only; surfaces a P2 confirm-prompt so
+  // these can't sit overdue unnoticed (the 2026-05-27 KAI miss). Never
+  // block the cron on it.
+  let likelyArrived: Awaited<ReturnType<typeof runArrivalEvidenceCheck>> = [];
+  try {
+    likelyArrived = await runArrivalEvidenceCheck({ asOfDate });
+    if (likelyArrived.length > 0) {
+      await postAlert({
+        severity: "p2",
+        title: `${likelyArrived.length} overdue shipment(s) look received — confirm in /incoming`,
+        dedupKey: "incoming.likely_arrived",
+        fields: Object.fromEntries(
+          likelyArrived.slice(0, 10).map((e) => [
+            `${e.shipmentName} · ${e.destination} · ETA ${e.expectedArrival}`,
+            `+${e.observedJump.toLocaleString()} on-hand (${Math.round(e.pctOfPo * 100)}% of ${e.poQuantity.toLocaleString()}-unit PO)`,
+          ]),
+        ),
+      });
+    } else {
+      await resolveAlert("incoming.likely_arrived");
+    }
+  } catch (e) {
+    logger.error("arrival-evidence.check.failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
   // Auto-populate launches runs after syncProductNames (so productNames
   // are current) but is independent of phase2 — failures shouldn't
   // block downstream metrics.
@@ -114,6 +144,7 @@ export async function POST(req: Request) {
     productNames,
     unitCosts,
     autoReceipts,
+    likelyArrivedOverdue: likelyArrived.length,
     autoLaunches,
     bonusCrossings,
     shippingSnapshot,

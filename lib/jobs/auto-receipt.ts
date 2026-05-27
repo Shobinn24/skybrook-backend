@@ -3,7 +3,7 @@
 // Runs after the normal ingest so today's stock_snapshots is already
 // in place.
 
-import { asc, eq, inArray, lte } from "drizzle-orm";
+import { asc, desc, eq, inArray, lt, lte } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   dailySales,
@@ -28,12 +28,24 @@ export async function runAutoReceiptDetection(input: {
   inserted: number;
 }> {
   const today = input.asOfDate;
-  const ms = 24 * 60 * 60 * 1000;
-  const yesterday = new Date(Date.UTC(
-    Number(today.slice(0, 4)),
-    Number(today.slice(5, 7)) - 1,
-    Number(today.slice(8, 10)),
-  ) - ms).toISOString().slice(0, 10);
+  // "Yesterday" = the most recent snapshot date strictly before today,
+  // NOT calendar today-1. Snapshot dates have gaps (days the inventory
+  // sheet wasn't refreshed), and a calendar-yesterday with no snapshot
+  // makes the day-over-day diff silently skip — so an arrival landing
+  // right after a gap (e.g. the 2026-05-17 KAI deliveries, with 05-16
+  // missing) would never be detected. Diffing against the prior SNAPSHOT
+  // date makes this gap-resilient.
+  const priorDateRows = await db
+    .selectDistinct({ d: stockSnapshots.snapshotDate })
+    .from(stockSnapshots)
+    .where(lt(stockSnapshots.snapshotDate, today))
+    .orderBy(desc(stockSnapshots.snapshotDate))
+    .limit(1);
+  const yesterday = priorDateRows[0]?.d;
+  if (!yesterday) {
+    logger.info("auto-receipt.skip.no-prior-snapshot", { today });
+    return { matched: 0, inserted: 0 };
+  }
 
   // Pull today + yesterday snapshots in one query.
   const allSnapshots = await db
