@@ -90,7 +90,17 @@ export async function POST(req: Request) {
   // landed today's spend rows. New (ad × marketer × tier) crossings
   // become `pending` rows in bonus_awards for Jasper to triage.
   // Idempotent — won't double-insert if cron re-runs.
-  const bonusCrossings = await detectAndInsertBonusCrossings({ asOfDate });
+  //
+  // `lookbackDays: 14` is the phantom-crossing guard added 2026-05-28
+  // after the FB 3-yr history import created 14 fake pending awards
+  // worth $13.5k on old ads. With this set, a tier only fires if it
+  // was actually crossed during the last 14 days — pre-window spend
+  // alone doesn't trigger a row. Tunable here if cron cadence ever
+  // widens. See lib/jobs/bonus-crossings.ts header for the full rationale.
+  const bonusCrossings = await detectAndInsertBonusCrossings({
+    asOfDate,
+    lookbackDays: 14,
+  });
   // Shipping Performance snapshot (Spec: docs/shipping-checks-spec).
   // Pulls last 60d of US-store orders + computes 30d-trailing stats.
   // Best-effort for the cron response: a Shopify hiccup shouldn't block

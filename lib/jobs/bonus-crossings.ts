@@ -16,6 +16,7 @@ export type BonusCrossingDetectResult = {
   scanned: number;        // ad_numbers considered (with at least one bonus marketer)
   inserted: number;       // new pending awards created
   alreadyExisted: number; // crossings that were already tracked
+  phantomSkipped: number; // tiers dropped because already exceeded before lookback window
 };
 
 const BONUS_MARKETER_SET: ReadonlySet<string> = new Set(BONUS_MARKETERS);
@@ -38,24 +39,52 @@ const BONUS_MARKETER_SET: ReadonlySet<string> = new Set(BONUS_MARKETERS);
  * crossing date isn't reconstructed because it doesn't affect the
  * payout — only the existence of the crossing matters for the monthly
  * notification.
+ *
+ * `lookbackDays` (added 2026-05-28 after the FB 3-yr history import
+ * phantom-crossing incident) gates "this is a genuinely new crossing"
+ * against pre-window spend. The 5/27 import dropped 130k rows of
+ * 2023-2025 spend into the table; the next cron summed lifetime spend
+ * and saw 14 ads suddenly exceeding tier1/tier2 thresholds — but those
+ * ads had crossed those thresholds years ago, the data just hadn't
+ * been in the DB yet. With lookbackDays set, we require BOTH
+ * `lifetimeNow >= threshold` AND `lifetimeBefore(crossedAt - N days)
+ * < threshold` so the threshold must have been crossed during the
+ * window, not before. Set in the cron call site; left undefined here
+ * preserves prior behavior for tests that don't depend on the filter.
  */
 export async function detectAndInsertBonusCrossings(opts?: {
   asOfDate?: string; // YYYY-MM-DD, defaults to today EST
+  lookbackDays?: number; // if set, only fire when crossing happened in the last N days
 }): Promise<BonusCrossingDetectResult> {
   const crossedAt = opts?.asOfDate ?? toEstDate(new Date());
+  const lookbackDays = opts?.lookbackDays;
 
   // Lifetime spend per ad — group by ad_number, sum cost_usd, preserve
   // the marketers array (it's the same on every row for a given ad).
+  // When lookbackDays is set, also compute the "before-window" lifetime
+  // (spend strictly before crossedAt - N days) so we can tell whether
+  // the threshold was already exceeded before this window opened.
+  // Quoted-literal interpolation here because sql.raw needs valid SQL —
+  // `2026-05-28::date` is parsed as integer-arithmetic, only `'2026-05-28'::date`
+  // is a date cast. `crossedAt` is internally generated (toEstDate / explicit opts)
+  // so the literal interpolation is safe from injection.
+  const beforeCutoff = lookbackDays != null
+    ? `'${crossedAt}'::date - ${lookbackDays}::int`
+    : null;
   const ads = await db
     .select({
       adNumber: fbAdSpendDaily.adNumber,
       marketers: sql<string[]>`min(${fbAdSpendDaily.marketers})`,
       lifetimeSpendUsd: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}), 0)`,
+      lifetimeBeforeUsd: beforeCutoff
+        ? sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}) filter (where ${fbAdSpendDaily.spendDate} < ${sql.raw(beforeCutoff)}), 0)`
+        : sql<string>`0`,
     })
     .from(fbAdSpendDaily)
     .groupBy(fbAdSpendDaily.adNumber);
 
   let scanned = 0;
+  let phantomSkipped = 0;
   const candidates: Array<{
     adNumber: string;
     marketer: BonusMarketer;
@@ -65,6 +94,7 @@ export async function detectAndInsertBonusCrossings(opts?: {
 
   for (const row of ads) {
     const spend = Number(row.lifetimeSpendUsd);
+    const spendBefore = Number(row.lifetimeBeforeUsd);
     const marketers = (row.marketers ?? []).filter((m) =>
       BONUS_MARKETER_SET.has(m),
     ) as BonusMarketer[];
@@ -79,6 +109,22 @@ export async function detectAndInsertBonusCrossings(opts?: {
       hitTier1 = true;
     }
     if (!hitTier1 && !hitTier2) continue;
+
+    // Phantom-crossing guard. When lookbackDays is set, drop any tier
+    // whose threshold was already crossed before the window opened —
+    // those aren't fresh crossings, they're historical data appearing
+    // in the DB for the first time. Tracked separately for the run log.
+    if (lookbackDays != null) {
+      if (hitTier1 && spendBefore >= BONUS_TIER_1_USD) {
+        hitTier1 = false;
+        phantomSkipped++;
+      }
+      if (hitTier2 && spendBefore >= BONUS_TIER_2_USD) {
+        hitTier2 = false;
+        phantomSkipped++;
+      }
+      if (!hitTier1 && !hitTier2) continue;
+    }
 
     scanned++;
     for (const marketer of marketers) {
@@ -105,8 +151,13 @@ export async function detectAndInsertBonusCrossings(opts?: {
   }
 
   if (candidates.length === 0) {
-    logger.info("bonus.crossings.detect", { scanned, inserted: 0, alreadyExisted: 0 });
-    return { scanned, inserted: 0, alreadyExisted: 0 };
+    logger.info("bonus.crossings.detect", {
+      scanned,
+      inserted: 0,
+      alreadyExisted: 0,
+      phantomSkipped,
+    });
+    return { scanned, inserted: 0, alreadyExisted: 0, phantomSkipped };
   }
 
   // Bulk-insert with ON CONFLICT DO NOTHING — the (ad, marketer, tier)
@@ -133,6 +184,7 @@ export async function detectAndInsertBonusCrossings(opts?: {
     scanned,
     inserted: inserted.length,
     alreadyExisted: candidates.length - inserted.length,
+    phantomSkipped,
   };
   logger.info("bonus.crossings.detect", result);
   return result;

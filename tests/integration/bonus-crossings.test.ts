@@ -299,4 +299,127 @@ describe("detectAndInsertBonusCrossings", () => {
       expect(rows[0].marketer).toBe("Craig");
     });
   });
+
+  // Phantom-crossing guard (Scott 2026-05-28): the FB 3-year history
+  // import landed 130k rows of 2023-2025 spend in one shot; the next
+  // cron summed lifetime spend and created 14 fake pending awards on
+  // ads that had crossed thresholds years ago. `lookbackDays` requires
+  // the threshold to actually be crossed during the window — pre-window
+  // spend alone doesn't fire a row.
+  describe("lookbackDays phantom-crossing guard", () => {
+    async function seedSplit(opts: {
+      adNumber: string;
+      marketers: string[];
+      beforeWindowUsd: number;
+      withinWindowUsd: number;
+      sourcePullId: string;
+    }) {
+      const rows = [];
+      if (opts.beforeWindowUsd > 0) {
+        rows.push({
+          adNumber: opts.adNumber,
+          adName: `Ad ${opts.adNumber}`,
+          adNameRaw: `Ad ${opts.adNumber}`,
+          adLink: null,
+          marketers: opts.marketers,
+          spendDate: "2025-06-01", // well before any lookback window we test
+          costUsd: opts.beforeWindowUsd.toFixed(4),
+          sourcePullId: opts.sourcePullId,
+        });
+      }
+      if (opts.withinWindowUsd > 0) {
+        rows.push({
+          adNumber: opts.adNumber,
+          adName: `Ad ${opts.adNumber}`,
+          adNameRaw: `Ad ${opts.adNumber}`,
+          adLink: null,
+          marketers: opts.marketers,
+          spendDate: "2026-05-25", // within a 14-day window ending 2026-05-28
+          costUsd: opts.withinWindowUsd.toFixed(4),
+          sourcePullId: opts.sourcePullId,
+        });
+      }
+      if (rows.length) await db.insert(fbAdSpendDaily).values(rows);
+    }
+
+    it("skips tier1 when threshold was already exceeded before the window", async () => {
+      const rawId = await makeRawPull();
+      await seedSplit({
+        adNumber: "204", // mirrors the real 2026-05-28 phantom
+        marketers: ["Craig"],
+        beforeWindowUsd: 100_000, // way past both tiers, all historical
+        withinWindowUsd: 0,
+        sourcePullId: rawId,
+      });
+
+      const result = await detectAndInsertBonusCrossings({
+        asOfDate: "2026-05-28",
+        lookbackDays: 14,
+      });
+      expect(result.inserted).toBe(0);
+      expect(result.phantomSkipped).toBe(2); // both tier1 and tier2 dropped
+      expect(await db.select().from(bonusAwards)).toHaveLength(0);
+    });
+
+    it("fires on a genuine in-window crossing", async () => {
+      const rawId = await makeRawPull();
+      await seedSplit({
+        adNumber: "300",
+        marketers: ["Craig"],
+        beforeWindowUsd: 10_000, // below tier1 pre-window
+        withinWindowUsd: 5_000, // pushes lifetime to $15k → just crossed tier1
+        sourcePullId: rawId,
+      });
+
+      const result = await detectAndInsertBonusCrossings({
+        asOfDate: "2026-05-28",
+        lookbackDays: 14,
+      });
+      expect(result.inserted).toBe(1);
+      expect(result.phantomSkipped).toBe(0);
+
+      const rows = await db.select().from(bonusAwards);
+      expect(rows[0].tier).toBe("tier1");
+      expect(rows[0].adNumber).toBe("300");
+    });
+
+    it("skips tier2 but fires tier1 when pre-window crossed only tier1", async () => {
+      const rawId = await makeRawPull();
+      await seedSplit({
+        adNumber: "974",
+        marketers: ["Craig"],
+        beforeWindowUsd: 30_000, // above tier1 ($13k) but below tier2 ($65k)
+        withinWindowUsd: 40_000, // lifetime $70k — tier2 newly crossed
+        sourcePullId: rawId,
+      });
+
+      const result = await detectAndInsertBonusCrossings({
+        asOfDate: "2026-05-28",
+        lookbackDays: 14,
+      });
+      expect(result.inserted).toBe(1); // tier2 only (tier1 was pre-crossed)
+      expect(result.phantomSkipped).toBe(1);
+
+      const rows = await db.select().from(bonusAwards);
+      expect(rows[0].tier).toBe("tier2");
+    });
+
+    it("no filter when lookbackDays is omitted (legacy behavior preserved)", async () => {
+      const rawId = await makeRawPull();
+      await seedSplit({
+        adNumber: "999",
+        marketers: ["Craig"],
+        beforeWindowUsd: 100_000,
+        withinWindowUsd: 0,
+        sourcePullId: rawId,
+      });
+
+      const result = await detectAndInsertBonusCrossings({
+        asOfDate: "2026-05-28",
+        // lookbackDays intentionally unset
+      });
+      expect(result.inserted).toBe(2);
+      expect(result.phantomSkipped).toBe(0);
+    });
+  });
 });
