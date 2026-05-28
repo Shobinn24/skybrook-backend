@@ -5,6 +5,7 @@ import { detectAndInsertBonusCrossings } from "@/lib/jobs/bonus-crossings";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { runLaunchAutoPopulate } from "@/lib/jobs/launches";
+import { runOrphanSkuSweep } from "@/lib/jobs/orphan-sku-sweep";
 import { syncProductNames } from "@/lib/jobs/product-names";
 import { runPhase2 } from "@/lib/jobs/reconcile";
 import { runShippingSnapshot } from "@/lib/jobs/shipping-snapshot";
@@ -85,6 +86,13 @@ export async function POST(req: Request) {
   // are current) but is independent of phase2 — failures shouldn't
   // block downstream metrics.
   const autoLaunches = await runLaunchAutoPopulate();
+  // Orphan-SKU sweep runs after launches (so launch creation can't
+  // accidentally pick up a SKU we're about to deactivate) and before
+  // phase2 / freshness so missing-cost counts reflect post-sweep
+  // state. Catches the failure mode that left 13 ev-pp-hw-* /
+  // ev-pp-og-* rows masking the real missing-cost count on
+  // 2026-05-28 (see lib/jobs/orphan-sku-sweep.ts header).
+  const orphanSweep = await runOrphanSkuSweep();
   const phase2 = await runPhase2({ asOfDate, pullBatchId: batchId });
   // Bonus crossing detection runs after the FB ads sheet ingest has
   // landed today's spend rows. New (ad × marketer × tier) crossings
@@ -156,6 +164,7 @@ export async function POST(req: Request) {
     autoReceipts,
     likelyArrivedOverdue: likelyArrived.length,
     autoLaunches,
+    orphanSkusDeactivated: orphanSweep.deactivated.length,
     bonusCrossings,
     shippingSnapshot,
     ...phase2,
@@ -173,6 +182,7 @@ export async function POST(req: Request) {
     unitCosts,
     autoReceipts,
     autoLaunches,
+    orphanSweep,
     bonusCrossings,
     shippingSnapshot,
     phase2,

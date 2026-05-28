@@ -681,6 +681,13 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
         for (const row of rows) {
           if (!seenSkus.has(row.sku)) {
             seenSkus.add(row.sku);
+            // onConflictDoUpdate (not DoNothing) so a SKU that was
+            // deactivated by runOrphanSkuSweep — because it had been
+            // removed from the Incoming sheet and never received stock —
+            // flips back to active=true the moment Grace re-adds it.
+            // productName / productLine are deliberately NOT overwritten:
+            // syncProductNames + the inventory runner own those fields
+            // and the original Incoming-only insert can't improve them.
             await tx
               .insert(skus)
               .values({
@@ -690,7 +697,10 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
                 firstSeenAt: today,
                 active: true,
               })
-              .onConflictDoNothing({ target: skus.sku });
+              .onConflictDoUpdate({
+                target: skus.sku,
+                set: { active: sql`true` },
+              });
           }
           await tx.insert(incomingShipments).values({
             sku: row.sku,
