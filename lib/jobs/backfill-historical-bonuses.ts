@@ -474,20 +474,51 @@ export async function applyBackfill(awards: ParsedAward[]): Promise<ApplyResult>
   });
 }
 
-function summarizeTotals(awards: ParsedAward[]): Record<string, { count: number; usd: number }> {
-  const out: Record<string, { count: number; usd: number }> = {};
+// Matches the canonical NotificationPreview.totals array shape from
+// `lib/queries/bonus-tracker.ts`. Earlier this writer used a marketer-keyed
+// object, which the bonus tracker history reader couldn't reduce over —
+// crashed the /bonus-tracker page on 2026-05-28 right after the 5/27
+// system_backfill row landed. Reader is now defensive against both shapes
+// AND new writes go through this array form, so the divergence ends here.
+function summarizeTotals(awards: ParsedAward[]): Array<{
+  marketer: string;
+  tier1FullCount: number;
+  tier1HalfCount: number;
+  tier2FullCount: number;
+  tier2HalfCount: number;
+  totalUsd: number;
+}> {
+  type Row = {
+    marketer: string;
+    tier1FullCount: number;
+    tier1HalfCount: number;
+    tier2FullCount: number;
+    tier2HalfCount: number;
+    totalUsd: number;
+  };
+  const byMarketer = new Map<string, Row>();
   for (const a of awards) {
     const amt = bonusAmountUsd({
       marketer: a.marketer,
       tier: a.tier,
       approval: "approved_full",
     });
-    const cur = out[a.marketer] ?? { count: 0, usd: 0 };
-    cur.count++;
-    cur.usd += amt;
-    out[a.marketer] = cur;
+    const cur = byMarketer.get(a.marketer) ?? {
+      marketer: a.marketer,
+      tier1FullCount: 0,
+      tier1HalfCount: 0,
+      tier2FullCount: 0,
+      tier2HalfCount: 0,
+      totalUsd: 0,
+    };
+    if (a.tier === "tier1") cur.tier1FullCount++;
+    else if (a.tier === "tier2") cur.tier2FullCount++;
+    cur.totalUsd += amt;
+    byMarketer.set(a.marketer, cur);
   }
-  return out;
+  return Array.from(byMarketer.values()).sort((x, y) =>
+    x.marketer.localeCompare(y.marketer),
+  );
 }
 
 // --- CLI ---
@@ -518,10 +549,13 @@ async function main() {
   }
 
   const totals = summarizeTotals(awards);
+  const totalsByMarketer = new Map(totals.map((t) => [t.marketer, t]));
   console.log("\n=== Totals if applied as approved_full ===");
   for (const m of BONUS_MARKETERS) {
-    const t = totals[m] ?? { count: 0, usd: 0 };
-    console.log(`  ${m}: ${t.count} awards, $${t.usd.toLocaleString()}`);
+    const t = totalsByMarketer.get(m);
+    const count = t ? t.tier1FullCount + t.tier2FullCount : 0;
+    const usd = t?.totalUsd ?? 0;
+    console.log(`  ${m}: ${count} awards, $${usd.toLocaleString()}`);
   }
 
   const mismatches = detectHalfBonusMismatches({ awards, summary });

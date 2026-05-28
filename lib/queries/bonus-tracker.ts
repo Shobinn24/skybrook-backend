@@ -420,8 +420,6 @@ export async function getNotificationHistory(): Promise<NotificationHistoryRow[]
     .orderBy(desc(bonusNotificationBatches.sentAt));
 
   return rows.map((r) => {
-    const totals = (r.totalsJson as { totalUsd: number }[]) ?? [];
-    const grand = totals.reduce((s, t) => s + (t.totalUsd ?? 0), 0);
     return {
       id: r.id,
       periodLabel: r.periodLabel,
@@ -429,9 +427,43 @@ export async function getNotificationHistory(): Promise<NotificationHistoryRow[]
       sentAt: r.sentAt instanceof Date ? r.sentAt.toISOString() : String(r.sentAt),
       sentBy: r.sentBy,
       whatsappStatus: r.whatsappStatus,
-      grandTotalUsd: grand,
+      grandTotalUsd: grandTotalFromTotalsJson(r.totalsJson),
     };
   });
+}
+
+/**
+ * Sum the grand total across two known totalsJson shapes:
+ *  - regular notification batch (bonus-mutations.ts): Array of
+ *    {totalUsd, ...} objects.
+ *  - historical backfill batch (backfill-historical-bonuses.ts): Object
+ *    keyed by marketer, each value {count, usd}.
+ *
+ * 2026-05-28: the historical backfill row landed in prod with the object
+ * shape and the reader was previously array-only, crashing the bonus
+ * tracker page with "(a.totalsJson ?? []).reduce is not a function".
+ * Defending here keeps the page resilient if a third shape ever shows up.
+ */
+export function grandTotalFromTotalsJson(value: unknown): number {
+  if (Array.isArray(value)) {
+    return value.reduce((sum, row) => {
+      if (row && typeof row === "object" && "totalUsd" in row) {
+        const v = (row as { totalUsd: unknown }).totalUsd;
+        return sum + (typeof v === "number" ? v : 0);
+      }
+      return sum;
+    }, 0);
+  }
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).reduce<number>((sum, row) => {
+      if (row && typeof row === "object" && "usd" in row) {
+        const v = (row as { usd: unknown }).usd;
+        return sum + (typeof v === "number" ? v : 0);
+      }
+      return sum;
+    }, 0);
+  }
+  return 0;
 }
 
 export type BonusSummaryRow = {
