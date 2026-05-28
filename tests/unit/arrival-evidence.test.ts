@@ -90,4 +90,50 @@ describe("detectLikelyArrivedOverdue", () => {
     const res = detectLikelyArrivedOverdue({ overdue, snapshots });
     expect(res.map((r) => r.shipmentName)).toEqual(["High", "Low"]);
   });
+
+  // Behaviour shift 2026-05-28: cumulative-since-ETA + 25% threshold.
+
+  it("flags a trickled arrival across multiple post-ETA snapshots", () => {
+    // PO 1000, no single-day jump >= 50% (or even 25%) but cumulative
+    // from pre-ETA baseline to post-ETA peak is 600 = 60% of PO.
+    const overdue = [line("KAI Trickle", "ev-t", 1000, "2026-05-10")];
+    const snapshots = [
+      snap("ev-t", "2026-05-09", 0),
+      snap("ev-t", "2026-05-12", 200),
+      snap("ev-t", "2026-05-14", 400),
+      snap("ev-t", "2026-05-17", 600),
+    ];
+    const [r] = detectLikelyArrivedOverdue({ overdue, snapshots });
+    expect(r.observedJump).toBe(600);
+    expect(r.jumpDate).toBe("2026-05-17"); // peak landed on the latest snapshot
+    expect(r.pctOfPo).toBeCloseTo(0.6);
+  });
+
+  it("flags a 30% partial arrival now that threshold dropped to 25%", () => {
+    // Previously LIKELY_ARRIVED_MIN_PCT was 0.5 and this would have been
+    // ignored. Loosened 2026-05-28 because the KAI dominant pattern is
+    // partial deliveries that span multiple snapshot dates.
+    expect(LIKELY_ARRIVED_MIN_PCT).toBeLessThanOrEqual(0.25);
+    const overdue = [line("KAI Partial", "ev-p", 1000, "2026-05-10")];
+    const snapshots = [
+      snap("ev-p", "2026-05-09", 100),
+      snap("ev-p", "2026-05-12", 400), // +300 = 30% of PO
+    ];
+    const [r] = detectLikelyArrivedOverdue({ overdue, snapshots });
+    expect(r.observedJump).toBe(300);
+    expect(r.pctOfPo).toBeCloseTo(0.3);
+  });
+
+  it("clamps a post-ETA decline to 0 rather than reporting a negative arrival", () => {
+    // Pre-ETA baseline higher than post-ETA peak (sales drawdown without
+    // any restock). Cumulative arithmetic would go negative; we clamp at
+    // 0 and the shipment never flags.
+    const overdue = [line("KAI Decline", "ev-d", 1000, "2026-05-10")];
+    const snapshots = [
+      snap("ev-d", "2026-05-08", 500),
+      snap("ev-d", "2026-05-11", 400),
+      snap("ev-d", "2026-05-14", 300),
+    ];
+    expect(detectLikelyArrivedOverdue({ overdue, snapshots })).toEqual([]);
+  });
 });

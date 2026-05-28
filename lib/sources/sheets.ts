@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import {
   adSpendDaily,
   fbAdSpendDaily,
+  incomingReceipts,
   incomingShipments,
   skus,
   stockSnapshots,
@@ -490,7 +491,27 @@ export type ParseIncomingResult = {
   rows: IncomingShipment[];
   poColumns: Array<{ colIdx: number; label: string; date: string | null; destination: "US" | "CN" }>;
   skippedColumns: Array<{ colIdx: number; label: string; reason: string }>;
+  // Receipt markers Grace writes one row below the Total row, one cell per
+  // shipment column. Sheet legend in col A row 2-3: "delivered, invty not
+  // yet updated" / "delivered & invty updated". Verbatim values observed in
+  // production: "received, invty updated" / "received, invty not yet
+  // updated" / "delivered, ..." / empty (= not yet received). Added
+  // 2026-05-28 — Scott / Grace's receipt signal was being ignored entirely
+  // before this, leaving 155 already-delivered CN shipments displaying as
+  // overdue on /incoming.
+  receipts: Array<{
+    shipmentName: string;
+    destination: "US" | "CN";
+    expectedArrival: string;
+    note: string;
+  }>;
 };
+
+// Match Grace's receipt-status row markers. Case-insensitive, leading
+// "received" or "delivered" both count — the suffix ("invty updated" vs
+// "invty not yet updated") is captured in the note so the operator can
+// still see what state the sheet was in when we marked it.
+const RECEIPT_MARKER_RE = /^\s*(received|delivered)\b/i;
 
 // Pure parser — takes the raw grid and produces incoming-shipment rows.
 // All emitted rows have status='po'; receipt-driven reconciliation determines
@@ -518,6 +539,7 @@ export function parseIncomingGrid(grid: unknown[][], _todayYmd: string): ParseIn
           reason: `missing header rows in col C: SHIPMENT NAME=${labelRowIdx} ESTIMATED ARRIVAL=${arrivalRowIdx} Total=${totalRowIdx}`,
         },
       ],
+      receipts: [],
     };
   }
 
@@ -577,7 +599,34 @@ export function parseIncomingGrid(grid: unknown[][], _todayYmd: string): ParseIn
     }
   }
 
-  return { rows, poColumns, skippedColumns };
+  // Receipt-status row scan. Grace writes "received, invty updated" or
+  // "delivered, invty not yet updated" in the row immediately under Total,
+  // one cell per shipment column. Scan up to 3 rows below Total to absorb
+  // an inserted blank row without breaking. Stop scanning a row as soon as
+  // col C carries a non-empty token longer than ~4 chars (heuristic: real
+  // SKU rows have a label there; the receipt row's col C is empty).
+  const receipts: ParseIncomingResult["receipts"] = [];
+  const seenReceipts = new Set<string>();
+  for (let r = totalRowIdx + 1; r <= Math.min(totalRowIdx + 3, grid.length - 1); r++) {
+    const row = grid[r] ?? [];
+    const colC = String(row[2] ?? "").trim();
+    if (colC && colC.length > 4 && !RECEIPT_MARKER_RE.test(colC)) break;
+    for (const po of poColumns) {
+      const raw = String(row[po.colIdx] ?? "").trim();
+      if (!raw || !RECEIPT_MARKER_RE.test(raw)) continue;
+      const key = `${po.label}|${po.destination}|${po.date}`;
+      if (seenReceipts.has(key)) continue;
+      seenReceipts.add(key);
+      receipts.push({
+        shipmentName: po.label,
+        destination: po.destination,
+        expectedArrival: po.date!,
+        note: raw,
+      });
+    }
+  }
+
+  return { rows, poColumns, skippedColumns, receipts };
 }
 
 export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
@@ -594,7 +643,7 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
   });
   const grid = (resp.data.values ?? []) as unknown[][];
 
-  const { rows, poColumns, skippedColumns } = parseIncomingGrid(grid, todayYmd);
+  const { rows, poColumns, skippedColumns, receipts } = parseIncomingGrid(grid, todayYmd);
 
   const fingerprint = createHash("sha256")
     .update(JSON.stringify({ poCount: poColumns.length, intlBoundary: findIntlBoundary(grid[0] ?? []) }))
@@ -607,6 +656,7 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
     rawPayload: {
       poColumns: poColumns.map(({ colIdx, label, date, destination }) => ({ colIdx, label, date, destination })),
       skippedColumns,
+      receipts: receipts.length,
       sample: rows.slice(0, 5),
     },
     schemaFingerprint: fingerprint,
@@ -652,6 +702,30 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
             sourcePullId: rawId,
             sourceRowRef: row.sourceRowRef,
           });
+        }
+        // Receipt confirmations from Grace's row right under Total. Idempotent
+        // via the natural key — the manual UI mutation (markIncomingReceived)
+        // also onConflictDoNothing, so neither side clobbers the other.
+        // Unreceipt is intentionally NOT modelled here: if Grace clears a
+        // "received" marker on the sheet, Skybrook keeps the receipt so the
+        // ledger still reflects the physical arrival. Manual unmark via UI
+        // (unmarkIncomingReceived) is the only way to remove a receipt.
+        for (const rec of receipts) {
+          await tx
+            .insert(incomingReceipts)
+            .values({
+              shipmentName: rec.shipmentName,
+              destination: rec.destination,
+              expectedArrival: rec.expectedArrival,
+              note: `sheet: ${rec.note}`,
+            })
+            .onConflictDoNothing({
+              target: [
+                incomingReceipts.shipmentName,
+                incomingReceipts.destination,
+                incomingReceipts.expectedArrival,
+              ],
+            });
         }
       });
     },

@@ -37,16 +37,24 @@ export type ArrivalEvidence = {
   poQuantity: number; // total expected across all lines (tracked + untracked)
   totalLines: number;
   trackedLines: number; // lines whose SKU we can see in snapshots
-  observedJump: number; // biggest consecutive-snapshot on-hand increase on/after ETA
-  jumpDate: string | null; // the snapshot date the jump landed on
+  observedJump: number; // cumulative on-hand increase from the pre-ETA baseline to the post-ETA peak
+  jumpDate: string | null; // the post-ETA snapshot date where the peak landed
   pctOfPo: number; // observedJump / poQuantity (0..1+)
 };
 
-/** A shipment is flagged "likely arrived" when the on-hand of its tracked
- * SKUs jumped by at least this fraction of the PO quantity on/after the
- * ETA. Lower than the auto-receipt band (0.7-1.3×) on purpose — this is a
- * confirm-prompt, not an auto-action, so we want to surface partials too. */
-export const LIKELY_ARRIVED_MIN_PCT = 0.5;
+/** A shipment is flagged "likely arrived" when the CUMULATIVE on-hand
+ * increase across its tracked SKUs since the ETA crosses this fraction
+ * of the PO quantity. Lower than the auto-receipt band (0.7-1.3×) on
+ * purpose — this is a confirm-prompt, not an auto-action, so we want to
+ * surface partials too.
+ *
+ * 2026-05-28: lowered from 0.5 to 0.25 AND switched from "biggest single
+ * consecutive-snapshot jump" to cumulative-since-ETA. The single-jump
+ * heuristic missed every shipment that trickled in over multiple snapshots
+ * (the dominant KAI pattern); 153 of 155 known-arrived CN shipments
+ * stayed silently overdue. Cumulative + 25% surfaces them at the cost
+ * of a few extra confirm prompts. */
+export const LIKELY_ARRIVED_MIN_PCT = 0.25;
 
 const key = (s: { shipmentName: string; destination: "US" | "CN"; expectedArrival: string }) =>
   `${s.shipmentName}|${s.destination}|${s.expectedArrival}`;
@@ -55,11 +63,20 @@ const key = (s: { shipmentName: string; destination: "US" | "CN"; expectedArriva
  * Find overdue shipments whose stock jumped on/after their ETA — i.e.
  * they almost certainly arrived but were never marked received.
  *
- * Jump = the largest increase in summed on-hand (across the shipment's
- * tracked SKUs at its destination) between two consecutive snapshot
- * dates where the LATER date is on/after the ETA. Constraining to
- * on/after the ETA attributes the jump to THIS PO rather than an earlier
- * restock of the same SKUs.
+ * Increase = (peak summed on-hand on/after ETA) − (last summed on-hand
+ * strictly before ETA), across the shipment's tracked SKUs at its
+ * destination. Cumulative since the ETA, NOT a single consecutive-
+ * snapshot jump — most KAI deliveries trickle in across multiple
+ * snapshot dates so the single-jump heuristic was missing them
+ * silently (2026-05-28 incident: 153 of 155 known-arrived CN shipments
+ * stayed overdue). Using the pre-ETA baseline as the floor attributes
+ * everything that arrived after the ETA to this PO and not to an
+ * earlier restock.
+ *
+ * Falsifiability: this WILL surface a confirm-prompt for any post-ETA
+ * stock increase >= 25% of PO even when the cause is actually an
+ * earlier-than-expected next PO. That's acceptable — the prompt is
+ * confirm-only, never auto-receipt.
  */
 export function detectLikelyArrivedOverdue(input: {
   overdue: ReadonlyArray<OverdueShipmentLine>;
@@ -116,19 +133,29 @@ export function detectLikelyArrivedOverdue(input: {
       }
     }
 
-    // Biggest consecutive-snapshot increase landing on/after the ETA.
-    let observedJump = 0;
+    // Cumulative-since-ETA: baseline = last summed on-hand strictly
+    // BEFORE the ETA (or 0 if no pre-ETA snapshot exists), peak = max
+    // summed on-hand on/after the ETA. observedJump = peak − baseline
+    // (clamped at 0). Captures multi-snapshot trickled arrivals that
+    // the prior single-jump algorithm missed.
+    let baseline = 0;
+    let peak = 0;
     let jumpDate: string | null = null;
-    for (let i = 1; i < sortedDates.length; i++) {
-      const d = sortedDates[i];
-      if (d < g.expectedArrival) continue; // later date must be on/after ETA
-      const prev = sortedDates[i - 1];
-      const delta = (totalByDate.get(d) ?? 0) - (totalByDate.get(prev) ?? 0);
-      if (delta > observedJump) {
-        observedJump = delta;
-        jumpDate = d;
+    for (const d of sortedDates) {
+      const v = totalByDate.get(d) ?? 0;
+      if (d < g.expectedArrival) {
+        baseline = v; // keep updating; loop yields the last pre-ETA value
+      } else {
+        if (jumpDate === null || v > peak) {
+          peak = v;
+          jumpDate = d;
+        }
       }
     }
+    // If there's no post-ETA snapshot, peak stays 0 and jumpDate stays
+    // null; observedJump ends up 0 (or negative if baseline was positive)
+    // — clamp so a sales drawdown can't masquerade as a negative arrival.
+    const observedJump = Math.max(0, peak - baseline);
 
     const pctOfPo = g.poQuantity > 0 ? observedJump / g.poQuantity : 0;
     if (trackedSkus.length > 0 && pctOfPo >= minPct) {

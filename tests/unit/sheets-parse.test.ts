@@ -354,6 +354,46 @@ describe("parseIncomingGrid", () => {
     expect(out.rows).toEqual([]);
   });
 
+  // Receipt-status row scan (2026-05-28). Grace writes "received, invty
+  // updated" or "delivered, invty not yet updated" in the row right under
+  // Total, per shipment column. Skybrook was ignoring this entirely;
+  // 155 already-delivered CN shipments were displaying as overdue. The
+  // parser now lifts those markers into a receipts[] array the runner
+  // can upsert into incoming_receipts.
+  it("emits receipts for shipment columns whose status row contains 'received' or 'delivered'", () => {
+    const grid = makeGridMergedBanner();
+    grid[4][3] = "received, invty updated"; // US column / KAI Sec Mar26
+    grid[4][5] = "delivered, invty not yet updated"; // CN column / KAI Sec Apr26
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    expect(out.receipts).toEqual([
+      {
+        shipmentName: "KAI Sec Mar26",
+        destination: "US",
+        expectedArrival: "2026-03-17",
+        note: "received, invty updated",
+      },
+      {
+        shipmentName: "KAI Sec Apr26",
+        destination: "CN",
+        expectedArrival: "2026-05-10",
+        note: "delivered, invty not yet updated",
+      },
+    ]);
+  });
+
+  it("emits no receipts when the receipt-status row is empty", () => {
+    const out = parseIncomingGrid(makeGridMergedBanner(), "2026-04-23");
+    expect(out.receipts).toEqual([]);
+  });
+
+  it("does not emit a receipt for unrelated text in the status row (e.g. totals)", () => {
+    const grid = makeGridMergedBanner();
+    grid[4][3] = "126,961"; // a numeric total cell — must not be treated as receipt
+    grid[4][5] = ""; // empty
+    const out = parseIncomingGrid(grid, "2026-04-23");
+    expect(out.receipts).toEqual([]);
+  });
+
   it("handles 2026-04-28 layout where US/INTL is merged into the Total row", () => {
     // Regression: prior parser hardcoded banner=row0, label=row2, arrival=row3.
     // After Scott reorganized the sheet, the banner row was removed and US/INTL
