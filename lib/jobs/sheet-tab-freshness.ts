@@ -16,6 +16,7 @@
 // (one date per row in col A, like Supermetrics single-tab Date/Cost).
 import { google } from "googleapis";
 import { buildSheetsClient } from "@/lib/sources/sheets";
+import { parseDateCell } from "@/lib/domain/fb-tracker2-append";
 import { toEstDate } from "@/lib/tz";
 import type { EvaluatedCheck } from "@/lib/jobs/freshness-check";
 
@@ -45,6 +46,17 @@ export const MONITORED_REFERENCE_TABS: ReadonlyArray<MonitoredReferenceTab> = [
     label: "fb_ads_tracker_2.2026",
     sheetId: "1L-1NUuB46Vi4yzTCmzFG1f8MptEsr44ewKsVqlDfGOI",
     tabName: "2026",
+    layout: "headerHasDates",
+  },
+  // Monitoring 30D Check alongside 2026 detects divergence: if 30D
+  // has T-1 but 2026 doesn't, only the 2026 check fails — that's the
+  // signal that the daily append (runFbTracker2Append in the afternoon
+  // cron) stopped working while Supermetrics' upstream stays healthy.
+  // 2026-05-28 root cause for the missed 5/27 column.
+  {
+    label: "fb_ads_tracker_2.30d_check",
+    sheetId: "1L-1NUuB46Vi4yzTCmzFG1f8MptEsr44ewKsVqlDfGOI",
+    tabName: "30D Check",
     layout: "headerHasDates",
   },
 ];
@@ -79,22 +91,19 @@ async function maxDateInTab(
     return { maxDate: null, error: e instanceof Error ? e.message.slice(0, 200) : String(e) };
   }
 
+  // parseDateCell handles BOTH ISO strings AND Excel serial numbers.
+  // The string-only regex this used to use silently dropped serials,
+  // which is what made FB Ads Tracker 2's 2026-tab freshness check
+  // miss the gap that left the 5/27 column unappended (2026-05-28).
   let maxDate: string | null = null;
+  const considerCell = (cell: unknown) => {
+    const iso = parseDateCell(cell);
+    if (iso && (maxDate === null || iso > maxDate)) maxDate = iso;
+  };
   if (tab.layout === "headerHasDates") {
-    const header = values[0] ?? [];
-    for (const c of header) {
-      const s = String(c ?? "").trim();
-      if (/^\d{4}-\d{2}-\d{2}$/.test(s) && (maxDate === null || s > maxDate)) {
-        maxDate = s;
-      }
-    }
+    for (const c of values[0] ?? []) considerCell(c);
   } else {
-    for (const row of values) {
-      const s = String(row?.[0] ?? "").trim();
-      if (/^\d{4}-\d{2}-\d{2}$/.test(s) && (maxDate === null || s > maxDate)) {
-        maxDate = s;
-      }
-    }
+    for (const row of values) considerCell(row?.[0]);
   }
   return { maxDate };
 }

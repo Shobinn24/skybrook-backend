@@ -129,6 +129,26 @@ describe("evaluateReferenceTabsFreshness", () => {
     expect(checks[0].fields.error).toContain("Range exceeds grid limits");
   });
 
+  it("parses Excel serial date headers (raw Supermetrics shape that hid the 5/27 gap on 2026-05-28)", async () => {
+    // FB Ads Tracker 2's date headers come back as Excel serial numbers
+    // (e.g. 46169 for 2026-05-27) when read via valueRenderOption=
+    // UNFORMATTED_VALUE. The old string-only regex (/^\d{4}-\d{2}-\d{2}$/)
+    // silently dropped them, leaving maxDate=null on a tab that
+    // actually had a fresh date. parseDateCell fixes that.
+    const client = stubClient({
+      "sheetA::'Sheet1'!1:1": {
+        values: [["Ad name", "Link", 46167, 46168, 46169]],
+      },
+    });
+    const checks = await evaluateReferenceTabsFreshness({
+      now: fixedNow,
+      client,
+      tabs: [TAB_HEADER],
+    });
+    expect(checks[0].status).toBe("pass");
+    expect(checks[0].maxDate).toBe("2026-05-27");
+  });
+
   it("evaluates each monitored tab independently", async () => {
     // One fresh, one stale, one error — all three surface as separate
     // checks so per-tab Slack dedup keys can fire/resolve independently.

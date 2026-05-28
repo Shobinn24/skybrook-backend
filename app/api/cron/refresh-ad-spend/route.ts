@@ -28,8 +28,10 @@
 
 import { NextResponse } from "next/server";
 import { detectAndInsertBonusCrossings } from "@/lib/jobs/bonus-crossings";
+import { runFbTracker2Append } from "@/lib/jobs/fb-tracker2-append";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
+import { postAlert, resolveAlert } from "@/lib/notifications/slack";
 import { sheetsAdSpendRunner, sheetsFbAdsRunner } from "@/lib/sources/sheets";
 import { toEstDate } from "@/lib/tz";
 import { logger } from "@/lib/logger";
@@ -73,12 +75,40 @@ export async function POST(req: Request) {
     lookbackDays: 14,
   });
 
+  // Replaces the Apps Script `appendDailyTo2026` trigger that was
+  // silently skipping date columns because Daily lags FB Ads' 48h
+  // finalization window. Runs HERE (afternoon cron) because by 16:00
+  // UTC the 30D Check tab has T-1 fully populated. Best-effort: a
+  // Sheets API failure (auth, edit perm missing, etc.) fires P1 but
+  // does NOT block the rest of the cron. See lib/jobs/fb-tracker2-
+  // append.ts header for the full rationale.
+  let tracker2Append: Awaited<ReturnType<typeof runFbTracker2Append>> | null =
+    null;
+  try {
+    tracker2Append = await runFbTracker2Append();
+    await resolveAlert("fb_tracker2.append.failed");
+  } catch (e) {
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    logger.error("fb-tracker2-append.failed", { error: errorMessage });
+    await postAlert({
+      severity: "p1",
+      title: "FB Ads Tracker 2 daily append failed",
+      dedupKey: "fb_tracker2.append.failed",
+      fields: {
+        asOfDate,
+        error: errorMessage.slice(0, 240),
+        hint: "Confirm everdries-uploader@everdries-drive.iam.gserviceaccount.com has Editor (not Viewer) on the FB Ads Tracker 2 spreadsheet.",
+      },
+    });
+  }
+
   // Freshness sweep so the two source rows on /api/health reflect this
   // refresh (clears any "stale" lingering from the morning's partial
-  // pull). Reference-tab sweep disabled here — those don't change with
-  // a re-pull of the two ad-spend sources, and the morning cron already
-  // covered them.
-  const freshness = await runFreshnessCheck({ includeReferenceTabs: false });
+  // pull). Reference tabs INCLUDED here so the post-append 2026-tab
+  // freshness state is reflected on /api/health alongside 30D Check —
+  // the divergence between them is now the structural alarm if the
+  // append above silently breaks again.
+  const freshness = await runFreshnessCheck({ includeReferenceTabs: true });
   const checkSummary = {
     pass: freshness.checks.filter((c) => c.status === "pass").length,
     fail: freshness.checks.filter((c) => c.status === "fail").length,
@@ -93,6 +123,10 @@ export async function POST(req: Request) {
     elapsedMs,
     bonusInserted: bonusCrossings.inserted,
     bonusPhantomSkipped: bonusCrossings.phantomSkipped,
+    tracker2AppendDates: tracker2Append?.appendedDates ?? [],
+    tracker2NewAds: tracker2Append?.newAdsCount ?? null,
+    tracker2Skipped: tracker2Append?.skipped ?? null,
+    tracker2Failed: tracker2Append === null,
     freshnessPass: checkSummary.pass,
     freshnessFail: checkSummary.fail,
   });
@@ -105,6 +139,7 @@ export async function POST(req: Request) {
     alertsFired: ingest.alertsFired,
     alertsResolved: ingest.alertsResolved,
     bonusCrossings,
+    tracker2Append,
     freshness: checkSummary,
   });
 }
