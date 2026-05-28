@@ -602,9 +602,11 @@ export async function getBonusSummary(): Promise<BonusSummary> {
  * Rejected + pending awards excluded — the scoreboard is bonuses
  * actually paid out.
  *
- * Output ordering: months descending (newest first), and within each
- * month the 4 types in BONUS_COUNT_TYPES order (13K, 13K 50%, 65K,
- * 65K 50%). The UI renders this as visual sections per month.
+ * Output ordering: months ASCENDING (oldest first; a new month
+ * section is appended BELOW the prior ones per the spec — top-to-
+ * bottom chronological), and within each month the 4 types in
+ * BONUS_COUNT_TYPES order (13K, 13K 50%, 65K, 65K 50%). The UI
+ * renders this as visual sections per month.
  */
 export async function getBonusCountSummary(): Promise<BonusCountSummary> {
   const rows = await db
@@ -647,10 +649,13 @@ export async function getBonusCountSummary(): Promise<BonusCountSummary> {
     byKey.set(key, cell);
   }
 
-  // Emit rows in (month DESC, type sequence) order, including zero rows
+  // Emit rows in (month ASC, type sequence) order, including zero rows
   // for any (month, type) tuple with no awards so the table visually
   // stays in 4-row sections per month (matches the manual sheet).
-  const months = Array.from(monthSet).sort().reverse();
+  // ASC because the spec is "append a new section below for the ads
+  // hit that new month" — top-to-bottom chronological, latest at the
+  // bottom of the table.
+  const months = Array.from(monthSet).sort();
   const resultRows: BonusCountSummaryRow[] = [];
   let grandTotal = 0;
   for (const month of months) {

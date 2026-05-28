@@ -773,7 +773,7 @@ describe("getBonusTracker", () => {
       expect(summary.grandTotal).toBe(4);
     });
 
-    it("emits monthly sections in descending order with all 4 type rows per month (even when empty)", async () => {
+    it("emits monthly sections in ASCENDING order with all 4 type rows per month (spec: append new section below)", async () => {
       await awardWith({
         adNumber: "300",
         marketer: "Tyler",
@@ -788,9 +788,11 @@ describe("getBonusTracker", () => {
       });
 
       const summary = await getBonusCountSummary();
+      // Oldest month first; newest month appended BELOW. May 2026 (the
+      // requirement floor) lands at the top, then June below it.
       expect(summary.rows.map((r) => r.month)).toEqual([
-        "2026-06", "2026-06", "2026-06", "2026-06",
         "2026-05", "2026-05", "2026-05", "2026-05",
+        "2026-06", "2026-06", "2026-06", "2026-06",
       ]);
       // The 4-row visual section is guaranteed regardless of which
       // types had actual data this month.
