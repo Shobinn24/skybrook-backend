@@ -466,6 +466,51 @@ export function grandTotalFromTotalsJson(value: unknown): number {
   return 0;
 }
 
+// Jasper's preferred column order for the count Summary (2026-05-28).
+// Mirrors the "Ads Bonus Tracking 3" Summary tab layout exactly so the
+// internal scoreboard and Jasper's manual sheet can be eyeballed side
+// by side without column-swap mental gymnastics. Differs from
+// BONUS_MARKETERS (which is roster order: ...Dan, JW). Display label
+// for "JW" is "J Weston" — handled at the UI layer.
+export const BONUS_SUMMARY_MARKETER_ORDER: ReadonlyArray<BonusMarketer> = [
+  "Craig",
+  "Raul",
+  "Tyler",
+  "Jacob",
+  "JW",
+  "Dan",
+];
+
+// 4 bonus types per month per Jasper's layout. The mapping to the
+// underlying schema fields is deterministic:
+//   13K       = tier1 + approved_full
+//   13K 50%   = tier1 + approved_half
+//   65K       = tier2 + approved_full
+//   65K 50%   = tier2 + approved_half
+// Rejected and pending awards are intentionally excluded — the
+// Summary is the bonus paid-out scoreboard.
+export const BONUS_COUNT_TYPES = ["13K", "13K 50%", "65K", "65K 50%"] as const;
+export type BonusCountType = (typeof BONUS_COUNT_TYPES)[number];
+
+export type BonusCountSummaryRow = {
+  /** "YYYY-MM" — month bucket derived from batch sent_at in EST. */
+  month: string;
+  type: BonusCountType;
+  /** Award counts keyed by marketer. Missing marketers default to 0. */
+  counts: Partial<Record<BonusMarketer, number>>;
+  /** Row total across all marketers. */
+  total: number;
+};
+
+export type BonusCountSummary = {
+  /** Display order matches BONUS_SUMMARY_MARKETER_ORDER. */
+  marketers: ReadonlyArray<BonusMarketer>;
+  /** All (month, type) rows, sorted DESC by month then by type sequence. */
+  rows: BonusCountSummaryRow[];
+  /** Total awards across May 2026+ — sanity check for the footer. */
+  grandTotal: number;
+};
+
 export type BonusSummaryRow = {
   marketer: BonusMarketer;
   // Map of "YYYY-MM" → total approved bonus amount sent that month.
@@ -541,4 +586,103 @@ export async function getBonusSummary(): Promise<BonusSummary> {
   const grandTotal = Object.values(monthTotals).reduce((s, v) => s + v, 0);
 
   return { months, rows: resultRows, monthTotals, grandTotal };
+}
+
+/**
+ * Count-only Summary (Jasper 2026-05-28 redesign): one row per
+ * (month × bonus type) with award COUNTS — not dollars — broken out
+ * per marketer. Mirrors the Ads Bonus Tracking 3 Summary tab layout
+ * Jasper maintains by hand, so the in-tool view and his manual sheet
+ * are eyeball-comparable column for column.
+ *
+ * Source: same join as getBonusSummary (bonus_awards × notification
+ * batches, only sent), but groups by (month, tier, status, marketer)
+ * and counts rows rather than summing amounts. Filtered to batches
+ * sent on or after 2026-05-01 per Jasper's "May 2026 onwards" spec.
+ * Rejected + pending awards excluded — the scoreboard is bonuses
+ * actually paid out.
+ *
+ * Output ordering: months descending (newest first), and within each
+ * month the 4 types in BONUS_COUNT_TYPES order (13K, 13K 50%, 65K,
+ * 65K 50%). The UI renders this as visual sections per month.
+ */
+export async function getBonusCountSummary(): Promise<BonusCountSummary> {
+  const rows = await db
+    .select({
+      marketer: bonusAwards.marketer,
+      tier: bonusAwards.tier,
+      status: bonusAwards.status,
+      month: sql<string>`to_char(${bonusNotificationBatches.sentAt} at time zone 'America/New_York', 'YYYY-MM')`,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(bonusAwards)
+    .innerJoin(
+      bonusNotificationBatches,
+      eq(bonusAwards.notificationBatchId, bonusNotificationBatches.id),
+    )
+    .where(
+      sql`${bonusAwards.status} IN ('approved_full','approved_half')
+          AND (${bonusNotificationBatches.sentAt} at time zone 'America/New_York') >= '2026-05-01'`,
+    )
+    .groupBy(
+      bonusAwards.marketer,
+      bonusAwards.tier,
+      bonusAwards.status,
+      sql`to_char(${bonusNotificationBatches.sentAt} at time zone 'America/New_York', 'YYYY-MM')`,
+    );
+
+  // Build a (month, type, marketer) → count map by reducing the rows.
+  // Map key = `${month}::${type}` so we can iterate Jasper's type order
+  // deterministically afterward without re-sorting by string.
+  const byKey = new Map<string, Partial<Record<BonusMarketer, number>>>();
+  const monthSet = new Set<string>();
+  for (const r of rows) {
+    if (!isBonusMarketer(r.marketer)) continue;
+    const type = bonusCountTypeFor(r.tier, r.status);
+    if (!type) continue;
+    monthSet.add(r.month);
+    const key = `${r.month}::${type}`;
+    const cell = byKey.get(key) ?? {};
+    cell[r.marketer] = (cell[r.marketer] ?? 0) + Number(r.count);
+    byKey.set(key, cell);
+  }
+
+  // Emit rows in (month DESC, type sequence) order, including zero rows
+  // for any (month, type) tuple with no awards so the table visually
+  // stays in 4-row sections per month (matches the manual sheet).
+  const months = Array.from(monthSet).sort().reverse();
+  const resultRows: BonusCountSummaryRow[] = [];
+  let grandTotal = 0;
+  for (const month of months) {
+    for (const type of BONUS_COUNT_TYPES) {
+      const counts = byKey.get(`${month}::${type}`) ?? {};
+      const total = Object.values(counts).reduce((s, n) => s + (n ?? 0), 0);
+      grandTotal += total;
+      resultRows.push({ month, type, counts, total });
+    }
+  }
+
+  return {
+    marketers: BONUS_SUMMARY_MARKETER_ORDER,
+    rows: resultRows,
+    grandTotal,
+  };
+}
+
+/** Map a (tier, status) tuple to the human-readable bonus type in
+ * Jasper's Summary layout. Returns null for combinations that don't
+ * belong on the scoreboard (rejected, pending — already filtered at
+ * the query level, defensive). */
+function bonusCountTypeFor(
+  tier: string,
+  status: string,
+): BonusCountType | null {
+  if (status !== "approved_full" && status !== "approved_half") return null;
+  if (tier === "tier1") {
+    return status === "approved_full" ? "13K" : "13K 50%";
+  }
+  if (tier === "tier2") {
+    return status === "approved_full" ? "65K" : "65K 50%";
+  }
+  return null;
 }

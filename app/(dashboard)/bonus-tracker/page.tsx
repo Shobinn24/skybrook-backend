@@ -92,7 +92,10 @@ export default function BonusTrackerPage() {
     undefined,
     { refetchOnWindowFocus: false },
   );
-  const summary = trpc.inventory.getBonusSummary.useQuery(undefined, {
+  // Summary tab — count-only redesign (Jasper 2026-05-28). Old
+  // getBonusSummary route is still alive for compatibility but no
+  // longer wired into the UI.
+  const summary = trpc.inventory.getBonusCountSummary.useQuery(undefined, {
     refetchOnWindowFocus: false,
   });
   const utils = trpc.useUtils();
@@ -214,80 +217,119 @@ export default function BonusTrackerPage() {
           {/* Active tab content */}
           {activeView === "summary" ? (
             (() => {
+              // Count-only Summary (Jasper 2026-05-28 redesign) — mirrors
+              // the Ads Bonus Tracking 3 Summary tab. Rows are (month ×
+              // type) tuples, columns are marketers in Jasper's order.
+              // Cells show the count of awards for that (month, type,
+              // marketer). 4-row sections per month, monthly section
+              // dividers between months.
               const data = summary.data;
               if (summary.isLoading) {
                 return <div className="text-sm text-neutral-500">Loading summary…</div>;
               }
-              if (!data || data.months.length === 0) {
+              if (!data || data.rows.length === 0) {
                 return (
                   <div className="rounded-md border border-neutral-200 bg-white px-4 py-6 text-sm text-neutral-500">
-                    No notifications sent yet — the scoreboard fills in as monthly
-                    batches go out.
+                    No notifications sent yet for May 2026 onwards — the
+                    scoreboard fills in as monthly batches go out.
                   </div>
                 );
               }
+
+              // "JW" → "J Weston" for the column header per Jasper's
+              // sheet labels. Keep the data layer using the short code.
+              const marketerLabel = (m: string) =>
+                m === "JW" ? "J Weston" : m;
+
               return (
                 <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
-                          <th className="px-3 py-2 font-medium">Marketer</th>
-                          {data.months.map((m) => (
+                          <th className="px-3 py-2 font-medium">Month</th>
+                          <th className="px-3 py-2 font-medium">Type</th>
+                          {data.marketers.map((m) => (
                             <th
                               key={m}
                               className="px-3 py-2 text-right font-medium tabular-nums"
                             >
-                              {m}
+                              {marketerLabel(m)}
                             </th>
                           ))}
                           <th className="px-3 py-2 text-right font-medium">Total</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {data.rows.map((r) => (
-                          <tr
-                            key={r.marketer}
-                            className="border-b border-neutral-100 last:border-b-0 hover:bg-neutral-50"
-                          >
-                            <td className="px-3 py-2 font-medium text-neutral-900">
-                              {r.marketer}
-                            </td>
-                            {data.months.map((m) => (
-                              <td
-                                key={m}
-                                className="px-3 py-2 text-right tabular-nums text-neutral-800"
-                              >
-                                {(r.cells[m] ?? 0) > 0 ? (
-                                  fmtMoney(r.cells[m] ?? 0)
+                        {data.rows.map((r, i) => {
+                          // Render a thicker top border on the FIRST row
+                          // of each new month, so the 4-row monthly
+                          // sections read visually. Also blank the Month
+                          // cell on rows 2-4 of a section.
+                          const isFirstOfMonth =
+                            i === 0 || data.rows[i - 1].month !== r.month;
+                          return (
+                            <tr
+                              key={`${r.month}-${r.type}`}
+                              className={
+                                "hover:bg-neutral-50 " +
+                                (isFirstOfMonth
+                                  ? "border-t-2 border-neutral-200"
+                                  : "border-t border-neutral-100")
+                              }
+                            >
+                              <td className="px-3 py-2 font-medium text-neutral-900">
+                                {isFirstOfMonth ? r.month : ""}
+                              </td>
+                              <td className="px-3 py-2 text-neutral-700">
+                                {r.type}
+                              </td>
+                              {data.marketers.map((m) => {
+                                const n = r.counts[m] ?? 0;
+                                return (
+                                  <td
+                                    key={m}
+                                    className="px-3 py-2 text-right tabular-nums text-neutral-800"
+                                  >
+                                    {n > 0 ? (
+                                      n
+                                    ) : (
+                                      <span className="text-neutral-300">—</span>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                              <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
+                                {r.total > 0 ? (
+                                  r.total
                                 ) : (
                                   <span className="text-neutral-300">—</span>
                                 )}
                               </td>
-                            ))}
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
-                              {fmtMoney(r.total)}
-                            </td>
-                          </tr>
-                        ))}
+                            </tr>
+                          );
+                        })}
                       </tbody>
                       <tfoot>
                         <tr className="border-t-2 border-neutral-200 bg-neutral-50 text-sm font-semibold">
-                          <td className="px-3 py-2 text-neutral-700">Total</td>
-                          {data.months.map((m) => (
-                            <td
-                              key={m}
-                              className="px-3 py-2 text-right tabular-nums text-neutral-900"
-                            >
-                              {fmtMoney(data.monthTotals[m] ?? 0)}
-                            </td>
-                          ))}
+                          <td className="px-3 py-2 text-neutral-700" colSpan={2}>
+                            All months — total awards
+                          </td>
+                          <td
+                            className="px-3 py-2 text-right tabular-nums text-neutral-900"
+                            colSpan={data.marketers.length}
+                          />
                           <td className="px-3 py-2 text-right tabular-nums text-neutral-900">
-                            {fmtMoney(data.grandTotal)}
+                            {data.grandTotal}
                           </td>
                         </tr>
                       </tfoot>
                     </table>
+                  </div>
+                  <div className="border-t border-neutral-100 bg-white px-3 py-2 text-xs text-neutral-500">
+                    Counts of approved bonuses sent in monthly batches. May
+                    2026 onwards. Mirrors the Summary tab on Ads Bonus
+                    Tracking 3.
                   </div>
                 </div>
               );

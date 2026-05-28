@@ -17,6 +17,7 @@ import {
 } from "@/lib/queries/launches";
 import { getFbAdsRollup } from "@/lib/queries/fb-ads";
 import {
+  getBonusCountSummary,
   getBonusSummary,
   getBonusTracker,
   getNotificationHistory,
@@ -564,5 +565,12 @@ export const inventoryRouter = router({
   ),
 
   // Scoreboard: bonus paid per month per marketer (Jasper 2026-05-20).
+  // Kept for compatibility — UI Summary tab moved to getBonusCountSummary
+  // (Jasper 2026-05-28 redesign). Safe to remove after a quiet period.
   getBonusSummary: publicProcedure.query(() => getBonusSummary()),
+
+  // Count-only scoreboard mirroring Jasper's manual Ads Bonus Tracking 3
+  // Summary tab — one row per (month × type), columns per marketer in
+  // Jasper's column order. May 2026 onwards.
+  getBonusCountSummary: publicProcedure.query(() => getBonusCountSummary()),
 });

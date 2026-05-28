@@ -9,6 +9,9 @@ import {
   rawPulls,
 } from "@/lib/db/schema";
 import {
+  BONUS_COUNT_TYPES,
+  BONUS_SUMMARY_MARKETER_ORDER,
+  getBonusCountSummary,
   getBonusSummary,
   getBonusTracker,
   getPendingApprovals,
@@ -646,6 +649,173 @@ describe("getBonusTracker", () => {
       expect(summary.monthTotals["2026-04"]).toBe(4000); // Craig 500 + Raul 3500
       expect(summary.monthTotals["2026-05"]).toBe(500);
       expect(summary.grandTotal).toBe(4500);
+    });
+  });
+
+  describe("getBonusCountSummary (Jasper 2026-05-28 redesign)", () => {
+    beforeEach(async () => {
+      await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+      await db.execute(sql`TRUNCATE TABLE bonus_notification_batches CASCADE`);
+    });
+
+    async function awardWith(opts: {
+      adNumber: string;
+      marketer: string;
+      totalUsd: number;
+      approval?: "approved_full" | "approved_half";
+      sentAt: Date;
+    }) {
+      const [raw] = await db
+        .insert(rawPulls)
+        .values({
+          source: "sheets_fb_ads",
+          pullBatchId: randomUUID(),
+          payload: {},
+          rowCount: 0,
+          schemaFingerprint: "fp",
+        })
+        .returning({ id: rawPulls.id });
+      await db.insert(fbAdSpendDaily).values({
+        adNumber: opts.adNumber,
+        adName: `Ad ${opts.adNumber}`,
+        adNameRaw: `Ad ${opts.adNumber}`,
+        adLink: null,
+        marketers: [opts.marketer],
+        spendDate: "2026-04-01",
+        costUsd: opts.totalUsd.toFixed(4),
+        sourcePullId: raw.id,
+      });
+      await detectAndInsertBonusCrossings({ asOfDate: "2026-05-13" });
+      const awards = await db
+        .select()
+        .from(bonusAwards)
+        .where(sql`${bonusAwards.adNumber} = ${opts.adNumber}`);
+      for (const a of awards) {
+        await approveBonus({
+          awardId: a.id,
+          approval: opts.approval ?? "approved_full",
+          approvedBy: "jasper",
+        });
+      }
+      const result = await sendNotification({
+        sentBy: "jasper",
+        periodLabel: "test",
+        sendWhatsApp: async () => ({ ok: true }),
+      });
+      if (result.skipped) {
+        throw new Error(`sendNotification skipped: ${result.reason}`);
+      }
+      await db
+        .update(bonusNotificationBatches)
+        .set({ sentAt: opts.sentAt })
+        .where(sql`${bonusNotificationBatches.id} = ${result.batchId}`);
+    }
+
+    it("returns empty rows when nothing has been sent for May 2026 onwards", async () => {
+      const summary = await getBonusCountSummary();
+      expect(summary.rows).toEqual([]);
+      expect(summary.grandTotal).toBe(0);
+      expect(summary.marketers).toEqual(BONUS_SUMMARY_MARKETER_ORDER);
+    });
+
+    it("uses Jasper's column order (Craig, Raul, Tyler, Jacob, JW, Dan) — JW BEFORE Dan", async () => {
+      const summary = await getBonusCountSummary();
+      expect(summary.marketers).toEqual([
+        "Craig", "Raul", "Tyler", "Jacob", "JW", "Dan",
+      ]);
+    });
+
+    it("buckets awards into the 4 types (13K / 13K 50% / 65K / 65K 50%) and counts per marketer", async () => {
+      // Craig: 1× T1 full + 1× T1 half
+      await awardWith({
+        adNumber: "100",
+        marketer: "Craig",
+        totalUsd: 14_000,
+        approval: "approved_full",
+        sentAt: new Date("2026-05-15T12:00:00Z"),
+      });
+      await awardWith({
+        adNumber: "101",
+        marketer: "Craig",
+        totalUsd: 14_000,
+        approval: "approved_half",
+        sentAt: new Date("2026-05-16T12:00:00Z"),
+      });
+      // Raul: 1× ad crosses T1 + T2 → 2 award rows from the detector
+      await awardWith({
+        adNumber: "200",
+        marketer: "Raul",
+        totalUsd: 70_000,
+        approval: "approved_full",
+        sentAt: new Date("2026-05-20T12:00:00Z"),
+      });
+
+      const summary = await getBonusCountSummary();
+
+      // Single month seeded → 4 rows (one per type).
+      expect(summary.rows).toHaveLength(4);
+      expect(summary.rows.map((r) => r.type)).toEqual([
+        ...BONUS_COUNT_TYPES,
+      ]);
+      expect(summary.rows.every((r) => r.month === "2026-05")).toBe(true);
+
+      const byType = Object.fromEntries(
+        summary.rows.map((r) => [r.type, r]),
+      );
+      expect(byType["13K"].counts.Craig).toBe(1);
+      expect(byType["13K"].counts.Raul).toBe(1);
+      expect(byType["13K"].total).toBe(2);
+      expect(byType["13K 50%"].counts.Craig).toBe(1);
+      expect(byType["13K 50%"].total).toBe(1);
+      expect(byType["65K"].counts.Raul).toBe(1);
+      expect(byType["65K"].total).toBe(1);
+      expect(byType["65K 50%"].total).toBe(0);
+      expect(summary.grandTotal).toBe(4);
+    });
+
+    it("emits monthly sections in descending order with all 4 type rows per month (even when empty)", async () => {
+      await awardWith({
+        adNumber: "300",
+        marketer: "Tyler",
+        totalUsd: 14_000,
+        sentAt: new Date("2026-06-15T12:00:00Z"),
+      });
+      await awardWith({
+        adNumber: "301",
+        marketer: "Tyler",
+        totalUsd: 14_000,
+        sentAt: new Date("2026-05-15T12:00:00Z"),
+      });
+
+      const summary = await getBonusCountSummary();
+      expect(summary.rows.map((r) => r.month)).toEqual([
+        "2026-06", "2026-06", "2026-06", "2026-06",
+        "2026-05", "2026-05", "2026-05", "2026-05",
+      ]);
+      // The 4-row visual section is guaranteed regardless of which
+      // types had actual data this month.
+      const types = summary.rows.map((r) => r.type);
+      expect(types.slice(0, 4)).toEqual([...BONUS_COUNT_TYPES]);
+      expect(types.slice(4, 8)).toEqual([...BONUS_COUNT_TYPES]);
+    });
+
+    it("excludes batches sent before 2026-05-01 (the May 2026 onwards cutoff)", async () => {
+      await awardWith({
+        adNumber: "400",
+        marketer: "Craig",
+        totalUsd: 14_000,
+        sentAt: new Date("2026-04-28T12:00:00Z"), // April — excluded
+      });
+      await awardWith({
+        adNumber: "401",
+        marketer: "Craig",
+        totalUsd: 14_000,
+        sentAt: new Date("2026-05-01T16:00:00Z"), // May 1 EST — included
+      });
+
+      const summary = await getBonusCountSummary();
+      expect(summary.rows.every((r) => r.month === "2026-05")).toBe(true);
+      expect(summary.grandTotal).toBe(1);
     });
   });
 });
