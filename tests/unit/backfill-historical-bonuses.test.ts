@@ -2,42 +2,63 @@ import { describe, it, expect } from "vitest";
 import {
   detectHalfBonusMismatches,
   parseMarketerTab,
+  parsePaidCell,
   parsePaidDateCell,
   parseSummaryTab,
 } from "@/lib/jobs/backfill-historical-bonuses";
 
-describe("parsePaidDateCell", () => {
-  it("parses '30 Jan 25' → 2025-01-30", () => {
+describe("parsePaidDateCell (back-compat shim)", () => {
+  it("returns the iso date for full and half date cells", () => {
     expect(parsePaidDateCell("30 Jan 25")).toBe("2025-01-30");
-  });
-
-  it("parses '30 Mar 2026' → 2026-03-30", () => {
     expect(parsePaidDateCell("30 Mar 2026")).toBe("2026-03-30");
-  });
-
-  it("parses '30 Apr 26' → 2026-04-30 (2-digit year rolls to 2000s)", () => {
     expect(parsePaidDateCell("30 Apr 26")).toBe("2026-04-30");
-  });
-
-  it("parses full month names ('1 February 2026')", () => {
     expect(parsePaidDateCell("1 February 2026")).toBe("2026-02-01");
-  });
-
-  it("parses MDY slash form '1/30/2026'", () => {
     expect(parsePaidDateCell("1/30/2026")).toBe("2026-01-30");
+    // Post-2026-05-28: 50% suffix also returns its date via the shim.
+    expect(parsePaidDateCell("30 Jul 25 50%")).toBe("2025-07-30");
   });
 
-  it("returns null for empty / non-date cells", () => {
+  it("returns null when no date is parseable", () => {
     expect(parsePaidDateCell("")).toBeNull();
     expect(parsePaidDateCell(null)).toBeNull();
     expect(parsePaidDateCell(undefined)).toBeNull();
-    expect(parsePaidDateCell("Yes")).toBeNull();
+    expect(parsePaidDateCell("Yes")).toBeNull(); // Yes is paid_full but date-less
     expect(parsePaidDateCell("TBD")).toBeNull();
-  });
-
-  it("returns null for malformed month / day", () => {
+    expect(parsePaidDateCell("NA")).toBeNull(); // NA is reject, no date
     expect(parsePaidDateCell("32 Jan 26")).toBeNull();
     expect(parsePaidDateCell("30 Xyz 26")).toBeNull();
+  });
+});
+
+describe("parsePaidCell (Yes / NA / X 50% / date)", () => {
+  it("Yes → paid_full with no date", () => {
+    expect(parsePaidCell("Yes")).toEqual({ kind: "paid_full", paidDate: null });
+    expect(parsePaidCell("yes")).toEqual({ kind: "paid_full", paidDate: null });
+  });
+
+  it("NA → reject", () => {
+    expect(parsePaidCell("NA")).toEqual({ kind: "reject" });
+    expect(parsePaidCell("na")).toEqual({ kind: "reject" });
+  });
+
+  it("date alone → paid_full with that date", () => {
+    expect(parsePaidCell("30 Jan 25")).toEqual({ kind: "paid_full", paidDate: "2025-01-30" });
+    expect(parsePaidCell("1/30/2026")).toEqual({ kind: "paid_full", paidDate: "2026-01-30" });
+  });
+
+  it("date + 50% suffix → paid_half with that date", () => {
+    expect(parsePaidCell("30 Jul 25 50%")).toEqual({ kind: "paid_half", paidDate: "2025-07-30" });
+    expect(parsePaidCell("29 Sep 25 50%")).toEqual({ kind: "paid_half", paidDate: "2025-09-29" });
+    expect(parsePaidCell("26 Feb 26 50%")).toEqual({ kind: "paid_half", paidDate: "2026-02-26" });
+  });
+
+  it("empty / null / unparseable → skip", () => {
+    expect(parsePaidCell("")).toEqual({ kind: "skip" });
+    expect(parsePaidCell(null)).toEqual({ kind: "skip" });
+    expect(parsePaidCell(undefined)).toEqual({ kind: "skip" });
+    expect(parsePaidCell("TBD")).toEqual({ kind: "skip" });
+    expect(parsePaidCell("32 Jan 26")).toEqual({ kind: "skip" }); // invalid day
+    expect(parsePaidCell("30 Xyz 26")).toEqual({ kind: "skip" }); // invalid month
   });
 });
 
@@ -53,9 +74,9 @@ describe("parseMarketerTab", () => {
   it("finds tier1/tier2 columns dynamically for Craig2-style header", () => {
     const r = parseMarketerTab({ marketer: "Craig", tab: "Craig2", grid: craig2Grid });
     expect(r.awards).toEqual([
-      { marketer: "Craig", adNumber: "1616", tier: "tier1", paidDate: "2026-01-30" },
-      { marketer: "Craig", adNumber: "1616", tier: "tier2", paidDate: "2026-03-30" },
-      { marketer: "Craig", adNumber: "1731", tier: "tier1", paidDate: "2026-04-30" },
+      { marketer: "Craig", adNumber: "1616", tier: "tier1", approval: "approved_full", paidDate: "2026-01-30" },
+      { marketer: "Craig", adNumber: "1616", tier: "tier2", approval: "approved_full", paidDate: "2026-03-30" },
+      { marketer: "Craig", adNumber: "1731", tier: "tier1", approval: "approved_full", paidDate: "2026-04-30" },
     ]);
   });
 
@@ -98,13 +119,62 @@ describe("parseMarketerTab", () => {
   it("reports unparseable date cells without emitting an award", () => {
     const grid = [
       ["Ad No.", "Ad Name", "Link", "Note", "13K Bonus", "65K Bonus", "Total Spend"],
-      ["1900", "", "", "", "Yes", "", "$10000"],
+      ["1900", "", "", "", "TBD", "", "$10000"],
     ];
     const r = parseMarketerTab({ marketer: "Jacob", tab: "Jacob", grid });
     expect(r.awards).toEqual([]);
     expect(r.skipped.find((s) => s.adNumber === "1900")?.reason).toContain(
       "unparseable tier1",
     );
+  });
+
+  // Post-2026-05-28 cells:
+  it("emits paid_full from 'Yes' flag cells", () => {
+    const grid = [
+      ["Ad No.", "Ad Name", "Link", "Note", "13K Bonus", "65K Bonus", "Total Spend"],
+      ["1900", "", "", "", "Yes", "Yes", "$10000"],
+    ];
+    const r = parseMarketerTab({ marketer: "Jacob", tab: "Jacob", grid });
+    expect(r.awards).toEqual([
+      { marketer: "Jacob", adNumber: "1900", tier: "tier1", approval: "approved_full", paidDate: null },
+      { marketer: "Jacob", adNumber: "1900", tier: "tier2", approval: "approved_full", paidDate: null },
+    ]);
+  });
+
+  it("emits approved_half from 'X 50%' cells", () => {
+    const grid = [
+      ["Ad No.", "Ad Name", "Link", "Note", "13K Bonus", "65K Bonus", "Total Spend"],
+      ["1900", "", "", "", "30 Jul 25 50%", "30 Jul 25 50%", "$10000"],
+    ];
+    const r = parseMarketerTab({ marketer: "Jacob", tab: "Jacob", grid });
+    expect(r.awards).toEqual([
+      { marketer: "Jacob", adNumber: "1900", tier: "tier1", approval: "approved_half", paidDate: "2025-07-30" },
+      { marketer: "Jacob", adNumber: "1900", tier: "tier2", approval: "approved_half", paidDate: "2025-07-30" },
+    ]);
+  });
+
+  it("emits rejected from 'NA' cells", () => {
+    const grid = [
+      ["Ad No.", "Ad Name", "Link", "Note", "13K Bonus", "65K Bonus", "Total Spend"],
+      ["1900", "", "", "", "NA", "NA", "$10000"],
+    ];
+    const r = parseMarketerTab({ marketer: "Jacob", tab: "Jacob", grid });
+    expect(r.awards).toEqual([
+      { marketer: "Jacob", adNumber: "1900", tier: "tier1", approval: "rejected", paidDate: null },
+      { marketer: "Jacob", adNumber: "1900", tier: "tier2", approval: "rejected", paidDate: null },
+    ]);
+  });
+
+  it("mixes verdicts on the same row (tier1 paid full, tier2 50% half)", () => {
+    const grid = [
+      ["Ad No.", "Ad Name", "Link", "Note", "13K Bonus", "65K Bonus", "Total Spend"],
+      ["1900", "", "", "", "30 Jun 25", "30 Jul 25 50%", "$80000"],
+    ];
+    const r = parseMarketerTab({ marketer: "Jacob", tab: "Jacob", grid });
+    expect(r.awards).toEqual([
+      { marketer: "Jacob", adNumber: "1900", tier: "tier1", approval: "approved_full", paidDate: "2025-06-30" },
+      { marketer: "Jacob", adNumber: "1900", tier: "tier2", approval: "approved_half", paidDate: "2025-07-30" },
+    ]);
   });
 
   it("errors clearly when tier headers are missing", () => {
@@ -124,7 +194,7 @@ describe("parseMarketerTab", () => {
     ];
     const r = parseMarketerTab({ marketer: "JW", tab: "J Weston", grid });
     expect(r.awards).toEqual([
-      { marketer: "JW", adNumber: "1907", tier: "tier1", paidDate: "2026-03-30" },
+      { marketer: "JW", adNumber: "1907", tier: "tier1", approval: "approved_full", paidDate: "2026-03-30" },
     ]);
   });
 });
@@ -185,9 +255,9 @@ describe("parseSummaryTab", () => {
 describe("detectHalfBonusMismatches", () => {
   it("flags ads requiring approved_half flip when summary shows halves", () => {
     const awards = [
-      { marketer: "Craig" as const, adNumber: "1", tier: "tier2" as const, paidDate: "2026-02-15" },
-      { marketer: "Craig" as const, adNumber: "2", tier: "tier2" as const, paidDate: "2026-02-20" },
-      { marketer: "Craig" as const, adNumber: "3", tier: "tier2" as const, paidDate: "2026-02-25" },
+      { marketer: "Craig" as const, adNumber: "1", tier: "tier2" as const, approval: "approved_full" as const, paidDate: "2026-02-15" },
+      { marketer: "Craig" as const, adNumber: "2", tier: "tier2" as const, approval: "approved_full" as const, paidDate: "2026-02-20" },
+      { marketer: "Craig" as const, adNumber: "3", tier: "tier2" as const, approval: "approved_full" as const, paidDate: "2026-02-25" },
     ];
     const summary = [
       { month: "Feb 2026", marketer: "Craig" as const, tier: "tier2" as const, fullCount: 2, halfCount: 1 },
@@ -208,7 +278,7 @@ describe("detectHalfBonusMismatches", () => {
 
   it("flags count mismatches separately from half-flag advice", () => {
     const awards = [
-      { marketer: "Dan" as const, adNumber: "1", tier: "tier1" as const, paidDate: "2026-03-10" },
+      { marketer: "Dan" as const, adNumber: "1", tier: "tier1" as const, approval: "approved_full" as const, paidDate: "2026-03-10" },
     ];
     const summary = [
       { month: "Mar 2026", marketer: "Dan" as const, tier: "tier1" as const, fullCount: 3, halfCount: 0 },
@@ -227,8 +297,8 @@ describe("detectHalfBonusMismatches", () => {
 
   it("returns [] when tabs and summary perfectly agree (all full)", () => {
     const awards = [
-      { marketer: "Tyler" as const, adNumber: "1", tier: "tier1" as const, paidDate: "2026-03-10" },
-      { marketer: "Tyler" as const, adNumber: "2", tier: "tier1" as const, paidDate: "2026-03-12" },
+      { marketer: "Tyler" as const, adNumber: "1", tier: "tier1" as const, approval: "approved_full" as const, paidDate: "2026-03-10" },
+      { marketer: "Tyler" as const, adNumber: "2", tier: "tier1" as const, approval: "approved_full" as const, paidDate: "2026-03-12" },
     ];
     const summary = [
       { month: "Mar 2026", marketer: "Tyler" as const, tier: "tier1" as const, fullCount: 2, halfCount: 0 },

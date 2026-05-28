@@ -92,43 +92,86 @@ const MONTHS: Record<string, number> = {
 };
 
 /**
- * Parse a paid-bonus date cell. Observed formats in the sheet:
- *   - "30 Jan 25"          (DMY, 2-digit year)
- *   - "30 Mar 2026"        (DMY, 4-digit year)
- *   - "30 Apr 26"          (DMY, 2-digit year)
- *   - "1/30/2026"          (MDY slash — defensive, not yet observed
- *                           in marketer tabs, but used in some headers)
+ * Parse a paid-bonus cell. Observed formats in the sheet:
+ *   - ""                   → no record. Skip this tier.
+ *   - "Yes"                → paid full, no date provided.
+ *   - "NA"                 → explicitly not awarded → reject.
+ *   - "30 Jan 25"          → paid full on 2025-01-30.
+ *   - "30 Apr 2026"        → paid full on 2026-04-30.
+ *   - "30 Jul 25 50%"      → paid HALF on 2025-07-30.
+ *   - "1/30/2026"          → paid full on 2026-01-30 (MDY slash).
  *
- * Returns ISO date string `YYYY-MM-DD` or null when the cell is
- * empty, a non-date marker ("Yes", "TBD", etc.), or unparseable.
- * Two-digit years <70 map to 2000s, >=70 map to 1900s — consistent
- * with the rest of the codebase's date handling.
+ * Returned `CellVerdict` carries the bonus disposition (paid_full /
+ * paid_half / reject / skip) plus an optional date. Two-digit years
+ * <70 → 2000s, ≥70 → 1900s.
+ *
+ * 2026-05-28: extended from the previous date-only `parsePaidDateCell`
+ * after the Jasper incident revealed the original parser silently
+ * skipped "Yes" + "50%" + "NA" cells, leaving 22 historical awards
+ * unbackfilled (7 fulls + 6 halves needed restoring from rejected,
+ * 8 halves needed flipping from pending, 1 NA was a real reject).
+ * The corrective state was applied via apply_paid_sheet_corrections;
+ * this patch closes the underlying parser gap so any future re-run
+ * lands the same outcome natively.
  */
-export function parsePaidDateCell(raw: unknown): string | null {
-  if (raw == null) return null;
-  const s = String(raw).trim();
-  if (!s) return null;
+export type CellVerdict =
+  | { kind: "skip" }
+  | { kind: "reject" }
+  | { kind: "paid_full"; paidDate: string | null }
+  | { kind: "paid_half"; paidDate: string | null };
 
-  const dmy = s.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{2,4})$/);
+export function parsePaidCell(raw: unknown): CellVerdict {
+  if (raw == null) return { kind: "skip" };
+  const s = String(raw).trim();
+  if (!s) return { kind: "skip" };
+
+  if (s.toUpperCase() === "NA") return { kind: "reject" };
+  if (s.toLowerCase() === "yes") return { kind: "paid_full", paidDate: null };
+
+  // Detect a "50%" suffix BEFORE date parsing. Cells like "30 Jul 25 50%"
+  // are paid HALF on the same date — the % marker must not bleed into the
+  // date matcher (it would fail the strict end-anchor and fall through
+  // unparseable).
+  const halfMatch = s.match(/(.+?)\s+50\s*%\s*$/i);
+  const dateStr = halfMatch ? halfMatch[1].trim() : s;
+  const isHalf = !!halfMatch;
+
+  const dmy = dateStr.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{2,4})$/);
   if (dmy) {
     const day = parseInt(dmy[1], 10);
     const month = MONTHS[dmy[2].toLowerCase()];
     let year = parseInt(dmy[3], 10);
-    if (!month || day < 1 || day > 31) return null;
-    if (dmy[3].length === 2) year = year < 70 ? 2000 + year : 1900 + year;
-    return iso(year, month, day);
+    if (month && day >= 1 && day <= 31) {
+      if (dmy[3].length === 2) year = year < 70 ? 2000 + year : 1900 + year;
+      const paidDate = iso(year, month, day);
+      return isHalf ? { kind: "paid_half", paidDate } : { kind: "paid_full", paidDate };
+    }
   }
 
-  const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  const mdy = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
   if (mdy) {
     const month = parseInt(mdy[1], 10);
     const day = parseInt(mdy[2], 10);
     let year = parseInt(mdy[3], 10);
-    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-    if (mdy[3].length === 2) year = year < 70 ? 2000 + year : 1900 + year;
-    return iso(year, month, day);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      if (mdy[3].length === 2) year = year < 70 ? 2000 + year : 1900 + year;
+      const paidDate = iso(year, month, day);
+      return isHalf ? { kind: "paid_half", paidDate } : { kind: "paid_full", paidDate };
+    }
   }
 
+  // Unparseable shape — caller decides whether to log it. Tab parser
+  // emits a skipped diagnostic so unknown cell formats don't pass
+  // silently.
+  return { kind: "skip" };
+}
+
+/** Kept for back-compat with tests + any external caller that only
+ *  needs a date. Returns null for non-date verdicts (Yes / NA / empty).
+ *  New code should call parsePaidCell directly for the richer verdict. */
+export function parsePaidDateCell(raw: unknown): string | null {
+  const v = parsePaidCell(raw);
+  if (v.kind === "paid_full" || v.kind === "paid_half") return v.paidDate;
   return null;
 }
 
@@ -142,7 +185,13 @@ export type ParsedAward = {
   marketer: BonusMarketer;
   adNumber: string;
   tier: "tier1" | "tier2";
-  paidDate: string; // ISO YYYY-MM-DD
+  // 2026-05-28: extended to carry the sheet's bonus disposition. The
+  // historical sheet records full-pay ("Yes" or a date), half-pay
+  // ("date 50%"), and explicit non-awards ("NA"). Earlier shape was
+  // {paidDate} only — every record was treated as approved_full, which
+  // left 14 halves and 2 NAs misclassified.
+  approval: "approved_full" | "approved_half" | "rejected";
+  paidDate: string | null; // ISO YYYY-MM-DD; null when Yes flag (no date) or NA
 };
 
 export type TabParseResult = {
@@ -199,24 +248,45 @@ export function parseMarketerTab(opts: {
 
     const t1Cell = row[t1Idx];
     const t2Cell = row[t2Idx];
-    const t1Date = parsePaidDateCell(t1Cell);
-    const t2Date = parsePaidDateCell(t2Cell);
+    const t1 = parsePaidCell(t1Cell);
+    const t2 = parsePaidCell(t2Cell);
 
-    if (t1Cell && !t1Date) {
+    // Caller skip diagnostics only when a non-empty cell was present
+    // but parsePaidCell couldn't classify it — distinguishes "Grace
+    // left it blank on purpose" from "the cell text is a new format
+    // we should add."
+    if (t1Cell != null && String(t1Cell).trim() !== "" && t1.kind === "skip") {
       skipped.push({
         adNumber,
         reason: `unparseable tier1 cell: ${JSON.stringify(t1Cell)}`,
       });
     }
-    if (t2Cell && !t2Date) {
+    if (t2Cell != null && String(t2Cell).trim() !== "" && t2.kind === "skip") {
       skipped.push({
         adNumber,
         reason: `unparseable tier2 cell: ${JSON.stringify(t2Cell)}`,
       });
     }
 
-    if (t1Date) awards.push({ marketer, adNumber, tier: "tier1", paidDate: t1Date });
-    if (t2Date) awards.push({ marketer, adNumber, tier: "tier2", paidDate: t2Date });
+    const verdictToApproval = (v: CellVerdict): ParsedAward["approval"] | null => {
+      switch (v.kind) {
+        case "paid_full": return "approved_full";
+        case "paid_half": return "approved_half";
+        case "reject": return "rejected";
+        case "skip": return null;
+      }
+    };
+
+    const t1Approval = verdictToApproval(t1);
+    if (t1Approval) {
+      const t1Date = t1.kind === "paid_full" || t1.kind === "paid_half" ? t1.paidDate : null;
+      awards.push({ marketer, adNumber, tier: "tier1", approval: t1Approval, paidDate: t1Date });
+    }
+    const t2Approval = verdictToApproval(t2);
+    if (t2Approval) {
+      const t2Date = t2.kind === "paid_full" || t2.kind === "paid_half" ? t2.paidDate : null;
+      awards.push({ marketer, adNumber, tier: "tier2", approval: t2Approval, paidDate: t2Date });
+    }
   }
   return { marketer, tab, awards, skipped };
 }
@@ -320,6 +390,11 @@ export function detectHalfBonusMismatches(opts: {
 
   const tabBuckets = new Map<string, number>();
   for (const a of opts.awards) {
+    // Reject + Yes-flag awards have no paidDate — skip them from the
+    // month-bucket grouping (the summary mismatch detector only
+    // compares dated payouts against the dated summary pivot).
+    if (a.paidDate === null) continue;
+    if (a.approval === "rejected") continue;
     const key = `${monthLabel(a.paidDate)}|${a.marketer}|${a.tier}`;
     tabBuckets.set(key, (tabBuckets.get(key) ?? 0) + 1);
   }
@@ -441,24 +516,43 @@ export async function applyBackfill(awards: ParsedAward[]): Promise<ApplyResult>
 
     let inserted = 0;
     for (const a of awards) {
-      const amountUsd = bonusAmountUsd({
-        marketer: a.marketer,
-        tier: a.tier,
-        approval: "approved_full",
-      });
+      // For approved_half / approved_full the dollar amount comes from
+      // the (marketer, tier, approval) lookup. For rejected rows we
+      // freeze the full amount as the "what we would have paid" — the
+      // ledger reads cleaner when the rejected dollar amount is the
+      // dollar amount we explicitly declined to pay.
+      const amountUsd =
+        a.approval === "rejected"
+          ? bonusAmountUsd({ marketer: a.marketer, tier: a.tier, approval: "approved_full" })
+          : bonusAmountUsd({ marketer: a.marketer, tier: a.tier, approval: a.approval });
+      // crossedAt cannot be null per schema. Use the paidDate when
+      // available; otherwise pick the batch's run date so the column
+      // still anchors to "when this record came into existence."
+      const crossedAt = a.paidDate ?? new Date().toISOString().slice(0, 10);
+      const approvedAt = a.paidDate
+        ? new Date(`${a.paidDate}T00:00:00Z`)
+        : new Date();
+      const note =
+        a.approval === "rejected"
+          ? `Backfilled from "${BATCH_LABEL}" sheet (NA cell — explicit non-award)`
+          : a.approval === "approved_half"
+            ? `Backfilled from "${BATCH_LABEL}" sheet (half-bonus / 50% cell)`
+            : a.paidDate
+              ? `Backfilled from "${BATCH_LABEL}" sheet row`
+              : `Backfilled from "${BATCH_LABEL}" sheet (Yes flag — no date on record)`;
       const result = await tx
         .insert(bonusAwards)
         .values({
           adNumber: a.adNumber,
           marketer: a.marketer,
           tier: a.tier,
-          crossedAt: a.paidDate,
-          status: "approved_full",
+          crossedAt,
+          status: a.approval,
           amountUsd: amountUsd.toString(),
-          approvedAt: new Date(`${a.paidDate}T00:00:00Z`),
+          approvedAt,
           approvedBy: "system_backfill",
           notificationBatchId: batch.id,
-          notes: `Backfilled from "${BATCH_LABEL}" sheet row`,
+          notes: note,
         })
         .onConflictDoNothing({
           target: [bonusAwards.adNumber, bonusAwards.marketer, bonusAwards.tier],
@@ -498,10 +592,14 @@ function summarizeTotals(awards: ParsedAward[]): Array<{
   };
   const byMarketer = new Map<string, Row>();
   for (const a of awards) {
+    // Skip rejected awards entirely — they were explicit non-payments,
+    // not real bonuses. They appear in bonus_awards as audit history but
+    // shouldn't inflate the totals on the notification batch.
+    if (a.approval === "rejected") continue;
     const amt = bonusAmountUsd({
       marketer: a.marketer,
       tier: a.tier,
-      approval: "approved_full",
+      approval: a.approval,
     });
     const cur = byMarketer.get(a.marketer) ?? {
       marketer: a.marketer,
@@ -511,8 +609,13 @@ function summarizeTotals(awards: ParsedAward[]): Array<{
       tier2HalfCount: 0,
       totalUsd: 0,
     };
-    if (a.tier === "tier1") cur.tier1FullCount++;
-    else if (a.tier === "tier2") cur.tier2FullCount++;
+    if (a.tier === "tier1") {
+      if (a.approval === "approved_half") cur.tier1HalfCount++;
+      else cur.tier1FullCount++;
+    } else {
+      if (a.approval === "approved_half") cur.tier2HalfCount++;
+      else cur.tier2FullCount++;
+    }
     cur.totalUsd += amt;
     byMarketer.set(a.marketer, cur);
   }
@@ -550,12 +653,25 @@ async function main() {
 
   const totals = summarizeTotals(awards);
   const totalsByMarketer = new Map(totals.map((t) => [t.marketer, t]));
-  console.log("\n=== Totals if applied as approved_full ===");
+  // Reject counts surface separately so the operator can see them at a
+  // glance without inflating the per-marketer payout numbers.
+  const rejectCounts = new Map<string, number>();
+  for (const a of awards) {
+    if (a.approval === "rejected") {
+      rejectCounts.set(a.marketer, (rejectCounts.get(a.marketer) ?? 0) + 1);
+    }
+  }
+  console.log("\n=== Totals (full + half) if applied ===");
   for (const m of BONUS_MARKETERS) {
     const t = totalsByMarketer.get(m);
-    const count = t ? t.tier1FullCount + t.tier2FullCount : 0;
+    const fullCount = t ? t.tier1FullCount + t.tier2FullCount : 0;
+    const halfCount = t ? t.tier1HalfCount + t.tier2HalfCount : 0;
     const usd = t?.totalUsd ?? 0;
-    console.log(`  ${m}: ${count} awards, $${usd.toLocaleString()}`);
+    const rej = rejectCounts.get(m) ?? 0;
+    const rejPart = rej > 0 ? `, ${rej} reject` : "";
+    console.log(
+      `  ${m}: ${fullCount} full + ${halfCount} half = $${usd.toLocaleString()}${rejPart}`,
+    );
   }
 
   const mismatches = detectHalfBonusMismatches({ awards, summary });
