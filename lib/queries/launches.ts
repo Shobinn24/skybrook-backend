@@ -111,14 +111,15 @@ export async function getLaunches(): Promise<LaunchRow[]> {
     };
   });
 
-  // Sort by ETA Ant ascending with nulls last so launches with known
-  // CN arrivals come first, ordered earliest → latest. createdAt is the
-  // tiebreaker (preserves stable order when two launches share an ETA
-  // or both have no ETA yet).
+  // Sort: products missing ETA Ant bubble to the TOP so they don't get
+  // forgotten (Scott 2026-05-28: "2 products missing ETA Ant should be
+  // right at the top"). Among rows that DO have an ETA Ant, sort
+  // ascending so the soonest-arriving launches come next. createdAt is
+  // the tiebreaker for stable ordering when ETAs match.
   resolved.sort((a, b) => {
     if (a.etaAnt === b.etaAnt) return a.createdAt.localeCompare(b.createdAt);
-    if (a.etaAnt === null) return 1;
-    if (b.etaAnt === null) return -1;
+    if (a.etaAnt === null) return -1; // a missing → top
+    if (b.etaAnt === null) return 1;  // b missing → top
     return a.etaAnt.localeCompare(b.etaAnt);
   });
 

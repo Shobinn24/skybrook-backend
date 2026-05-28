@@ -122,6 +122,37 @@ describe("getLaunches", () => {
     expect(rows[0].etaAnt).toBe("2026-07-15");
     expect(rows[0].etaPd).toBeNull();
   });
+
+  it("sorts launches missing ETA Ant to the TOP, then known ETAs ascending (Scott 2026-05-28)", async () => {
+    const rawId = await seedRawPull();
+    await db.insert(skus).values([
+      { sku: "ev-known-5x-l", productName: "Known Soon", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
+      { sku: "ev-known2-5x-l", productName: "Known Later", productLine: "Core", firstSeenAt: "2026-05-08", active: true },
+      { sku: "ev-noneta-5x-l", productName: "No ETA Yet", productLine: "Core", firstSeenAt: "2026-05-09", active: true },
+    ]);
+    // Only the two "known" SKUs get an incoming PO. The third has no
+    // matching incoming row, so etaAnt resolves to null.
+    await db.insert(incomingShipments).values([
+      { sku: "ev-known-5x-l", shipmentName: "KAI Sec Mar26", destination: "CN", expectedArrival: "2026-06-15", quantity: 100, status: "po", sourcePullId: rawId, sourceRowRef: "r1" },
+      { sku: "ev-known2-5x-l", shipmentName: "KAI Sec Apr26", destination: "CN", expectedArrival: "2026-07-20", quantity: 100, status: "po", sourcePullId: rawId, sourceRowRef: "r2" },
+    ]);
+    await db.insert(productLaunches).values([
+      { productName: "Known Soon", shipmentName: "KAI Sec Mar26", note: "manual" },
+      { productName: "Known Later", shipmentName: "KAI Sec Apr26", note: "manual" },
+      { productName: "No ETA Yet", shipmentName: "KAI Sec May26", note: "manual" },
+    ]);
+
+    const rows = await getLaunches();
+    expect(rows).toHaveLength(3);
+    // First row: the one missing ETA Ant bubbles to the top.
+    expect(rows[0].productName).toBe("No ETA Yet");
+    expect(rows[0].etaAnt).toBeNull();
+    // Then: known ETAs ascending (soonest first).
+    expect(rows[1].productName).toBe("Known Soon");
+    expect(rows[1].etaAnt).toBe("2026-06-15");
+    expect(rows[2].productName).toBe("Known Later");
+    expect(rows[2].etaAnt).toBe("2026-07-20");
+  });
 });
 
 describe("getDistinctProductNames", () => {

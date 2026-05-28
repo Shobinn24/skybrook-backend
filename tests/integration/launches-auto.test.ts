@@ -147,7 +147,15 @@ describe("runLaunchAutoPopulate", () => {
     expect(launches[0].intlLaunchDate).toBe("2026-07-01");
   });
 
-  it("inserts default-named SKUs (productName === sku) with the SKU as placeholder name (Scott 2026-05-07)", async () => {
+  it("does NOT insert default-named SKUs whose launchName is still the raw 'ev-...' code (Scott 2026-05-28)", async () => {
+    // Reverses the prior 2026-05-07 behaviour where unknown-family SKUs
+    // were inserted with the raw SKU as a placeholder productName. That
+    // policy backfired: when the KAI 27 cottonhw / flyboxer new lines
+    // landed in inventory, /launches showed one row per individual size
+    // ("ev-cottonhw-5x-xxs", "ev-cottonhw-5x-xs", ...) because
+    // deriveLaunchName falls back to the SKU when the family token isn't
+    // registered. The add-launch dropdown already filters these via the
+    // !name.startsWith("ev-") check; the auto-populate path now matches.
     const rawId = await seedRawPull();
     await db.insert(skus).values([
       { sku: "ev-mystery-5x-l", productName: "ev-mystery-5x-l", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
@@ -157,12 +165,8 @@ describe("runLaunchAutoPopulate", () => {
     ]);
 
     const result = await runLaunchAutoPopulate();
-    expect(result.inserted).toBe(1);
-
-    const launches = await db.select().from(productLaunches);
-    expect(launches).toHaveLength(1);
-    expect(launches[0].productName).toBe("ev-mystery-5x-l");
-    expect(launches[0].shipmentName).toBe("KAI Mystery");
+    expect(result.inserted).toBe(0);
+    expect(await db.select().from(productLaunches)).toHaveLength(0);
   });
 
   it("creates one launch per (product, shipment) pair when many SKUs of the new product land in the same PO", async () => {
@@ -278,26 +282,32 @@ describe("runLaunchAutoPopulate", () => {
     expect(result.skippedAltColor).toBe(2);
   });
 
-  // Scott 2026-05-08: stale-placeholder cleanup, plus blocklist
-  // cleanup for HW / OG / Style 9055 auto-added launches.
-  it("cleanupStaleDefaultLaunches drops ev-* placeholders whose SKU now has a friendly name", async () => {
+  // Scott 2026-05-28: cleanup widened to drop ALL ev-* placeholder rows,
+  // not just those whose SKU has since gained a friendly name. Reason:
+  // the prior narrow-cleanup left rows like "ev-cottonhw-5x-xxs" (KAI 27
+  // new line whose family was never registered) lingering, one per size.
+  // Auto-populate no longer inserts these in the first place; this is
+  // the safety net for legacy ev-* rows from before the fix.
+  it("cleanupStaleDefaultLaunches drops ALL ev-* launch rows (Scott 2026-05-28)", async () => {
     await db.insert(skus).values([
       { sku: "ev-hrshort-5x-l", productName: "High Rise Short", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
       { sku: "ev-newfam-5x-l", productName: "ev-newfam-5x-l", productLine: "Core", firstSeenAt: "2026-05-07", active: true },
     ]);
     await db.insert(productLaunches).values([
+      // Friendly-name now exists in skus → drop (legacy stale placeholder).
       { productName: "ev-hrshort-5x-l", shipmentName: "KAI Sec Mar26", note: "Auto-added: new variant detected in incoming shipment" },
+      // No friendly name → still drop (Scott 2026-05-28 broadened policy).
       { productName: "ev-newfam-5x-l", shipmentName: "KAI Mar26", note: "Auto-added: new variant detected in incoming shipment" },
+      // Friendly-name launch → preserved.
       { productName: "Boyshort", shipmentName: "KAI Apr26", note: "Auto-added: new variant detected in incoming shipment" },
     ]);
 
     const deleted = await cleanupStaleDefaultLaunches();
-    expect(deleted).toBe(1);
+    expect(deleted).toBe(2);
 
     const remaining = await db.select().from(productLaunches);
-    expect(remaining).toHaveLength(2);
-    const names = remaining.map((r) => r.productName).sort();
-    expect(names).toEqual(["Boyshort", "ev-newfam-5x-l"]);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].productName).toBe("Boyshort");
   });
 
   it("cleanupStaleDefaultLaunches drops auto-added HW / OG / Style 9055 launches (alt-color blocklist)", async () => {

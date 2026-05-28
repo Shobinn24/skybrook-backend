@@ -80,18 +80,17 @@ export type LaunchAutoPopulateResult = {
  * preserved.
  */
 export async function cleanupStaleDefaultLaunches(): Promise<number> {
+  // Drop ANY launch row whose productName is still a raw `ev-...` SKU
+  // code. Pre-2026-05-28 the auto-populate path inserted these as
+  // placeholder rows for new-family SKUs whose friendly name hadn't yet
+  // been derived; that policy turned out to flood /launches with one
+  // row per individual size (Scott 2026-05-28: cottonhw / flyboxer
+  // KAI 27 lines). The auto-populate now refuses to insert ev-* names
+  // in the first place, and this cleanup removes any legacy rows that
+  // landed before the fix.
   const stalePlaceholderResult = await db
     .delete(productLaunches)
-    .where(
-      and(
-        like(productLaunches.productName, "ev-%"),
-        sql`EXISTS (
-          SELECT 1 FROM ${skus} s
-          WHERE s.sku = ${productLaunches.productName}
-          AND s.product_name <> ${productLaunches.productName}
-        )`,
-      ),
-    )
+    .where(like(productLaunches.productName, "ev-%"))
     .returning({ id: productLaunches.id });
 
   // Match each blocklisted family label as either the exact productName
@@ -330,6 +329,15 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
     }
     const baseName = t.productName ?? t.sku;
     const launchName = deriveLaunchName(t.sku, baseName);
+    // Filter 2: drop fallback "ev-..." names — these only appear when
+    // deriveLaunchName couldn't infer a friendly label (typical for a
+    // brand-new product line whose family token isn't registered in
+    // FAMILY_LABELS yet). Without this, the 16 KAI 27 SKUs from the
+    // cottonhw / flyboxer new lines leaked into /launches as one row
+    // per size (Scott 2026-05-28). Mirrors the same filter
+    // getDistinctProductNames already applies to the add-launch
+    // dropdown — keeps the two surfaces in sync.
+    if (launchName.startsWith("ev-")) continue;
     if (existingLaunchNames.has(launchName)) {
       skippedAlreadyLaunchedNames.add(launchName);
       continue;
