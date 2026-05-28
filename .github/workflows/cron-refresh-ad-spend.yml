@@ -1,0 +1,75 @@
+name: Afternoon ad-spend refresh
+
+# Re-runs ONLY sheets_ad_spend + sheets_fb_ads (and bonus crossings +
+# freshness for those two) at 16:00 UTC (= 12 PM EDT). The main daily
+# ingest at 09:00 UTC runs before Supermetrics has finalised "yesterday's"
+# FB numbers — Jasper hit this 2026-05-28 with a 10x undercount of
+# yesterday's spend in the 7D rollup. This afternoon re-pull catches the
+# settled numbers without re-running the rest of the (slower, broader)
+# ingest pipeline.
+#
+# This is a freshness-improvement, not a data-integrity dependency. If it
+# fails, the morning's data still stands; the rollups are just slightly
+# stale until the next morning's run. So GH Actions is the primary (not
+# fallback) — no Railway native cron needed.
+#
+# Manual trigger via workflow_dispatch for ad-hoc resyncs.
+
+on:
+  schedule:
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger /api/cron/refresh-ad-spend
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::CRON_SECRET secret not set"
+            exit 1
+          fi
+          # Endpoint is much faster than the full /api/cron/ingest
+          # (no Shopify backfill, no phase2, no auto-receipt). 60s is
+          # plenty of headroom; reuse the long-poll edge-timeout pattern
+          # in case Railway's proxy still cuts us off.
+          set +e
+          response=$(mktemp)
+          status=$(curl -sS -X POST -o "$response" -w "%{http_code}" \
+            "https://skybrook-backend-production.up.railway.app/api/cron/refresh-ad-spend" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            --max-time 90)
+          curl_exit=$?
+          set -e
+          # Same accept-list as the main ingest workflow: 0 = ok response,
+          # 28 = client timeout but server keeps running.
+          if [ "$curl_exit" != 0 ] && [ "$curl_exit" != 28 ]; then
+            echo "::error::curl exited $curl_exit (network error)"
+            exit 1
+          fi
+          if [ "$curl_exit" = "0" ]; then
+            echo "HTTP status: $status"
+            if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+              echo "::error::refresh returned non-2xx ($status)"
+              cat "$response"
+              exit 1
+            fi
+            echo "Response:"
+            cat "$response"
+          else
+            echo "Client timed out (curl exit 28). Server-side handler is still running; verifying via /api/health in 90s..."
+            sleep 90
+            verify=$(curl -sS -o /dev/null -w "%{http_code}" \
+              "https://skybrook-backend-production.up.railway.app/api/health" \
+              --max-time 30)
+            echo "Health probe HTTP status: $verify"
+            if [ "$verify" -lt 200 ] || [ "$verify" -ge 500 ]; then
+              echo "::error::/api/health returned $verify after refresh"
+              exit 1
+            fi
+          fi
+          echo "✓ Ad-spend refresh complete."
