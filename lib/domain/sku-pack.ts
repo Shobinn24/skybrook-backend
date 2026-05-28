@@ -137,6 +137,18 @@ export function decomposePackSku(sku: string): DecomposedSku | null {
   if (ppOg) {
     return { canonicalSku: `ev-mixed-${ogSizeToMixed(ppOg[1])}`, multiplier: 1 };
   }
+  // Legacy `ev-pp-hw-{size}` is the incoming-PO alias of the HW no-color
+  // line (Scott 2026-05-07: the `pp-` prefix is a spec marker, the
+  // physical product is plain HW). Stock_snapshots tracks this line
+  // under bare-size `ev-hw-{size}` (mirroring the HW no-pack collapse
+  // below); KAI 24/25/26 POs all key on `ev-pp-hw-{size}`. Without this
+  // rewrite, auto-receipt detection can't match the PO to the stock
+  // jump (caught 2026-05-28 — KAI 25 sat unverified for weeks).
+  // Bare-size only; pp-hw never carries a color segment.
+  const ppHw = lower.match(/^ev-pp-hw-([a-z0-9]+)$/);
+  if (ppHw) {
+    return { canonicalSku: `ev-hw-${ppHw[1]}`, multiplier: 1 };
+  }
   const m = lower.match(PACK_TOKEN_RE);
   if (!m) return null;
   const [, family, packMatch, rest] = m;
@@ -239,6 +251,11 @@ export const PACK_SKU_DB_PATTERNS: ReadonlyArray<string> = [
   // recomputes cleanly on `ev-mixed`. `ev-pp-og-{color}-%` never existed
   // (pp-og is bare-size only), so the `%` is safe.
   "ev-pp-og-%",
+  // Legacy `ev-pp-hw-{size}` rows — KAI POs key on `pp-hw` but stock +
+  // velocity track on bare `ev-hw-{size}` (added 2026-05-28). Same
+  // safety rationale as pp-og: pp-hw is bare-size only, no color
+  // segment, so the `%` can't accidentally clobber colored HW SKUs.
+  "ev-pp-hw-%",
   // OG no-color 5-packs (`ev-og-5x-{size}`, no color segment) — now
   // remapped to `ev-mixed-{size}` (was `ev-pp-og`). Pattern matches
   // sizes only (s/m/l/xl/xxl/3xl/4xl/5xl/xxs/xs) — `ev-og-5x-{color}-%`

@@ -375,6 +375,31 @@ describe("decomposePackSku", () => {
     expect(decomposePackSku("ev-mixed-l")).toBeNull();
   });
 
+  it("folds the legacy ev-pp-hw alias into bare ev-hw (KAI incoming POs)", () => {
+    // KAI 24/25/26 POs key on `ev-pp-hw-{size}` but stock_snapshots
+    // tracks the same physical product as bare-size `ev-hw-{size}`.
+    // Without this rewrite, auto-receipt couldn't match POs to stock
+    // arrivals (caught 2026-05-28).
+    expect(decomposePackSku("ev-pp-hw-l")).toEqual({
+      canonicalSku: "ev-hw-l",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-pp-hw-xxl")).toEqual({
+      canonicalSku: "ev-hw-xxl",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-pp-hw-3xl")).toEqual({
+      canonicalSku: "ev-hw-3xl",
+      multiplier: 1,
+    });
+    expect(decomposePackSku("ev-pp-hw-xxs")).toEqual({
+      canonicalSku: "ev-hw-xxs",
+      multiplier: 1,
+    });
+    // Already-canonical ev-hw bare-size passes through untouched.
+    expect(decomposePackSku("ev-hw-l")).toBeNull();
+  });
+
   it("preserves og colored 5-packs (keeps the 5x token)", () => {
     // `ev-og-5x-black-l` is a separate physical product — remap only
     // applies when rest is a single size token (no color segment).
