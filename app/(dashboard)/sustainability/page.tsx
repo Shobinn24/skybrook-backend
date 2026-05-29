@@ -8,12 +8,21 @@ import { SustainabilityTimelineTable } from "@/components/sustainability/Sustain
 import { VelocityOverridesEditor } from "@/components/sustainability/VelocityOverridesEditor";
 import { trpc } from "@/lib/trpc/client";
 
-const WINDOW_OPTIONS = [7, 14, 30] as const;
-type WindowDays = (typeof WINDOW_OPTIONS)[number];
+const PRESET_OPTIONS = [7, 14, 30] as const;
+// The timeline query accepts any 1–90 day window (sales are summed live
+// from daily_sales), so a custom value lets operators gauge a brand-new
+// product on just its first 1/2/3 days of sales — right after a launch,
+// before a full week of data exists (Scott 5/29).
+const MIN_WINDOW_DAYS = 1;
+const MAX_WINDOW_DAYS = 90;
 
 export default function SustainabilityPage() {
   const [selection, setSelection] = useState<WarehouseSelection>("US");
-  const [windowDays, setWindowDays] = useState<WindowDays>(14);
+  const [windowDays, setWindowDays] = useState<number>(14);
+  // Raw text of the custom-days box. Empty string means "a preset is
+  // active". Kept separate from windowDays so the user can clear and
+  // retype without the field snapping back mid-edit.
+  const [customWindow, setCustomWindow] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
   const [productLineFilter, setProductLineFilter] = useState("");
   const isAll = selection === "All";
@@ -87,21 +96,62 @@ export default function SustainabilityPage() {
           </div>
           <div className="flex items-center gap-2">
             <div className="inline-flex overflow-hidden rounded-md border border-neutral-300 bg-white">
-              {WINDOW_OPTIONS.map((opt) => (
-                <button
-                  key={opt}
-                  onClick={() => setWindowDays(opt)}
-                  className={
-                    "px-3 py-1.5 text-sm font-medium " +
-                    (windowDays === opt
-                      ? "bg-neutral-900 text-white"
-                      : "text-neutral-700 hover:bg-neutral-100")
-                  }
-                >
-                  {opt}d
-                </button>
-              ))}
+              {PRESET_OPTIONS.map((opt) => {
+                const active = windowDays === opt && customWindow === "";
+                return (
+                  <button
+                    key={opt}
+                    onClick={() => {
+                      setWindowDays(opt);
+                      setCustomWindow("");
+                    }}
+                    className={
+                      "px-3 py-1.5 text-sm font-medium " +
+                      (active
+                        ? "bg-neutral-900 text-white"
+                        : "text-neutral-700 hover:bg-neutral-100")
+                    }
+                  >
+                    {opt}d
+                  </button>
+                );
+              })}
             </div>
+            {/* Custom window — type any 1–90 day window. Lets operators
+                judge a freshly launched product on just its first few
+                days of sales before a full week exists (Scott 5/29). */}
+            <label
+              className={
+                "inline-flex items-center gap-1.5 rounded-md border bg-white px-2.5 py-1 text-sm " +
+                (customWindow !== ""
+                  ? "border-neutral-900 ring-1 ring-neutral-900"
+                  : "border-neutral-300")
+              }
+            >
+              <span className="text-neutral-500">Custom</span>
+              <input
+                type="number"
+                min={MIN_WINDOW_DAYS}
+                max={MAX_WINDOW_DAYS}
+                inputMode="numeric"
+                value={customWindow}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setCustomWindow(raw);
+                  const n = parseInt(raw, 10);
+                  if (
+                    Number.isFinite(n) &&
+                    n >= MIN_WINDOW_DAYS &&
+                    n <= MAX_WINDOW_DAYS
+                  ) {
+                    setWindowDays(n);
+                  }
+                }}
+                placeholder="days"
+                aria-label="Custom sales window in days"
+                className="w-16 border-0 bg-transparent p-0 text-sm tabular-nums text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-0"
+              />
+            </label>
             <WarehouseToggle value={selection} onChange={setSelection} showAll />
           </div>
         </div>
@@ -139,6 +189,19 @@ export default function SustainabilityPage() {
             </button>
           )}
         </div>
+
+        {/* Short-window caveat — today's sales aren't fully synced until
+            the daily pull runs, so a 1-day window (today only) can read
+            low. Surface this only when a short window is active so it
+            stays out of the way the rest of the time. */}
+        {windowDays <= 3 && (
+          <p className="text-xs text-neutral-400">
+            Heads up: today&apos;s sales aren&apos;t fully synced until the
+            daily pull runs, so very short windows (especially 1 day) can
+            read low. Treat 1–3 day windows as a directional post-launch
+            signal.
+          </p>
+        )}
       </div>
 
       {headlineError && (
