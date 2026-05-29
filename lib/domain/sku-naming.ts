@@ -38,6 +38,11 @@ const FAMILY_LABELS: Record<string, string> = {
   "mlb": "MLB",
   // Scott 2026-05-07
   "hrshort": "High Rise Short",
+  // Scott 2026-05-29 (WhatsApp): new product lines on the Incoming
+  // sheet that had been leaking through auto-Launches as raw ev-*
+  // SKU rows until these were registered.
+  "cottonhw": "Cotton High Waisted",
+  "flyboxer": "Boxer w/ Fly",
 };
 
 // Multi-segment family prefixes — checked before single-segment lookup.
