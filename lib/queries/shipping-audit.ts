@@ -1,42 +1,27 @@
 /**
- * Composed view for /shipping-performance — pulls the persisted stats
- * snapshot (cheap, ~2 rows from `shipping_stats_daily`), then hits
- * Shopify live to derive today's fulfilment + carrier flag lists.
- *
- * Flags are *not* persisted (spec §7.2) — they're freshly derived each
- * page load from current Shopify state. That's fine: the live fetch is
- * one paginated GraphQL query, ~30d of orders for the US store.
+ * Composed view for /shipping-performance — reads the persisted stats
+ * snapshot AND the persisted flag lists from `shipping_stats_daily`.
+ * Both are computed once per nightly cron run (see runShippingSnapshot
+ * in lib/jobs/shipping-snapshot.ts). No live Shopify fetch happens at
+ * page load — that path was measured at ~6 minutes during the
+ * 2026-05-29 audit and the page rendered as a permanent loading
+ * spinner. Spec §1 ("Daily, Mon–Fri") + §5.1 ("refreshed daily").
  *
  * Spec: docs/shipping-checks-spec/ops-shipping-checks-spec.md
  */
 
-import { and, desc, eq, gte, lte } from "drizzle-orm";
+import { and, desc, gte, lte } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { shippingStatsDaily, stockSnapshots } from "@/lib/db/schema";
+import { shippingStatsDaily } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
 import {
-  computeStatsWindow,
-  detectCarrierTransitViolations,
-  detectFulfilmentSlaViolations,
   shiftStoreLocal,
-  storeLocalMidnight,
   todayStoreLocal,
   type CarrierFlag,
   type FulfilmentFlag,
-  type InventoryAvailability,
   type StatsWindowSummary,
 } from "@/lib/domain/shipping-checks";
-import { fetchOrdersSince } from "@/lib/sources/shopify-fulfillments";
-
-const US_STORE = "incontinencepanties.myshopify.com";
-const ADMIN_LINK_BASE = `https://${US_STORE}`;
-
-// Window we fetch live. 35d gives the SLA check + carrier check + a 5d
-// buffer. (Bigger than the snapshot's 60-day window because we don't
-// need delivered_at history that far back — only currently-flaggable
-// orders.)
-const LIVE_FETCH_BACK_DAYS = 35;
 
 export type ShippingStatsDelta = {
   current: StatsWindowSummary;
@@ -58,23 +43,6 @@ export type ShippingPerformanceView = {
   // "Last updated" line on the dashboard.
   computedAt: string;
 };
-
-async function buildInventoryLookup(): Promise<InventoryAvailability> {
-  const allUs = await db
-    .select({
-      sku: stockSnapshots.sku,
-      onHand: stockSnapshots.onHand,
-      snapshotDate: stockSnapshots.snapshotDate,
-    })
-    .from(stockSnapshots)
-    .where(eq(stockSnapshots.location, "US"))
-    .orderBy(desc(stockSnapshots.snapshotDate));
-  const map = new Map<string, number>();
-  for (const r of allUs) {
-    if (!map.has(r.sku)) map.set(r.sku, Number(r.onHand));
-  }
-  return (sku: string) => map.get(sku);
-}
 
 function toStatsSummary(
   row: typeof shippingStatsDaily.$inferSelect,
@@ -170,70 +138,30 @@ export async function getShippingPerformanceView(): Promise<ShippingPerformanceV
     },
   };
 
-  // Live fetch for flags. If Shopify is unavailable we still want the
-  // stats panel to render — log and return empty flag lists.
-  let fulfilmentFlags: FulfilmentFlag[] = [];
-  let carrierFlags: CarrierFlag[] = [];
-
-  try {
-    const sinceLocal = shiftStoreLocal(today, -LIVE_FETCH_BACK_DAYS);
-    const sinceIso = storeLocalMidnight(sinceLocal).toISOString();
-    const inventoryAvailable = await buildInventoryLookup();
-    const orders = await fetchOrdersSince({
-      store: US_STORE,
-      sinceIso,
-    });
-
-    fulfilmentFlags = detectFulfilmentSlaViolations({
-      orders,
-      inventoryAvailable,
-      todayStoreLocal: today,
-      adminLinkBase: ADMIN_LINK_BASE,
-    });
-    carrierFlags = detectCarrierTransitViolations({
-      orders,
-      inventoryAvailable,
-      nowIso: new Date().toISOString(),
-      adminLinkBase: ADMIN_LINK_BASE,
-    });
-
-    // Optional: also recompute the current-window stats from this same
-    // fetch, so the UI shows fresher numbers than yesterday's
-    // persisted snapshot. Only override if we got a valid sample.
-    const liveStats = computeStatsWindow({
-      orders,
-      inventoryAvailable,
-      windowStart: currentWindowStart,
-      windowEnd: today,
-    });
-    if (liveStats.deliveredCount > 0) {
-      stats.current = liveStats;
-      stats.deltaPct = {
-        fulfilmentHours: pctDelta(
-          liveStats.avgFulfilmentHours,
-          prior?.avgFulfilmentHours ?? null,
-        ),
-        transitDays: pctDelta(
-          liveStats.avgTransitDays,
-          prior?.avgTransitDays ?? null,
-        ),
-        totalDays: pctDelta(
-          liveStats.avgTotalDays,
-          prior?.avgTotalDays ?? null,
-        ),
-      };
-    }
-  } catch (e) {
-    logger.warn("shipping.view.live_fetch_failed", {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
+  // Read persisted flags from the same snapshot row whose stats we
+  // already loaded above. No Shopify call here — the cron did that
+  // work overnight. Defaults to empty arrays when the snapshot
+  // pre-dates the 2026-05-29 flag-persistence migration.
+  const fulfilmentFlags: FulfilmentFlag[] =
+    ((currentRow?.fulfilmentFlags as FulfilmentFlag[] | null) ?? []) as FulfilmentFlag[];
+  const carrierFlags: CarrierFlag[] =
+    ((currentRow?.carrierFlags as CarrierFlag[] | null) ?? []) as CarrierFlag[];
+  // Use the snapshot's flags_computed_at when present so the dashboard
+  // "Last updated" line reflects when the flags were actually
+  // produced, not when the user happened to load the page. Fall back
+  // to the stats row's computedAt for legacy snapshots.
+  const computedAt = (
+    currentRow?.flagsComputedAt ??
+    currentRow?.computedAt ??
+    new Date()
+  ).toISOString();
 
   logger.info("shipping.view.computed", {
     today,
     deliveredCount: stats.current.deliveredCount,
     fulfilmentFlagCount: fulfilmentFlags.length,
     carrierFlagCount: carrierFlags.length,
+    snapshotDate: currentRow?.snapshotDate ?? null,
     ms: Date.now() - start,
   });
 
@@ -241,6 +169,6 @@ export async function getShippingPerformanceView(): Promise<ShippingPerformanceV
     stats,
     fulfilmentFlags,
     carrierFlags,
-    computedAt: new Date().toISOString(),
+    computedAt,
   };
 }

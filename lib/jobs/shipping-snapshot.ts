@@ -22,6 +22,8 @@ import { shippingStatsDaily, stockSnapshots } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
 import {
   computeStatsWindow,
+  detectCarrierTransitViolations,
+  detectFulfilmentSlaViolations,
   shiftStoreLocal,
   todayStoreLocal,
   storeLocalMidnight,
@@ -31,6 +33,7 @@ import { fetchOrdersSince } from "@/lib/sources/shopify-fulfillments";
 
 // Spec is US-only — same store as `shopify_us` in the daily_sales pipeline.
 const US_STORE = "incontinencepanties.myshopify.com";
+const ADMIN_LINK_BASE = `https://${US_STORE}`;
 
 const WINDOW_DAYS = 30;
 // Reach back this far for orders. Need 30d of *delivered_at* coverage,
@@ -45,6 +48,12 @@ export type ShippingSnapshotResult = {
   windowEnd: string;
   deliveredCount: number;
   ordersFetched: number;
+  /** Number of fulfilment-SLA flagged orders persisted into the
+   * snapshot. Renders in the cron log so a sudden jump in volume is
+   * visible without opening the dashboard. */
+  fulfilmentFlagCount: number;
+  /** Number of carrier-transit flagged orders persisted. */
+  carrierFlagCount: number;
 };
 
 /**
@@ -107,6 +116,26 @@ export async function runShippingSnapshot(opts?: {
     windowEnd,
   });
 
+  // Flag detection runs on the SAME fetched orders + inventory, so the
+  // page-level tRPC view can read flags from the DB instead of doing
+  // its own 35-day Shopify pull on every request (the 2026-05-29 audit
+  // measured that path at ~6 minutes — page rendered as a permanent
+  // "Loading…" spinner). Spec §1 says checks are daily; this is where
+  // "daily" actually happens now.
+  const fulfilmentFlags = detectFulfilmentSlaViolations({
+    orders,
+    inventoryAvailable,
+    todayStoreLocal: snapshotDate,
+    adminLinkBase: ADMIN_LINK_BASE,
+  });
+  const carrierFlags = detectCarrierTransitViolations({
+    orders,
+    inventoryAvailable,
+    nowIso: new Date().toISOString(),
+    adminLinkBase: ADMIN_LINK_BASE,
+  });
+  const flagsComputedAt = new Date();
+
   await db
     .insert(shippingStatsDaily)
     .values({
@@ -121,6 +150,9 @@ export async function runShippingSnapshot(opts?: {
       avgTotalDays:
         stats.avgTotalDays !== null ? stats.avgTotalDays.toFixed(2) : null,
       transitHistogram: stats.transitHistogram,
+      fulfilmentFlags,
+      carrierFlags,
+      flagsComputedAt,
     })
     .onConflictDoUpdate({
       target: shippingStatsDaily.snapshotDate,
@@ -138,6 +170,9 @@ export async function runShippingSnapshot(opts?: {
           stats.avgTotalDays !== null ? stats.avgTotalDays.toFixed(2) : null,
         transitHistogram: stats.transitHistogram,
         computedAt: new Date(),
+        fulfilmentFlags,
+        carrierFlags,
+        flagsComputedAt,
       },
     });
 
@@ -147,6 +182,8 @@ export async function runShippingSnapshot(opts?: {
     windowEnd,
     deliveredCount: stats.deliveredCount,
     ordersFetched: orders.length,
+    fulfilmentFlagCount: fulfilmentFlags.length,
+    carrierFlagCount: carrierFlags.length,
   };
 
   logger.info("shipping.snapshot.done", {

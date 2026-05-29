@@ -453,6 +453,22 @@ export const shippingStatsDaily = pgTable("shipping_stats_daily", {
   // doesn't have to re-fetch.
   transitHistogram: jsonb("transit_histogram").notNull(),
   computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+  // Persisted flag lists computed by the same nightly cron that fills
+  // the stats columns above. Stored as JSONB arrays so the page-level
+  // tRPC view can read them without re-fetching from Shopify on every
+  // page load (the 2026-05-29 audit found that path took ~6 minutes
+  // and rendered the page indistinguishable from broken). Nullable
+  // for backward compatibility with pre-2026-05-29 rows; the query
+  // layer defaults to [] when missing.
+  fulfilmentFlags: jsonb("fulfilment_flags"),
+  carrierFlags: jsonb("carrier_flags"),
+  // When the flags column was last computed. Renders as the "Last
+  // updated" line on the dashboard so users can see how fresh the
+  // flag list is. Separate from computed_at because the stats column
+  // and the flags column can drift in failure scenarios (we may
+  // compute stats fresh today but skip the flag detection on a
+  // Shopify timeout, etc.).
+  flagsComputedAt: timestamp("flags_computed_at", { withTimezone: true }),
 });
 
 // First-flagged timestamp per (order_id, check_type) so the UI can
