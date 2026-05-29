@@ -144,13 +144,21 @@ export async function runArrivalEvidenceCheck(input: {
       Array.from(candidateGroups.values()).flatMap((c) => Array.from(c.skus)),
     ),
   );
-  // Pull every OTHER unreceived shipment for any candidate SKU at any
-  // destination. Conservatism: if ANY other shipmentName has at least
-  // one same-SKU unreceived row at the same destination, we don't
-  // auto-mark this group — we don't want to attribute incoming stock
-  // to the wrong PO. Per memory note in domain layer, same-name
-  // sub-shipments (different ETAs under the same shipment_name) do
-  // NOT count as competing — those are the same logical PO split.
+  // Pull other unreceived shipments for candidate SKUs, BUT only those
+  // with ETAs near enough to be realistically explaining today's stock
+  // arrival. A future-dated PO 4+ weeks out (e.g. KAI 27 with ETA
+  // 7/11 found 2026-05-29) cannot plausibly be the source of stock
+  // that landed in May — and treating it as competing would
+  // permanently block auto-mark on the actually-overdue PO it
+  // overlaps with. Window = candidate's ETA → today+7d, which
+  // captures the realistic "could have arrived early/on-time"
+  // window and excludes long-future restocks.
+  //
+  // Same-shipment-name siblings (different ETA under same name) are
+  // still excluded as competing (filtered below) — those are the
+  // same logical PO split into waves.
+  const competingHorizonDays = 7;
+  const competingMaxEta = minusDays(input.asOfDate, -competingHorizonDays);
   const competing = await db
     .select({
       shipmentName: incomingShipments.shipmentName,
@@ -171,6 +179,7 @@ export async function runArrivalEvidenceCheck(input: {
       and(
         inArray(incomingShipments.sku, allCandidateSkus),
         isNull(incomingReceipts.id),
+        lt(incomingShipments.expectedArrival, competingMaxEta),
       ),
     );
 

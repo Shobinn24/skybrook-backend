@@ -155,9 +155,9 @@ describe("runArrivalEvidenceCheck — auto-mark vs flag partitioning", () => {
     expect(receipts).toHaveLength(0);
   });
 
-  it("does NOT auto-mark when another shipment name competes for the same SKU at the same destination", async () => {
-    // The KAI-25 vs KAI-26 attribution-risk case. Stock could have
-    // arrived for either, so leave it flagged for a human to confirm.
+  it("does NOT auto-mark when a NEAR-TERM competing PO is expected (different name, ETA within 7d horizon)", async () => {
+    // Real attribution risk: KAI 25 overdue, KAI 26 also expected
+    // very soon — incoming stock could be either.
     const rawId = await seedRawPull();
     await seedShipment({
       name: "KAI 25",
@@ -167,14 +167,14 @@ describe("runArrivalEvidenceCheck — auto-mark vs flag partitioning", () => {
       eta: "2026-05-10",
       rawId,
     });
-    // KAI 26 is the COMPETITOR — different shipmentName, same SKU,
-    // same destination, also unreceived (future ETA).
+    // Different name, ETA in 3 days = inside the 7-day competing
+    // horizon. SHOULD block auto-mark.
     await seedShipment({
       name: "KAI 26",
       destination: "CN",
       sku: "ev-hw-xl",
       qty: 500,
-      eta: "2026-06-15",
+      eta: "2026-06-01",
       rawId,
     });
     await seedSnap({
@@ -196,11 +196,53 @@ describe("runArrivalEvidenceCheck — auto-mark vs flag partitioning", () => {
 
     expect(result.autoMarked).toHaveLength(0);
     expect(result.flagged.find((e) => e.shipmentName === "KAI 25")).toBeDefined();
-    const receipts = await db
-      .select()
-      .from(incomingReceipts)
-      .where(eq(incomingReceipts.shipmentName, "KAI 25"));
-    expect(receipts).toHaveLength(0);
+  });
+
+  it("DOES auto-mark when the only competing PO is FAR-FUTURE (beyond 7d competing-horizon)", async () => {
+    // The 2026-05-29 prod case: Grace added KAI 26 / KAI 27 weeks
+    // out for the same SKUs that the overdue 5/10 + 5/15 KAIs were
+    // expecting. Stock landed in May obviously belongs to the
+    // overdue POs, not to a July restock. The window guard fixes
+    // this — only ETAs within 7d of today count as competing.
+    const rawId = await seedRawPull();
+    await seedShipment({
+      name: "KAI 25",
+      destination: "CN",
+      sku: "ev-hw-xl",
+      qty: 500,
+      eta: "2026-05-10",
+      rawId,
+    });
+    // Different name, ETA in 6 WEEKS — irrelevant for May arrivals.
+    // Should NOT block auto-mark on KAI 25.
+    await seedShipment({
+      name: "KAI 27",
+      destination: "CN",
+      sku: "ev-hw-xl",
+      qty: 200,
+      eta: "2026-07-11",
+      rawId,
+    });
+    await seedSnap({
+      sku: "ev-hw-xl",
+      location: "CN",
+      date: "2026-05-08",
+      onHand: 0,
+      rawId,
+    });
+    await seedSnap({
+      sku: "ev-hw-xl",
+      location: "CN",
+      date: "2026-05-25",
+      onHand: 500,
+      rawId,
+    });
+
+    const result = await runArrivalEvidenceCheck({ asOfDate: "2026-05-29" });
+
+    expect(result.autoMarked).toHaveLength(1);
+    expect(result.autoMarked[0].shipmentName).toBe("KAI 25");
+    expect(result.flagged).toHaveLength(0);
   });
 
   it("treats sub-shipments under the SAME shipmentName as non-competing (KAI Sec Mar26 split case)", async () => {
