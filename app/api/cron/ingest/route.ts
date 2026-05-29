@@ -59,16 +59,22 @@ export async function POST(req: Request) {
   // post-gap deliveries). Read-only; surfaces a P2 confirm-prompt so
   // these can't sit overdue unnoticed (the 2026-05-27 KAI miss). Never
   // block the cron on it.
-  let likelyArrived: Awaited<ReturnType<typeof runArrivalEvidenceCheck>> = [];
+  let arrivalEvidence: Awaited<ReturnType<typeof runArrivalEvidenceCheck>> = {
+    flagged: [],
+    autoMarked: [],
+  };
   try {
-    likelyArrived = await runArrivalEvidenceCheck({ asOfDate });
-    if (likelyArrived.length > 0) {
+    arrivalEvidence = await runArrivalEvidenceCheck({ asOfDate });
+    // High-confidence arrivals were auto-marked received inside the
+    // function. They're closed-loop; no alert needed. The P2 alert is
+    // only for `flagged` — lower-confidence or competing-PO blocked.
+    if (arrivalEvidence.flagged.length > 0) {
       await postAlert({
         severity: "p2",
-        title: `${likelyArrived.length} overdue shipment(s) look received — confirm in /incoming`,
+        title: `${arrivalEvidence.flagged.length} overdue shipment(s) look received — confirm in /incoming`,
         dedupKey: "incoming.likely_arrived",
         fields: Object.fromEntries(
-          likelyArrived.slice(0, 10).map((e) => [
+          arrivalEvidence.flagged.slice(0, 10).map((e) => [
             `${e.shipmentName} · ${e.destination} · ETA ${e.expectedArrival}`,
             `+${e.observedJump.toLocaleString()} on-hand (${Math.round(e.pctOfPo * 100)}% of ${e.poQuantity.toLocaleString()}-unit PO)`,
           ]),
@@ -162,7 +168,8 @@ export async function POST(req: Request) {
     productNames,
     unitCosts,
     autoReceipts,
-    likelyArrivedOverdue: likelyArrived.length,
+    likelyArrivedOverdueFlagged: arrivalEvidence.flagged.length,
+    likelyArrivedOverdueAutoMarked: arrivalEvidence.autoMarked.length,
     autoLaunches,
     orphanSkusDeactivated: orphanSweep.deactivated.length,
     bonusCrossings,

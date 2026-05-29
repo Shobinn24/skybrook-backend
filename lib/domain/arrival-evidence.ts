@@ -56,6 +56,18 @@ export type ArrivalEvidence = {
  * of a few extra confirm prompts. */
 export const LIKELY_ARRIVED_MIN_PCT = 0.25;
 
+/** Cumulative-since-ETA threshold for AUTO-MARKING a PO received
+ * (no human click needed). Higher bar than the alert threshold above
+ * because a wrong auto-mark is much harder to undo than a missed
+ * alert. 50% chosen so partial-but-clearly-arrived KAI shipments
+ * (which trickle in over multiple weeks) close themselves once the
+ * majority has landed — the 2026-05-29 case where 4 sub-shipments
+ * sat overdue for 14-19 days despite cumulative arrivals of 44-97%
+ * of PO. Still gated by the no-competing-PO check in
+ * lib/jobs/arrival-evidence-check.ts so two overlapping orders for
+ * the same SKU never get cross-attributed. */
+export const AUTO_MARK_FROM_EVIDENCE_MIN_PCT = 0.5;
+
 const key = (s: { shipmentName: string; destination: "US" | "CN"; expectedArrival: string }) =>
   `${s.shipmentName}|${s.destination}|${s.expectedArrival}`;
 
