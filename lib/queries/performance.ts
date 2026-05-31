@@ -31,6 +31,19 @@ const PRODUCT_CONFIG = {
     spendTabs: ["SuperHW", "Super HW AL"],
     productNamePatterns: ["Super High-Waist%"],
   },
+  hrshort: {
+    label: "High Rise Short",
+    // No spend tabs yet. HRS launched EV INTL 2026-05-22 and is selling,
+    // but there is no HRS tab in the Supermetrics ad-spend sheet (no HRS
+    // ads are named/isolated in the account as of 2026-05-31), so spend
+    // shows $0 until one exists. When an "HRS" / "HRS AL" tab is created
+    // AND added to AD_SPEND_TABS in lib/sources/sheets.ts, list its
+    // product key(s) here and spend lights up automatically. Left empty
+    // (not placeholder tab names) so the card doesn't show a false
+    // "stale feed" badge on a tab that never lands.
+    spendTabs: [] as string[],
+    productNamePatterns: ["High Rise Short%"],
+  },
 } as const;
 
 type ProductKey = keyof typeof PRODUCT_CONFIG;
