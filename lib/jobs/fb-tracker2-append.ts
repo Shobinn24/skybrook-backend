@@ -116,6 +116,52 @@ export async function runFbTracker2Append(): Promise<FbTracker2AppendResult> {
     });
   }
 
+  // 1b. Ensure the grid is wide enough for the new date columns. The
+  // column writes below use values.batchUpdate, which (unlike the
+  // INSERT_ROWS append above) does NOT auto-grow the sheet — so once
+  // the 2026 tab fills its column allotment, the next day's write fails
+  // with "exceeds grid limits" and the whole append silently aborts
+  // (caught by the cron, surfaced only in logs). Grow the grid first
+  // when the new column would land past the current edge, with headroom
+  // so this doesn't run every single day. (Found 2026-06-01: the tab hit
+  // its 152-column cap and 05-31 couldn't be written.)
+  if (ops.columns.length > 0) {
+    const neededColumns =
+      Math.max(...ops.columns.map((c) => c.columnIndex)) + 1; // 0-based idx → 1-based count
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId: FB_TRACKER_2_SHEET_ID,
+      fields: "sheets(properties(sheetId,title,gridProperties(columnCount)))",
+    });
+    const sheet2026 = meta.data.sheets?.find(
+      (s) => s.properties?.title === SHEET_2026,
+    );
+    const currentColumns =
+      sheet2026?.properties?.gridProperties?.columnCount ?? 0;
+    const sheet2026Id = sheet2026?.properties?.sheetId;
+    if (sheet2026Id != null && neededColumns > currentColumns) {
+      const addColumns = neededColumns - currentColumns + 24; // + headroom
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: FB_TRACKER_2_SHEET_ID,
+        requestBody: {
+          requests: [
+            {
+              appendDimension: {
+                sheetId: sheet2026Id,
+                dimension: "COLUMNS",
+                length: addColumns,
+              },
+            },
+          ],
+        },
+      });
+      logger.info("fb-tracker2-append.grew-columns", {
+        from: currentColumns,
+        to: currentColumns + addColumns,
+        neededColumns,
+      });
+    }
+  }
+
   // 2. Write each missing-date column. Single batched call —
   // values.batchUpdate accepts multiple ranges in one round-trip.
   // Each column's `values` array is already sized to the final row
