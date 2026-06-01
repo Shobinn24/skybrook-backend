@@ -9,8 +9,6 @@ const RANGE_OPTIONS = [
   { days: 30, label: "30d" },
 ] as const;
 
-type RangeDays = (typeof RANGE_OPTIONS)[number]["days"];
-
 function fmtMoney(n: number): string {
   return n.toLocaleString("en-US", {
     style: "currency",
@@ -62,9 +60,25 @@ function yesterdayEstYmd(): string {
   return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
 }
 
+// Add `days` to a YYYY-MM-DD date (UTC math, stays calendar-correct).
+function addDaysYmd(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+// Inclusive day count between two YYYY-MM-DD dates (start..end).
+function spanDaysInclusive(start: string, end: string): number {
+  const [sy, sm, sd] = start.split("-").map(Number);
+  const [ey, em, ed] = end.split("-").map(Number);
+  return Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86_400_000) + 1;
+}
+
 export default function PerformancePage() {
-  const [rangeDays, setRangeDays] = useState<RangeDays>(1);
-  const [endDate, setEndDate] = useState<string>("");
+  // Custom date range (Jasper 2026-06-01, mirroring FB Ads Tracker). The
+  // preset buttons (Yesterday / 7d / 14d / 30d) now set start+end relative
+  // to the chosen end date; the From/To inputs allow any explicit window.
+  const [rangeStart, setRangeStart] = useState<string>("");
+  const [rangeEnd, setRangeEnd] = useState<string>("");
   const yesterday = yesterdayEstYmd();
 
   // Fetch the latest revenue + spend dates so we can default the
@@ -84,18 +98,33 @@ export default function PerformancePage() {
       ) ?? yesterday
     : null;
 
+  // Default to a single day (matches the old "Yesterday" default) on the
+  // most recent date where both revenue + spend exist.
   useEffect(() => {
-    if (endDate) return;
-    if (safeDefault) setEndDate(safeDefault);
-  }, [endDate, safeDefault]);
+    if (rangeEnd) return;
+    if (safeDefault) {
+      setRangeEnd(safeDefault);
+      setRangeStart(safeDefault);
+    }
+  }, [rangeEnd, safeDefault]);
 
   const adSpendMaxDate = freshness.data?.adSpendMaxDate ?? null;
   const spendStaleForEndDate =
-    !!adSpendMaxDate && !!endDate && endDate > adSpendMaxDate;
+    !!adSpendMaxDate && !!rangeEnd && rangeEnd > adSpendMaxDate;
+
+  // Preset = last N days ending on rangeEnd. Anchor on the current end
+  // (or the safe default) so presets compose with a hand-picked end date.
+  function applyPreset(days: number) {
+    const end = rangeEnd || safeDefault || yesterday;
+    setRangeEnd(end);
+    setRangeStart(addDaysYmd(end, -(days - 1)));
+  }
+  const activeSpanDays =
+    rangeStart && rangeEnd ? spanDaysInclusive(rangeStart, rangeEnd) : null;
 
   const { data, isLoading, error } = trpc.inventory.getPerformance.useQuery(
-    { rangeDays, endDate },
-    { refetchOnWindowFocus: false, enabled: !!endDate },
+    { rangeStart, rangeEnd },
+    { refetchOnWindowFocus: false, enabled: !!rangeStart && !!rangeEnd },
   );
 
   const rows = data?.rows ?? [];
@@ -113,34 +142,54 @@ export default function PerformancePage() {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-sm">
+            <label htmlFor="perf-start-date" className="text-neutral-600">
+              From
+            </label>
+            <input
+              id="perf-start-date"
+              type="date"
+              value={rangeStart}
+              max={rangeEnd || yesterday}
+              onChange={(e) => setRangeStart(e.target.value || rangeStart)}
+              className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm text-neutral-700 focus:outline-none focus:ring-1 focus:ring-neutral-400"
+            />
             <label htmlFor="perf-end-date" className="text-neutral-600">
-              Ending
+              To
             </label>
             <input
               id="perf-end-date"
               type="date"
-              value={endDate}
+              value={rangeEnd}
+              min={rangeStart}
               max={yesterday}
-              onChange={(e) => setEndDate(e.target.value || yesterday)}
+              onChange={(e) => {
+                const v = e.target.value || rangeEnd;
+                setRangeEnd(v);
+                if (rangeStart && v < rangeStart) setRangeStart(v);
+              }}
               className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm text-neutral-700 focus:outline-none focus:ring-1 focus:ring-neutral-400"
             />
-            {safeDefault && endDate !== safeDefault && (
-              <button
-                onClick={() => setEndDate(safeDefault)}
-                className="text-xs text-neutral-500 hover:text-neutral-900 underline"
-              >
-                Reset
-              </button>
-            )}
+            {safeDefault &&
+              (rangeEnd !== safeDefault || rangeStart !== safeDefault) && (
+                <button
+                  onClick={() => {
+                    setRangeEnd(safeDefault);
+                    setRangeStart(safeDefault);
+                  }}
+                  className="text-xs text-neutral-500 hover:text-neutral-900 underline"
+                >
+                  Reset
+                </button>
+              )}
           </div>
           <div className="inline-flex overflow-hidden rounded-md border border-neutral-300 bg-white">
             {RANGE_OPTIONS.map((opt) => (
               <button
                 key={opt.days}
-                onClick={() => setRangeDays(opt.days)}
+                onClick={() => applyPreset(opt.days)}
                 className={
                   "px-3 py-1.5 text-sm font-medium " +
-                  (rangeDays === opt.days
+                  (activeSpanDays === opt.days
                     ? "bg-neutral-900 text-white"
                     : "text-neutral-700 hover:bg-neutral-100")
                 }
@@ -163,14 +212,18 @@ export default function PerformancePage() {
           {spendStaleForEndDate && adSpendMaxDate && (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
               <strong>
-                Ad spend not yet ingested for {fmtDate(endDate)}.
+                Ad spend not yet ingested for {fmtDate(rangeEnd)}.
               </strong>{" "}
               Latest available is {fmtDate(adSpendMaxDate)}. Revenue is
               accurate but spend / ROAS will show $0 / — for any day past
               that. Supermetrics refreshes at 3am EDT; the Skybrook
               ingest cron picks it up at 5am EDT.{" "}
               <button
-                onClick={() => setEndDate(adSpendMaxDate)}
+                onClick={() => {
+                  setRangeEnd(adSpendMaxDate);
+                  if (rangeStart && adSpendMaxDate < rangeStart)
+                    setRangeStart(adSpendMaxDate);
+                }}
                 className="underline hover:no-underline"
               >
                 Switch to {fmtDate(adSpendMaxDate)}

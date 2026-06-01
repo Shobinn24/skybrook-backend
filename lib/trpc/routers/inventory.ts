@@ -359,31 +359,28 @@ export const inventoryRouter = router({
   getPerformance: publicProcedure
     .input(
       z.object({
-        rangeDays: z
-          .number()
-          .int()
-          .refine((n) => [1, 7, 14, 30].includes(n), "rangeDays must be 1, 7, 14, or 30"),
-        endDate: z
+        rangeStart: z
           .string()
-          .regex(/^\d{4}-\d{2}-\d{2}$/, "endDate must be YYYY-MM-DD")
-          .optional(),
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "rangeStart must be YYYY-MM-DD"),
+        rangeEnd: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "rangeEnd must be YYYY-MM-DD"),
       }),
     )
     .query(({ input }) => {
-      // Rollup treats `today` as the not-yet-complete anchor and
-      // returns [today - rangeDays, today - 1]. To make the window
-      // end on a chosen endDate, anchor today at endDate + 1 day.
-      let today: string;
-      if (input.endDate) {
-        const [y, m, d] = input.endDate.split("-").map(Number);
-        today = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
-      } else {
-        today = toEstDate(new Date());
-      }
-      return getPerformanceRollup({
-        today,
-        rangeDays: input.rangeDays,
-      });
+      // Custom date range (Jasper 2026-06-01, mirroring FB Ads Tracker).
+      // Normalize if start/end arrive swapped.
+      const start = input.rangeStart <= input.rangeEnd ? input.rangeStart : input.rangeEnd;
+      const end = input.rangeStart <= input.rangeEnd ? input.rangeEnd : input.rangeStart;
+      // getPerformanceRollup treats `today` as the not-yet-complete anchor
+      // and returns [today - rangeDays, today - 1]. Anchor `today` at end+1
+      // so the window ends on `end`; rangeDays spans the inclusive [start, end].
+      const [ey, em, ed] = end.split("-").map(Number);
+      const [sy, sm, sd] = start.split("-").map(Number);
+      const today = new Date(Date.UTC(ey, em - 1, ed + 1)).toISOString().slice(0, 10);
+      const rangeDays =
+        Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86_400_000) + 1;
+      return getPerformanceRollup({ today, rangeDays });
     }),
 
   // /performance page — used to default the end-date picker to a date
