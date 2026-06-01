@@ -623,7 +623,15 @@ export async function getBonusCountSummary(): Promise<BonusCountSummary> {
       eq(bonusAwards.notificationBatchId, bonusNotificationBatches.id),
     )
     .where(
+      // Exclude the one-time historical-backfill migration batch
+      // (sentBy = 'system_backfill', label "Historical backfill 2026-05-21").
+      // It stamped all ~142 pre-tool awards into a single 2026-05 batch, so
+      // without this filter every past bonus piles into the May scoreboard
+      // (the "Summary includes past months' bonuses" bug, Jasper 2026-06-01).
+      // The Summary tracks REAL monthly payout batches only — "May 2026
+      // onwards" — and historical months stay in Jasper's manual sheet.
       sql`${bonusAwards.status} IN ('approved_full','approved_half')
+          AND ${bonusNotificationBatches.sentBy} <> 'system_backfill'
           AND (${bonusNotificationBatches.sentAt} at time zone 'America/New_York') >= '2026-05-01'`,
     )
     .groupBy(
