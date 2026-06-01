@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectAutoReceipts } from "@/lib/domain/auto-receipt";
+import { detectAutoReceipts, selectSnapshotWindow, type WindowRow } from "@/lib/domain/auto-receipt";
 
 const PO_BASE = {
   shipmentName: "KAI Mens Apr26",
@@ -322,5 +322,90 @@ describe("detectAutoReceipts", () => {
       });
       expect(out).toEqual([]);
     });
+  });
+});
+
+describe("selectSnapshotWindow", () => {
+  const rows = (xs: Array<[string, "US" | "CN", string, number]>): WindowRow[] =>
+    xs.map(([sku, location, snapshotDate, onHand]) => ({ sku, location, snapshotDate, onHand }));
+
+  it("pairs each location with its own latest two dates when both share the date", () => {
+    const w = selectSnapshotWindow({
+      asOfDate: "2026-05-29",
+      rows: rows([
+        ["ev-us", "US", "2026-05-29", 300],
+        ["ev-us", "US", "2026-05-28", 100],
+        ["ev-cn", "CN", "2026-05-29", 80],
+        ["ev-cn", "CN", "2026-05-28", 50],
+      ]),
+    });
+    expect(w.afterByLocation.get("US")).toBe("2026-05-29");
+    expect(w.beforeByLocation.get("US")).toBe("2026-05-28");
+    expect(w.afterByLocation.get("CN")).toBe("2026-05-29");
+    expect(w.beforeByLocation.get("CN")).toBe("2026-05-28");
+    expect(w.todaySnapshots).toContainEqual({ sku: "ev-us", location: "US", onHand: 300 });
+    expect(w.yesterdaySnapshots).toContainEqual({ sku: "ev-cn", location: "CN", onHand: 50 });
+  });
+
+  it("region split: US newest is 06-01, CN newest is 05-31 — each pairs within its own region (the 2026-05-30 regression)", () => {
+    // Real prod shape: US tabs advanced to 06-01, CN tabs still at 05-31.
+    // 05-31 had NO US rows; 06-01 has NO CN rows. A global today/yesterday
+    // would diff US@06-01 vs CN@05-31 and detect nothing.
+    const w = selectSnapshotWindow({
+      asOfDate: "2026-06-01",
+      rows: rows([
+        ["ev-hrshort", "US", "2026-06-01", 929],
+        ["ev-hrshort", "US", "2026-05-30", 0], // US skipped 05-31
+        ["ev-mens", "CN", "2026-05-31", 500],
+        ["ev-mens", "CN", "2026-05-29", 100], // CN skipped 05-30
+      ]),
+    });
+    expect(w.afterByLocation.get("US")).toBe("2026-06-01");
+    expect(w.beforeByLocation.get("US")).toBe("2026-05-30"); // gap-resilient
+    expect(w.afterByLocation.get("CN")).toBe("2026-05-31");
+    expect(w.beforeByLocation.get("CN")).toBe("2026-05-29");
+    expect(w.todaySnapshots).toEqual([
+      { sku: "ev-hrshort", location: "US", onHand: 929 },
+      { sku: "ev-mens", location: "CN", onHand: 500 },
+    ]);
+    expect(w.yesterdaySnapshots).toEqual([
+      { sku: "ev-hrshort", location: "US", onHand: 0 },
+      { sku: "ev-mens", location: "CN", onHand: 100 },
+    ]);
+  });
+
+  it("feeds detectAutoReceipts so a split-day US arrival still matches its PO", () => {
+    const w = selectSnapshotWindow({
+      asOfDate: "2026-06-01",
+      rows: rows([
+        ["ev-hrshort-l", "US", "2026-06-01", 950],
+        ["ev-hrshort-l", "US", "2026-05-30", 20],
+        ["ev-mens-l", "CN", "2026-05-31", 500], // CN newest, unrelated
+      ]),
+    });
+    const out = detectAutoReceipts({
+      todaySnapshots: w.todaySnapshots,
+      yesterdaySnapshots: w.yesterdaySnapshots,
+      todaySales: [],
+      overduePOs: [
+        { sku: "ev-hrshort-l", destination: "US", quantity: 930, shipmentName: "KAI HRS Jun26", expectedArrival: "2026-05-29" },
+      ],
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0].shipmentName).toBe("KAI HRS Jun26");
+  });
+
+  it("ignores snapshots dated after asOfDate and skips a location with only one date", () => {
+    const w = selectSnapshotWindow({
+      asOfDate: "2026-06-01",
+      rows: rows([
+        ["ev-us", "US", "2026-06-02", 999], // future — ignored
+        ["ev-us", "US", "2026-06-01", 300],
+        ["ev-cn", "CN", "2026-06-01", 80], // only one CN date → no "before"
+      ]),
+    });
+    expect(w.afterByLocation.get("US")).toBe("2026-06-01");
+    expect(w.beforeByLocation.has("CN")).toBe(false);
+    expect(w.yesterdaySnapshots.some((s) => s.location === "CN")).toBe(false);
   });
 });

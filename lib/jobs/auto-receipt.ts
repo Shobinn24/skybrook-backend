@@ -3,7 +3,7 @@
 // Runs after the normal ingest so today's stock_snapshots is already
 // in place.
 
-import { asc, desc, eq, inArray, lt, lte } from "drizzle-orm";
+import { and, gte, inArray, lte } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   dailySales,
@@ -11,12 +11,20 @@ import {
   incomingShipments,
   stockSnapshots,
 } from "@/lib/db/schema";
-import { detectAutoReceipts, type StockSnapshot, type OverduePO } from "@/lib/domain/auto-receipt";
+import {
+  detectAutoReceipts,
+  selectSnapshotWindow,
+  type WindowRow,
+  type OverduePO,
+} from "@/lib/domain/auto-receipt";
 import { getReceivedShipmentKeys, shipmentReceiptKey } from "@/lib/queries/incoming";
 import { logger } from "@/lib/logger";
 
-function locationToChannel(location: "US" | "CN"): "shopify_us" | "shopify_intl" {
-  return location === "US" ? "shopify_us" : "shopify_intl";
+/** asOfDate (YYYY-MM-DD) minus n days, in UTC, as YYYY-MM-DD. */
+function isoMinusDays(ymd: string, n: number): string {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
 }
 
 export async function runAutoReceiptDetection(input: {
@@ -28,27 +36,20 @@ export async function runAutoReceiptDetection(input: {
   inserted: number;
 }> {
   const today = input.asOfDate;
-  // "Yesterday" = the most recent snapshot date strictly before today,
-  // NOT calendar today-1. Snapshot dates have gaps (days the inventory
-  // sheet wasn't refreshed), and a calendar-yesterday with no snapshot
-  // makes the day-over-day diff silently skip — so an arrival landing
-  // right after a gap (e.g. the 2026-05-17 KAI deliveries, with 05-16
-  // missing) would never be detected. Diffing against the prior SNAPSHOT
-  // date makes this gap-resilient.
-  const priorDateRows = await db
-    .selectDistinct({ d: stockSnapshots.snapshotDate })
-    .from(stockSnapshots)
-    .where(lt(stockSnapshots.snapshotDate, today))
-    .orderBy(desc(stockSnapshots.snapshotDate))
-    .limit(1);
-  const yesterday = priorDateRows[0]?.d;
-  if (!yesterday) {
-    logger.info("auto-receipt.skip.no-prior-snapshot", { today });
-    return { matched: 0, inserted: 0 };
-  }
-
-  // Pull today + yesterday snapshots in one query.
-  const allSnapshots = await db
+  // Pull a recent window of snapshots and let the domain helper pick each
+  // location's OWN latest two snapshot dates for the day-over-day diff.
+  //
+  // Why per-location: a single global today/yesterday breaks when the US and
+  // CN inventory tabs advance their newest dated column on different days
+  // (observed from 2026-05-30) — each tab is ingested under its own latest
+  // date, so the global diff straddles regions (today's US vs yesterday's CN)
+  // and silently detects nothing. Per-location pairing also stays gap-resilient
+  // (a location that skipped a day pairs its latest with the date that
+  // actually precedes it — e.g. the 2026-05-17 KAI deliveries with 05-16
+  // missing). The window reaches back far enough to survive multi-day gaps.
+  const WINDOW_DAYS = 21;
+  const windowStart = isoMinusDays(today, WINDOW_DAYS);
+  const windowRows: WindowRow[] = await db
     .select({
       sku: stockSnapshots.sku,
       location: stockSnapshots.location,
@@ -56,34 +57,53 @@ export async function runAutoReceiptDetection(input: {
       onHand: stockSnapshots.onHand,
     })
     .from(stockSnapshots)
-    .where(inArray(stockSnapshots.snapshotDate, [today, yesterday]))
-    .orderBy(asc(stockSnapshots.snapshotDate));
-  const todayRows: StockSnapshot[] = [];
-  const yesterdayRows: StockSnapshot[] = [];
-  for (const r of allSnapshots) {
-    if (r.snapshotDate === today) todayRows.push(r as StockSnapshot);
-    else if (r.snapshotDate === yesterday) yesterdayRows.push(r as StockSnapshot);
-  }
+    .where(
+      and(
+        gte(stockSnapshots.snapshotDate, windowStart),
+        lte(stockSnapshots.snapshotDate, today),
+      ),
+    );
+
+  const {
+    afterByLocation,
+    beforeByLocation,
+    todaySnapshots: todayRows,
+    yesterdaySnapshots: yesterdayRows,
+  } = selectSnapshotWindow({ rows: windowRows, asOfDate: today });
+
   if (todayRows.length === 0 || yesterdayRows.length === 0) {
-    logger.info("auto-receipt.skip.no-snapshots", { today, yesterday });
+    logger.info("auto-receipt.skip.no-snapshots", {
+      today,
+      after: Object.fromEntries(afterByLocation),
+      before: Object.fromEntries(beforeByLocation),
+    });
     return { matched: 0, inserted: 0 };
   }
 
-  // Sales that happened today, per sku × location. Used to "back out"
-  // same-day depletion so a delivery netted by sales still matches.
-  const salesRows = await db
-    .select({
-      sku: dailySales.sku,
-      channel: dailySales.channel,
-      unitsSold: dailySales.unitsSold,
-    })
-    .from(dailySales)
-    .where(eq(dailySales.salesDate, today));
-  const todaySales = salesRows.map((r) => ({
-    sku: r.sku,
-    location: r.channel === "shopify_us" ? ("US" as const) : ("CN" as const),
-    units: r.unitsSold,
-  }));
+  // Same-day sales to back out same-day depletion so a delivery partly sold
+  // the same day still matches its PO quantity. Aligned PER LOCATION to that
+  // location's own "after" date (which may differ from another region's).
+  const afterDates = Array.from(new Set(afterByLocation.values()));
+  const salesRows = afterDates.length
+    ? await db
+        .select({
+          sku: dailySales.sku,
+          channel: dailySales.channel,
+          salesDate: dailySales.salesDate,
+          unitsSold: dailySales.unitsSold,
+        })
+        .from(dailySales)
+        .where(inArray(dailySales.salesDate, afterDates))
+    : [];
+  const todaySales = salesRows
+    .map((r) => ({
+      sku: r.sku,
+      location: (r.channel === "shopify_us" ? "US" : "CN") as "US" | "CN",
+      units: r.unitsSold,
+      salesDate: r.salesDate,
+    }))
+    .filter((r) => afterByLocation.get(r.location) === r.salesDate)
+    .map(({ sku, location, units }) => ({ sku, location, units }));
 
   // Overdue POs: ETA <= today AND no receipt yet.
   const allOverdue = await db

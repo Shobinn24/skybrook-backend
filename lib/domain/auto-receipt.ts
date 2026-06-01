@@ -26,6 +26,58 @@ export type StockSnapshot = {
   onHand: number;
 };
 
+export type WindowRow = StockSnapshot & {
+  /** YYYY-MM-DD snapshot date this on-hand belongs to. */
+  snapshotDate: string;
+};
+
+/**
+ * Pick the "after" and "before" snapshot sets for day-over-day arrival
+ * detection, computed PER LOCATION rather than from one global date.
+ *
+ * Why per-location: the inventory sheet's US and CN tabs can advance their
+ * newest dated column on different days (observed from 2026-05-30). Each tab
+ * is ingested under its OWN latest date, so on a given run US's newest
+ * snapshot may be dated e.g. 06-01 while CN's is still 05-31. A single global
+ * today/yesterday then diffs today's US against yesterday's CN — mismatched
+ * regions — and the detector silently sees nothing (and, symmetrically, could
+ * read a region reappearing as a phantom jump). Choosing each location's own
+ * latest two snapshot dates keeps every diff within-region. It is also
+ * resilient to per-location gaps: a location that skipped a day pairs its
+ * latest snapshot with whatever date actually precedes it.
+ *
+ * `rows` should be every snapshot in a recent window (a couple of weeks is
+ * plenty); anything dated after `asOfDate` is ignored.
+ */
+export function selectSnapshotWindow(input: {
+  rows: ReadonlyArray<WindowRow>;
+  asOfDate: string;
+}): {
+  afterByLocation: Map<"US" | "CN", string>;
+  beforeByLocation: Map<"US" | "CN", string>;
+  todaySnapshots: StockSnapshot[];
+  yesterdaySnapshots: StockSnapshot[];
+} {
+  const inWindow = input.rows.filter((r) => r.snapshotDate <= input.asOfDate);
+  const afterByLocation = new Map<"US" | "CN", string>();
+  const beforeByLocation = new Map<"US" | "CN", string>();
+  for (const loc of ["US", "CN"] as const) {
+    const dates = Array.from(
+      new Set(inWindow.filter((r) => r.location === loc).map((r) => r.snapshotDate)),
+    ).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0)); // newest first
+    if (dates[0]) afterByLocation.set(loc, dates[0]);
+    if (dates[1]) beforeByLocation.set(loc, dates[1]);
+  }
+  const todaySnapshots: StockSnapshot[] = [];
+  const yesterdaySnapshots: StockSnapshot[] = [];
+  for (const r of inWindow) {
+    const snap: StockSnapshot = { sku: r.sku, location: r.location, onHand: r.onHand };
+    if (afterByLocation.get(r.location) === r.snapshotDate) todaySnapshots.push(snap);
+    else if (beforeByLocation.get(r.location) === r.snapshotDate) yesterdaySnapshots.push(snap);
+  }
+  return { afterByLocation, beforeByLocation, todaySnapshots, yesterdaySnapshots };
+}
+
 export type OverduePO = {
   sku: string;
   destination: "US" | "CN";
