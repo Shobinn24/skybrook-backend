@@ -354,37 +354,106 @@ export async function previewNotification(opts?: {
   };
 }
 
+// The four award buckets, in Jasper's listing order, each with its
+// count-line label ("8x 13k bonus") and section header ("*13k tier*").
+// Mirrors his April-bonus WhatsApp example (2026-05-13) exactly.
+const NOTIFICATION_BUCKETS = [
+  { tier: "tier1", status: "approved_full", count: "13k bonus", header: "*13k tier*" },
+  { tier: "tier1", status: "approved_half", count: "13k 50% bonus", header: "*13k 50% tier*" },
+  { tier: "tier2", status: "approved_full", count: "65k bonus", header: "*65k tier*" },
+  { tier: "tier2", status: "approved_half", count: "65k 50% bonus", header: "*65k 50% tier*" },
+] as const satisfies ReadonlyArray<{
+  tier: BonusAwardTier;
+  status: NotificationAward["status"];
+  count: string;
+  header: string;
+}>;
+
 /**
- * Render the WhatsApp message body: per-marketer total followed by an
- * itemized list of awards (tier + ad number + ad name + link).
- * Jasper 2026-05-20: "ad name + ad link for those hit".
+ * Render the monthly WhatsApp notification body in Jasper's native
+ * format — his April-bonus example (2026-05-13) plus the "all marketers
+ * in one message" confirmation (2026-05-20). WhatsApp bold = *asterisks*.
+ *
+ *   *May 2026 Bonuses*
+ *
+ *   *Craig*
+ *   6x 13k bonus
+ *   2x 13k 50% bonus
+ *   1x 65k bonus
+ *   Total: $6,500
+ *
+ *   *13k tier*
+ *   Ad 2037 - Craig Boyshort new colors Vid 2
+ *   - https://www.facebook.com/.../
+ *
+ *   Ad 2054 - Craig x Cat Model Images
+ *   - https://www.facebook.com/.../
+ *
+ *   *65k tier*
+ *   ...
+ *
+ *   *Raul*
+ *   1x 13k bonus
+ *   Total: $500
+ *   ...
+ *
+ *   *Tyler*
+ *   Total: $0
+ *   ...
+ *
+ * Every roster marketer appears (Jasper lists $0 marketers too); only
+ * those with awards get the count lines + per-tier ad breakdown. Order
+ * follows BONUS_SUMMARY_MARKETER_ORDER (JW before Dan) to mirror his
+ * sheet; ads within a tier are sorted by ad number ascending like his.
  */
 function renderNotificationMessage(
   periodLabel: string,
   awards: NotificationAward[],
 ): string {
-  const lines: string[] = [`${periodLabel} Bonuses`, ""];
+  const lines: string[] = [`*${periodLabel} Bonuses*`, ""];
+  // Operator-error guard: the send button is monthly, so an entirely
+  // empty batch means nothing was approved at all — flag it rather than
+  // ship a roster of zeros.
   if (awards.length === 0) {
     lines.push("(no approved bonuses this period)");
     return lines.join("\n").trimEnd();
   }
-  // Preserve BONUS_MARKETERS roster order (Craig, Raul, Tyler, Jacob, Dan, JW).
+
   const byMarketer = new Map<BonusMarketer, NotificationAward[]>();
-  for (const m of BONUS_MARKETERS) byMarketer.set(m, []);
+  for (const m of BONUS_SUMMARY_MARKETER_ORDER) byMarketer.set(m, []);
   for (const a of awards) byMarketer.get(a.marketer)?.push(a);
 
-  for (const marketer of BONUS_MARKETERS) {
+  const adNo = (a: NotificationAward) => {
+    const n = parseInt(a.adNumber, 10);
+    return Number.isNaN(n) ? Number.POSITIVE_INFINITY : n;
+  };
+
+  for (const marketer of BONUS_SUMMARY_MARKETER_ORDER) {
     const list = byMarketer.get(marketer) ?? [];
-    if (list.length === 0) continue;
+    lines.push(`*${marketer}*`);
+
+    // Count lines (only non-empty buckets), then the per-marketer total.
     const total = list.reduce((s, a) => s + a.amountUsd, 0);
-    lines.push(`${marketer} — Total: $${total.toLocaleString("en-US")}`);
-    for (const a of list) {
-      const tierLabel = a.tier === "tier1" ? "$13k" : "$65k";
-      const halfMarker = a.status === "approved_half" ? " (half)" : "";
-      lines.push(
-        `• ${tierLabel}${halfMarker} · Ad ${a.adNumber} — ${a.adName}`,
-      );
-      if (a.adLink) lines.push(`  ${a.adLink}`);
+    for (const b of NOTIFICATION_BUCKETS) {
+      const n = list.filter(
+        (a) => a.tier === b.tier && a.status === b.status,
+      ).length;
+      if (n > 0) lines.push(`${n}x ${b.count}`);
+    }
+    lines.push(`Total: $${total.toLocaleString("en-US")}`);
+
+    // Per-tier ad breakdown — "Ad <num> - <name>" then the link below.
+    for (const b of NOTIFICATION_BUCKETS) {
+      const ads = list
+        .filter((a) => a.tier === b.tier && a.status === b.status)
+        .sort((a, c) => adNo(a) - adNo(c));
+      if (ads.length === 0) continue;
+      lines.push("", b.header);
+      ads.forEach((a, i) => {
+        lines.push(`Ad ${a.adNumber} - ${a.adName}`);
+        if (a.adLink) lines.push(`- ${a.adLink}`);
+        if (i < ads.length - 1) lines.push("");
+      });
     }
     lines.push("");
   }

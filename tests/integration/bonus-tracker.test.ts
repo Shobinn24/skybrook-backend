@@ -489,12 +489,15 @@ describe("getBonusTracker", () => {
       expect(t1.adLink).toBe("https://facebook.com/ads/library/?id=1389");
       expect(t1.amountUsd).toBe(500);
 
-      expect(preview.messageBody).toContain("April 2026 Bonuses");
-      expect(preview.messageBody).toContain("Craig — Total: $3,500"); // $500 + $3000
-      expect(preview.messageBody).toContain("$13k · Ad 1389");
-      expect(preview.messageBody).toContain("$65k · Ad 1389");
-      expect(preview.messageBody).toContain("Craig x Cat Brief 14");
-      expect(preview.messageBody).toContain("https://facebook.com/ads/library/?id=1389");
+      expect(preview.messageBody).toContain("*April 2026 Bonuses*");
+      expect(preview.messageBody).toContain("*Craig*");
+      expect(preview.messageBody).toContain("1x 13k bonus");
+      expect(preview.messageBody).toContain("1x 65k bonus");
+      expect(preview.messageBody).toContain("Total: $3,500"); // $500 + $3000
+      expect(preview.messageBody).toContain("*13k tier*");
+      expect(preview.messageBody).toContain("*65k tier*");
+      expect(preview.messageBody).toContain("Ad 1389 - Craig x Cat Brief 14");
+      expect(preview.messageBody).toContain("- https://facebook.com/ads/library/?id=1389");
     });
 
     it("labels half-rate awards with (half) marker", async () => {
@@ -527,8 +530,93 @@ describe("getBonusTracker", () => {
       });
 
       const preview = await previewNotification({ periodLabel: "April 2026" });
-      expect(preview.messageBody).toContain("$13k (half) · Ad 500");
-      expect(preview.messageBody).toContain("Craig — Total: $250"); // half of $500
+      expect(preview.messageBody).toContain("1x 13k 50% bonus");
+      expect(preview.messageBody).toContain("*13k 50% tier*");
+      expect(preview.messageBody).toContain("Ad 500 - Craig Rehook");
+      expect(preview.messageBody).toContain("Total: $250"); // half of $500
+    });
+
+    it("emits Jasper's native multi-marketer format (all roster, JW before Dan)", async () => {
+      const [raw] = await db
+        .insert(rawPulls)
+        .values({
+          source: "sheets_fb_ads",
+          pullBatchId: randomUUID(),
+          payload: {},
+          rowCount: 0,
+          schemaFingerprint: "fp",
+        })
+        .returning({ id: rawPulls.id });
+      // Craig: 1× $13k (ad 2037) + 1× $65k (ad 1366); Raul: 1× $13k (ad 1758).
+      await db.insert(fbAdSpendDaily).values([
+        {
+          adNumber: "2037",
+          adName: "Craig Boyshort new colors Vid 2",
+          adNameRaw: "Craig Boyshort new colors Vid 2",
+          adLink: "https://facebook.com/2037",
+          marketers: ["Craig"],
+          spendDate: "2026-04-01",
+          costUsd: "14000.0000",
+          sourcePullId: raw.id,
+        },
+        {
+          adNumber: "1366",
+          adName: "Craig x Meg Drawer Vid 1 B",
+          adNameRaw: "Craig x Meg Drawer Vid 1 B",
+          adLink: "https://facebook.com/1366",
+          marketers: ["Craig"],
+          spendDate: "2026-04-01",
+          costUsd: "70000.0000",
+          sourcePullId: raw.id,
+        },
+        {
+          adNumber: "1758",
+          adName: "Raul - Long Primary Copy + IMG Carol",
+          adNameRaw: "Raul - Long Primary Copy + IMG Carol",
+          adLink: "https://facebook.com/1758",
+          marketers: ["Raul"],
+          spendDate: "2026-04-01",
+          costUsd: "14000.0000",
+          sourcePullId: raw.id,
+        },
+      ]);
+      await detectAndInsertBonusCrossings({ asOfDate: "2026-05-13" });
+      for (const a of await db.select().from(bonusAwards)) {
+        await approveBonus({
+          awardId: a.id,
+          approval: "approved_full",
+          approvedBy: "jasper",
+        });
+      }
+
+      const preview = await previewNotification({ periodLabel: "May 2026" });
+      const body = preview.messageBody;
+      // Print the real rendered message for eyeballing against Jasper's format.
+      console.log("\n----- rendered notification -----\n" + body + "\n---------------------------------\n");
+
+      // Header is bold.
+      expect(body).toContain("*May 2026 Bonuses*");
+      // Craig: ad 1366 ($70k) crosses BOTH tiers → a $13k award + a $65k
+      // award, plus ad 2037's $13k → 2x 13k + 1x 65k, $4,000 total.
+      expect(body).toContain("*Craig*\n2x 13k bonus\n1x 65k bonus\nTotal: $4,000");
+      // 13k section lists both ads, sorted by ad number ascending (1366 < 2037).
+      expect(body).toContain(
+        "*13k tier*\nAd 1366 - Craig x Meg Drawer Vid 1 B\n- https://facebook.com/1366\n\nAd 2037 - Craig Boyshort new colors Vid 2\n- https://facebook.com/2037",
+      );
+      expect(body).toContain("*65k tier*\nAd 1366 - Craig x Meg Drawer Vid 1 B\n- https://facebook.com/1366");
+      // Raul section present.
+      expect(body).toContain("*Raul*\n1x 13k bonus\nTotal: $500");
+      // $0 marketers still listed, and JW comes before Dan.
+      expect(body).toContain("*Tyler*\nTotal: $0");
+      expect(body).toContain("*JW*\nTotal: $0");
+      expect(body).toContain("*Dan*\nTotal: $0");
+      expect(body.indexOf("*JW*")).toBeLessThan(body.indexOf("*Dan*"));
+      // Roster order overall: Craig → Raul → Tyler → Jacob → JW → Dan.
+      const order = ["Craig", "Raul", "Tyler", "Jacob", "JW", "Dan"].map(
+        (m) => body.indexOf(`*${m}*`),
+      );
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+      expect(order.every((i) => i >= 0)).toBe(true);
     });
 
     it("handles empty batch gracefully", async () => {
