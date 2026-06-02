@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { bonusAwards, fbAdSpendDaily } from "@/lib/db/schema";
 import {
@@ -6,6 +6,7 @@ import {
   BONUS_TIER_1_USD,
   BONUS_TIER_2_USD,
   bonusAmountAtFullUsd,
+  firstCrossingDate,
   isAboveBonusFloor,
   type BonusMarketer,
 } from "@/lib/domain/bonus-tiers";
@@ -21,6 +22,13 @@ export type BonusCrossingDetectResult = {
 
 const BONUS_MARKETER_SET: ReadonlySet<string> = new Set(BONUS_MARKETERS);
 
+/** YYYY-MM-DD minus n days, in UTC, as YYYY-MM-DD. */
+function isoMinusDays(ymd: string, n: number): string {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
  * Scan `fb_ad_spend_daily`, aggregate lifetime spend per (ad × marketer),
  * and insert a `pending` bonus_awards row for every (ad, marketer, tier)
@@ -35,10 +43,13 @@ const BONUS_MARKETER_SET: ReadonlySet<string> = new Set(BONUS_MARKETERS);
  * skip rows that already exist regardless of status. If an operator
  * rejected an award, the detector won't try to re-insert it.
  *
- * `crossed_at` is set to today (EST). The actual historical first-
- * crossing date isn't reconstructed because it doesn't affect the
- * payout — only the existence of the crossing matters for the monthly
- * notification.
+ * `crossed_at` is each tier's REAL crossing date — the spend_date on which
+ * the ad's cumulative spend first reached the threshold (via
+ * `firstCrossingDate`), NOT the detection/run date. This drives the payout
+ * month, so a crossing that happens late in a month but only settles in FB
+ * the next month is still attributed to the month it actually occurred
+ * (e.g. ad 1901 crossed $13k on 2026-05-30 but FB settled it 2026-06-02 —
+ * it must pay as May, not June).
  *
  * `lookbackDays` (added 2026-05-28 after the FB 3-yr history import
  * phantom-crossing incident) gates "this is a genuinely new crossing"
@@ -56,32 +67,70 @@ export async function detectAndInsertBonusCrossings(opts?: {
   asOfDate?: string; // YYYY-MM-DD, defaults to today EST
   lookbackDays?: number; // if set, only fire when crossing happened in the last N days
 }): Promise<BonusCrossingDetectResult> {
-  const crossedAt = opts?.asOfDate ?? toEstDate(new Date());
+  const asOfDate = opts?.asOfDate ?? toEstDate(new Date());
   const lookbackDays = opts?.lookbackDays;
+  // Crossings whose REAL crossing date is strictly before this cutoff are
+  // pre-window "phantoms" (e.g. the 2026-05-28 FB 3-yr history import that
+  // dropped years of spend into the table at once) and are skipped when
+  // lookbackDays is set. Compared as a YYYY-MM-DD string (ISO dates sort
+  // lexicographically).
+  const beforeCutoff =
+    lookbackDays != null ? isoMinusDays(asOfDate, lookbackDays) : null;
 
   // Lifetime spend per ad — group by ad_number, sum cost_usd, preserve
   // the marketers array (it's the same on every row for a given ad).
-  // When lookbackDays is set, also compute the "before-window" lifetime
-  // (spend strictly before crossedAt - N days) so we can tell whether
-  // the threshold was already exceeded before this window opened.
-  // Quoted-literal interpolation here because sql.raw needs valid SQL —
-  // `2026-05-28::date` is parsed as integer-arithmetic, only `'2026-05-28'::date`
-  // is a date cast. `crossedAt` is internally generated (toEstDate / explicit opts)
-  // so the literal interpolation is safe from injection.
-  const beforeCutoff = lookbackDays != null
-    ? `'${crossedAt}'::date - ${lookbackDays}::int`
-    : null;
   const ads = await db
     .select({
       adNumber: fbAdSpendDaily.adNumber,
       marketers: sql<string[]>`min(${fbAdSpendDaily.marketers})`,
       lifetimeSpendUsd: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}), 0)`,
-      lifetimeBeforeUsd: beforeCutoff
-        ? sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}) filter (where ${fbAdSpendDaily.spendDate} < ${sql.raw(beforeCutoff)}), 0)`
-        : sql<string>`0`,
     })
     .from(fbAdSpendDaily)
     .groupBy(fbAdSpendDaily.adNumber);
+
+  // First pass: which ads hit a tier and so need a real crossing date?
+  const hits: Array<{
+    adNumber: string;
+    marketers: BonusMarketer[];
+    hitTier1: boolean;
+    hitTier2: boolean;
+  }> = [];
+  for (const row of ads) {
+    const spend = Number(row.lifetimeSpendUsd);
+    const marketers = (row.marketers ?? []).filter((m) =>
+      BONUS_MARKETER_SET.has(m),
+    ) as BonusMarketer[];
+    if (marketers.length === 0) continue;
+    const hitTier2 = spend >= BONUS_TIER_2_USD;
+    const hitTier1 = hitTier2 || spend >= BONUS_TIER_1_USD; // T2 implies T1
+    if (!hitTier1) continue;
+    hits.push({ adNumber: row.adNumber, marketers, hitTier1, hitTier2 });
+  }
+
+  // Pull the daily series ONLY for ads that hit a tier, so we can compute
+  // each tier's true crossing date (the day cumulative spend first reached
+  // the threshold). Scoping to hit ads keeps this cheap vs. pulling every
+  // ad's full history every run.
+  const hitAdNumbers = hits.map((h) => h.adNumber);
+  const dailyRows = hitAdNumbers.length
+    ? await db
+        .select({
+          adNumber: fbAdSpendDaily.adNumber,
+          spendDate: fbAdSpendDaily.spendDate,
+          costUsd: fbAdSpendDaily.costUsd,
+        })
+        .from(fbAdSpendDaily)
+        .where(inArray(fbAdSpendDaily.adNumber, hitAdNumbers))
+    : [];
+  const dailyByAd = new Map<
+    string,
+    Array<{ spendDate: string; costUsd: number }>
+  >();
+  for (const r of dailyRows) {
+    const arr = dailyByAd.get(r.adNumber) ?? [];
+    arr.push({ spendDate: r.spendDate, costUsd: Number(r.costUsd) });
+    dailyByAd.set(r.adNumber, arr);
+  }
 
   let scanned = 0;
   let phantomSkipped = 0;
@@ -90,61 +139,57 @@ export async function detectAndInsertBonusCrossings(opts?: {
     marketer: BonusMarketer;
     tier: "tier1" | "tier2";
     amount: number;
+    crossedAt: string;
   }> = [];
 
-  for (const row of ads) {
-    const spend = Number(row.lifetimeSpendUsd);
-    const spendBefore = Number(row.lifetimeBeforeUsd);
-    const marketers = (row.marketers ?? []).filter((m) =>
-      BONUS_MARKETER_SET.has(m),
-    ) as BonusMarketer[];
-    if (marketers.length === 0) continue;
+  for (const hit of hits) {
+    const daily = dailyByAd.get(hit.adNumber) ?? [];
+    const crossT1 = hit.hitTier1
+      ? firstCrossingDate(daily, BONUS_TIER_1_USD)
+      : null;
+    const crossT2 = hit.hitTier2
+      ? firstCrossingDate(daily, BONUS_TIER_2_USD)
+      : null;
 
-    let hitTier1 = false;
-    let hitTier2 = false;
-    if (spend >= BONUS_TIER_2_USD) {
-      hitTier1 = true; // T2 implies T1 — both rows get created
-      hitTier2 = true;
-    } else if (spend >= BONUS_TIER_1_USD) {
-      hitTier1 = true;
-    }
-    if (!hitTier1 && !hitTier2) continue;
+    let fireT1 = crossT1 != null;
+    let fireT2 = crossT2 != null;
 
-    // Phantom-crossing guard. When lookbackDays is set, drop any tier
-    // whose threshold was already crossed before the window opened —
-    // those aren't fresh crossings, they're historical data appearing
-    // in the DB for the first time. Tracked separately for the run log.
-    if (lookbackDays != null) {
-      if (hitTier1 && spendBefore >= BONUS_TIER_1_USD) {
-        hitTier1 = false;
+    // Phantom-crossing guard. When lookbackDays is set, drop any tier whose
+    // REAL crossing date predates the window — that's historical data
+    // surfacing, not a fresh crossing. Tracked separately for the run log.
+    if (beforeCutoff != null) {
+      if (fireT1 && crossT1! < beforeCutoff) {
+        fireT1 = false;
         phantomSkipped++;
       }
-      if (hitTier2 && spendBefore >= BONUS_TIER_2_USD) {
-        hitTier2 = false;
+      if (fireT2 && crossT2! < beforeCutoff) {
+        fireT2 = false;
         phantomSkipped++;
       }
-      if (!hitTier1 && !hitTier2) continue;
     }
+    if (!fireT1 && !fireT2) continue;
 
     scanned++;
-    for (const marketer of marketers) {
+    for (const marketer of hit.marketers) {
       // Hard floor per marketer — silently skip below-floor ads so they
       // never enter the pending queue (Scott 2026-05-20).
-      if (!isAboveBonusFloor(marketer, row.adNumber)) continue;
-      if (hitTier1) {
+      if (!isAboveBonusFloor(marketer, hit.adNumber)) continue;
+      if (fireT1) {
         candidates.push({
-          adNumber: row.adNumber,
+          adNumber: hit.adNumber,
           marketer,
           tier: "tier1",
           amount: bonusAmountAtFullUsd({ marketer, tier: "tier1" }),
+          crossedAt: crossT1!,
         });
       }
-      if (hitTier2) {
+      if (fireT2) {
         candidates.push({
-          adNumber: row.adNumber,
+          adNumber: hit.adNumber,
           marketer,
           tier: "tier2",
           amount: bonusAmountAtFullUsd({ marketer, tier: "tier2" }),
+          crossedAt: crossT2!,
         });
       }
     }
@@ -170,7 +215,7 @@ export async function detectAndInsertBonusCrossings(opts?: {
         adNumber: c.adNumber,
         marketer: c.marketer,
         tier: c.tier,
-        crossedAt,
+        crossedAt: c.crossedAt,
         status: "pending" as const,
         amountUsd: c.amount.toFixed(2),
       })),

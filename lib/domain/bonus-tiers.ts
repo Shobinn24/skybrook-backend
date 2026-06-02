@@ -59,6 +59,33 @@ export function bonusTier(lifetimeSpendUsd: number): BonusTier {
   return "none";
 }
 
+/**
+ * The spend_date on which an ad's CUMULATIVE spend first reaches `threshold`,
+ * or null if it never does. This is the true bonus-crossing date — the day the
+ * ad actually earned the tier — which must drive the payout month so a
+ * crossing that lands late-month but only settles in FB the next month is
+ * still attributed to the month it happened (e.g. ad 1901 crossed $13k on
+ * 2026-05-30 but FB didn't settle that spend until 2026-06-02). Stamping the
+ * detection date instead would mis-pay it as the following month's bonus.
+ *
+ * Sorts by date internally so callers needn't pre-order. Crossing is `>=`
+ * (an exact-threshold cumulative counts).
+ */
+export function firstCrossingDate(
+  dailySpend: ReadonlyArray<{ spendDate: string; costUsd: number }>,
+  threshold: number,
+): string | null {
+  const sorted = [...dailySpend].sort((a, b) =>
+    a.spendDate.localeCompare(b.spendDate),
+  );
+  let cumulative = 0;
+  for (const day of sorted) {
+    cumulative += day.costUsd;
+    if (cumulative >= threshold) return day.spendDate;
+  }
+  return null;
+}
+
 // Main marketers earn the full bonus rate; secondary marketers earn
 // half (Jasper 2026-05-13). 50%-rehook bonuses use the half-of-main
 // rate, applied via the `approved_half` status — the status itself

@@ -8,6 +8,7 @@ import {
   bonusAmountUsd,
   bonusCategory,
   bonusTier,
+  firstCrossingDate,
   isAboveBonusFloor,
   isBonusMarketer,
 } from "@/lib/domain/bonus-tiers";
@@ -175,5 +176,50 @@ describe("isAboveBonusFloor()", () => {
     expect(isAboveBonusFloor("Jacob", "abc")).toBe(false);
     expect(isAboveBonusFloor("Jacob", "")).toBe(false);
     expect(isAboveBonusFloor("Craig", "x")).toBe(false);
+  });
+});
+
+describe("firstCrossingDate()", () => {
+  it("returns the spend_date where cumulative first reaches the threshold", () => {
+    // Cumulative: 05-29=12971.38, 05-30=13007.23 → crosses $13k on 05-30.
+    const daily = [
+      { spendDate: "2026-05-28", costUsd: 12_931.23 - 12_895.12 }, // +36.11
+      { spendDate: "2026-05-27", costUsd: 12_895.12 }, // baseline lump
+      { spendDate: "2026-05-29", costUsd: 40.15 },
+      { spendDate: "2026-05-30", costUsd: 35.85 },
+      { spendDate: "2026-05-31", costUsd: 35.18 },
+    ];
+    expect(firstCrossingDate(daily, BONUS_TIER_1_USD)).toBe("2026-05-30");
+  });
+
+  it("returns null when cumulative never reaches the threshold", () => {
+    const daily = [
+      { spendDate: "2026-05-01", costUsd: 5_000 },
+      { spendDate: "2026-05-02", costUsd: 4_000 },
+    ];
+    expect(firstCrossingDate(daily, BONUS_TIER_1_USD)).toBeNull();
+  });
+
+  it("sorts by date internally (does not assume input is ordered)", () => {
+    // Deliberately unordered. Sorted cumulative: 05-01=7000, 05-02=13500 (crosses),
+    // 05-03=16500. Crossing is the MIDDLE date, so a naive unsorted scan would miss it.
+    const daily = [
+      { spendDate: "2026-05-01", costUsd: 7_000 },
+      { spendDate: "2026-05-03", costUsd: 3_000 },
+      { spendDate: "2026-05-02", costUsd: 6_500 },
+    ];
+    expect(firstCrossingDate(daily, BONUS_TIER_1_USD)).toBe("2026-05-02");
+  });
+
+  it("treats an exact-threshold cumulative as crossed (>=)", () => {
+    const daily = [
+      { spendDate: "2026-05-01", costUsd: 7_000 },
+      { spendDate: "2026-05-02", costUsd: 6_000 }, // cum exactly 13000
+    ];
+    expect(firstCrossingDate(daily, BONUS_TIER_1_USD)).toBe("2026-05-02");
+  });
+
+  it("returns null for an empty series", () => {
+    expect(firstCrossingDate([], BONUS_TIER_1_USD)).toBeNull();
   });
 });

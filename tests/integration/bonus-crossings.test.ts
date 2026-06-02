@@ -86,7 +86,38 @@ describe("detectAndInsertBonusCrossings", () => {
     expect(rows[0].tier).toBe("tier1");
     expect(rows[0].status).toBe("pending");
     expect(Number(rows[0].amountUsd)).toBe(500); // Craig (main) T1 = $500
-    expect(rows[0].crossedAt).toBe("2026-05-13");
+    // crossed_at is the REAL crossing date, not the run date: $15k split
+    // 7.5k/7.5k across 04-01/04-02 → cumulative crosses $13k on 04-02.
+    expect(rows[0].crossedAt).toBe("2026-04-02");
+  });
+
+  it("stamps crossed_at with each tier's real crossing date, not the run date", async () => {
+    const rawId = await makeRawPull();
+    // Cumulative: 03-01=12000 (<T1), 03-02=17000 (crosses T1), 03-10=67000 (crosses T2).
+    await db.insert(fbAdSpendDaily).values(
+      [
+        { spendDate: "2026-03-01", costUsd: "12000.0000" },
+        { spendDate: "2026-03-02", costUsd: "5000.0000" },
+        { spendDate: "2026-03-10", costUsd: "50000.0000" },
+      ].map((d) => ({
+        adNumber: "1901",
+        adName: "Ad 1901",
+        adNameRaw: "Ad 1901",
+        adLink: null,
+        marketers: ["Raul"],
+        spendDate: d.spendDate,
+        costUsd: d.costUsd,
+        sourcePullId: rawId,
+      })),
+    );
+
+    // Run "today" is well after the crossings; with no lookback both fire.
+    await detectAndInsertBonusCrossings({ asOfDate: "2026-05-13" });
+
+    const rows = await db.select().from(bonusAwards).orderBy(bonusAwards.tier);
+    const byTier = Object.fromEntries(rows.map((r) => [r.tier, r.crossedAt]));
+    expect(byTier.tier1).toBe("2026-03-02"); // not 2026-05-13
+    expect(byTier.tier2).toBe("2026-03-10"); // not 2026-05-13
   });
 
   it("inserts both T1 and T2 awards when lifetime spend crosses $65k", async () => {
