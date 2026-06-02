@@ -10,6 +10,7 @@ import {
   type BonusMarketer,
   isAboveBonusFloor,
   isBonusMarketer,
+  payoutMonthFromLabel,
 } from "@/lib/domain/bonus-tiers";
 import { toEstDate } from "@/lib/tz";
 
@@ -606,12 +607,18 @@ export type BonusSummary = {
  * "YYYY-MM" derived from the batch's `sent_at` in EST.
  */
 export async function getBonusSummary(): Promise<BonusSummary> {
-  // Aggregate amounts at (marketer × YYYY-MM) granularity. EST month
-  // bucket matches the FB ad-spend day boundary used elsewhere.
+  // Aggregate amounts at (marketer × YYYY-MM) granularity, where the month
+  // is the INTENDED payout month (from period_label, e.g. "May 2026"), NOT
+  // when the batch was sent. Reconciliation runs a day or two into the next
+  // month (the May payout was sent 2026-06-01), so grouping on sent_at would
+  // land a whole month's bonuses in the wrong column. `sentMonth` is the
+  // EST sent_at month, used only as a fallback for non-"Month YYYY" labels
+  // (e.g. the historical-backfill batch).
   const rows = await db
     .select({
       marketer: bonusAwards.marketer,
-      month: sql<string>`to_char(${bonusNotificationBatches.sentAt} at time zone 'America/New_York', 'YYYY-MM')`,
+      periodLabel: bonusNotificationBatches.periodLabel,
+      sentMonth: sql<string>`to_char(${bonusNotificationBatches.sentAt} at time zone 'America/New_York', 'YYYY-MM')`,
       totalUsd: sql<string>`sum(${bonusAwards.amountUsd})`,
     })
     .from(bonusAwards)
@@ -622,6 +629,7 @@ export async function getBonusSummary(): Promise<BonusSummary> {
     .where(sql`${bonusAwards.status} IN ('approved_full','approved_half')`)
     .groupBy(
       bonusAwards.marketer,
+      bonusNotificationBatches.periodLabel,
       sql`to_char(${bonusNotificationBatches.sentAt} at time zone 'America/New_York', 'YYYY-MM')`,
     );
 
@@ -631,9 +639,10 @@ export async function getBonusSummary(): Promise<BonusSummary> {
 
   for (const r of rows) {
     if (!isBonusMarketer(r.marketer)) continue;
-    monthSet.add(r.month);
+    const month = payoutMonthFromLabel(r.periodLabel) ?? r.sentMonth;
+    monthSet.add(month);
     const cells = cellByMarketer.get(r.marketer)!;
-    cells[r.month] = (cells[r.month] ?? 0) + Number(r.totalUsd);
+    cells[month] = (cells[month] ?? 0) + Number(r.totalUsd);
   }
 
   const months = Array.from(monthSet).sort().reverse();

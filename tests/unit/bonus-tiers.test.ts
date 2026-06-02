@@ -11,6 +11,7 @@ import {
   firstCrossingDate,
   isAboveBonusFloor,
   isBonusMarketer,
+  payoutMonthFromLabel,
 } from "@/lib/domain/bonus-tiers";
 
 describe("BONUS_MARKETERS roster", () => {
@@ -221,5 +222,30 @@ describe("firstCrossingDate()", () => {
 
   it("returns null for an empty series", () => {
     expect(firstCrossingDate([], BONUS_TIER_1_USD)).toBeNull();
+  });
+});
+
+describe("payoutMonthFromLabel()", () => {
+  it("parses a 'Month YYYY' payout label to YYYY-MM", () => {
+    expect(payoutMonthFromLabel("May 2026")).toBe("2026-05");
+    expect(payoutMonthFromLabel("April 2026")).toBe("2026-04");
+    expect(payoutMonthFromLabel("December 2026")).toBe("2026-12");
+    expect(payoutMonthFromLabel("January 2027")).toBe("2027-01");
+  });
+
+  it("is case-insensitive and tolerates surrounding whitespace", () => {
+    expect(payoutMonthFromLabel("  may 2026 ")).toBe("2026-05");
+    expect(payoutMonthFromLabel("OCTOBER 2026")).toBe("2026-10");
+  });
+
+  it("returns null for labels that aren't a clean 'Month YYYY'", () => {
+    // The historical-backfill batch label must NOT parse — it falls back
+    // to sent_at month in the summary.
+    expect(payoutMonthFromLabel("Historical backfill 2026-05-21")).toBeNull();
+    expect(payoutMonthFromLabel("test")).toBeNull();
+    expect(payoutMonthFromLabel("May")).toBeNull();
+    expect(payoutMonthFromLabel("2026-05")).toBeNull();
+    expect(payoutMonthFromLabel("")).toBeNull();
+    expect(payoutMonthFromLabel("Maybe 2026")).toBeNull(); // not a real month
   });
 });

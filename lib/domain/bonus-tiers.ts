@@ -86,6 +86,33 @@ export function firstCrossingDate(
   return null;
 }
 
+const PAYOUT_MONTH_NAMES = [
+  "january", "february", "march", "april", "may", "june",
+  "july", "august", "september", "october", "november", "december",
+] as const;
+
+/**
+ * Parse a notification batch's `period_label` (the intended payout month,
+ * e.g. "May 2026") into a YYYY-MM bucket, or null if it isn't a clean
+ * "<Month> YYYY".
+ *
+ * The monthly scoreboard must bucket payouts by the month they are FOR, not
+ * by when the batch happened to be sent — reconciliation almost always runs a
+ * day or two into the following month (e.g. the May payout was sent
+ * 2026-06-01), so grouping on sent_at lands a whole month's bonuses in the
+ * wrong column. Non-month labels (e.g. "Historical backfill 2026-05-21")
+ * return null so the caller can fall back to sent_at month.
+ */
+export function payoutMonthFromLabel(label: string): string | null {
+  const m = label.trim().toLowerCase().match(/^([a-z]+)\s+(\d{4})$/);
+  if (!m) return null;
+  const monthIdx = PAYOUT_MONTH_NAMES.indexOf(
+    m[1] as (typeof PAYOUT_MONTH_NAMES)[number],
+  );
+  if (monthIdx < 0) return null;
+  return `${m[2]}-${String(monthIdx + 1).padStart(2, "0")}`;
+}
+
 // Main marketers earn the full bonus rate; secondary marketers earn
 // half (Jasper 2026-05-13). 50%-rehook bonuses use the half-of-main
 // rate, applied via the `approved_half` status — the status itself

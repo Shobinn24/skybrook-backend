@@ -638,6 +638,7 @@ describe("getBonusTracker", () => {
       marketer: string;
       totalUsd: number;
       sentAt: Date;
+      periodLabel?: string;
     }) {
       const [raw] = await db
         .insert(rawPulls)
@@ -673,7 +674,7 @@ describe("getBonusTracker", () => {
       }
       const result = await sendNotification({
         sentBy: "jasper",
-        periodLabel: "test",
+        periodLabel: opts.periodLabel ?? "test",
         sendWhatsApp: async () => ({ ok: true }),
       });
       if (result.skipped) {
@@ -737,6 +738,40 @@ describe("getBonusTracker", () => {
       expect(summary.monthTotals["2026-04"]).toBe(4000); // Craig 500 + Raul 3500
       expect(summary.monthTotals["2026-05"]).toBe(500);
       expect(summary.grandTotal).toBe(4500);
+    });
+
+    it("buckets by the intended payout month (period_label), not when it was sent", async () => {
+      // Real-world case: the May payout is reconciled and sent on June 1.
+      // Labelled "May 2026" but sent_at is in June. It must show under May.
+      await approveAndSend({
+        adNumber: "300",
+        marketer: "Craig",
+        totalUsd: 14_000, // T1 → $500
+        periodLabel: "May 2026",
+        sentAt: new Date("2026-06-01T17:49:00Z"), // June 1, 1:49pm EDT
+      });
+
+      const summary = await getBonusSummary();
+      expect(summary.months).toEqual(["2026-05"]); // NOT 2026-06
+      const craig = summary.rows.find((r) => r.marketer === "Craig")!;
+      expect(craig.cells["2026-05"]).toBe(500);
+      expect(craig.cells["2026-06"]).toBeUndefined();
+      expect(summary.monthTotals["2026-05"]).toBe(500);
+    });
+
+    it("falls back to sent_at month for non-month labels (e.g. historical backfill)", async () => {
+      await approveAndSend({
+        adNumber: "301",
+        marketer: "Craig",
+        totalUsd: 14_000,
+        periodLabel: "Historical backfill 2026-05-21",
+        sentAt: new Date("2026-05-27T20:59:00Z"), // → 2026-05 via sent_at
+      });
+
+      const summary = await getBonusSummary();
+      expect(summary.months).toEqual(["2026-05"]);
+      const craig = summary.rows.find((r) => r.marketer === "Craig")!;
+      expect(craig.cells["2026-05"]).toBe(500);
     });
   });
 
