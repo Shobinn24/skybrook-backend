@@ -762,9 +762,21 @@ export const AD_SPEND_TABS = [
   "Men AL",
   "Shapewear AL",
   "Super HW AL",
+  "HRS AL",
 ] as const;
 
 export type AdSpendTab = (typeof AD_SPEND_TABS)[number];
+
+// Tabs wired into the ingest before any spend exists yet (newly connected
+// data sources). They are pulled normally, but stale-signals — the per-tab
+// freshness P1 (freshness-check.ts) and the /performance per-tab badge
+// (performance.ts) — are SUPPRESSED while the tab has zero rows, so a tab
+// connected ahead of its first dollar doesn't page on a null max(date).
+// The moment the tab has any dated row, full staleness coverage resumes.
+// "HRS AL": HRS AppLovin connected 2026-06-03 so spend imports the day it
+// starts, even though AppLovin HRS spend is $0 today.
+export const AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA: ReadonlySet<string> =
+  new Set(["HRS AL"]);
 
 // Supermetrics returns error messages INLINE in the value cells when a
 // data source goes offline (license lapse, quota exceeded, connector

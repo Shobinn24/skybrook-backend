@@ -46,7 +46,10 @@ import {
 import { logger } from "@/lib/logger";
 import { postAlert, resolveAlert } from "@/lib/notifications/slack";
 import { getPullHistoryWithDriftForSource } from "@/lib/queries/pipeline";
-import { AD_SPEND_TABS } from "@/lib/sources/sheets";
+import {
+  AD_SPEND_TABS,
+  AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA,
+} from "@/lib/sources/sheets";
 import { toEstDate } from "@/lib/tz";
 
 export type FreshnessCheck = {
@@ -144,6 +147,13 @@ export async function evaluateFreshness(opts?: {
     adSpendMaxByProduct.set(row.product, row.max);
   }
   for (const tab of AD_SPEND_TABS) {
+    const maxDate = adSpendMaxByProduct.get(tab) ?? null;
+    // A newly-wired tab with no data yet (null max date) would otherwise fail
+    // every tick. Suppress the alert until its first dated row lands; once it
+    // has data, normal staleness applies (a tab that froze after having data
+    // is a real outage and still pages).
+    if (maxDate === null && AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA.has(tab))
+      continue;
     // Slugify for dedup key — Slack-safe (no spaces) and readable.
     const slug = tab.replace(/\s+/g, "_").toLowerCase();
     checks.push(
@@ -151,7 +161,7 @@ export async function evaluateFreshness(opts?: {
         `ad_spend_daily.product.${slug}`,
         `freshness:ad_spend_daily:product:${slug}`,
         `ad_spend_daily (${tab}) is stale`,
-        adSpendMaxByProduct.get(tab) ?? null,
+        maxDate,
         { table: "ad_spend_daily", product: tab },
       ),
     );

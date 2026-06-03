@@ -156,6 +156,46 @@ describe("runFreshnessCheck", () => {
     expect(result.alertsFired).toBeGreaterThan(0);
   });
 
+  // HRS AppLovin ("HRS AL") is wired into the ingest before any HRS AppLovin
+  // spend exists, so Scott can "start importing AL now, even if zero". An
+  // empty newly-wired tab has a null max(date), which would otherwise fire a
+  // P1 every cron tick — so HRS AL is exempt from the stale check UNTIL its
+  // first dated row arrives. Once it has data, normal staleness resumes.
+  it("exempts HRS AL from the stale check while empty, then covers it once it has data", async () => {
+    // Empty HRS AL → no stale check emitted at all (no false P1).
+    const empty = await evaluateFreshness({ now: fixedNow });
+    expect(
+      empty.checks.find((c) => c.name === "ad_spend_daily.product.hrs_al"),
+    ).toBeUndefined();
+
+    // A current-dated $0 row → the check appears and passes.
+    await db.insert(adSpendDaily).values({
+      product: "HRS AL",
+      spendDate: YESTERDAY_EST,
+      costUsd: "0",
+      sourcePullId: seededRawPullId,
+    });
+    const fresh = await evaluateFreshness({ now: fixedNow });
+    expect(
+      fresh.checks.find((c) => c.name === "ad_spend_daily.product.hrs_al")?.status,
+    ).toBe("pass");
+  });
+
+  it("flags HRS AL stale once it has had data and then goes stale", async () => {
+    // Exemption only covers the empty state — a tab that HAD data and then
+    // froze is a real outage and must still page.
+    await db.insert(adSpendDaily).values({
+      product: "HRS AL",
+      spendDate: TWO_DAYS_AGO_EST,
+      costUsd: "0",
+      sourcePullId: seededRawPullId,
+    });
+    const result = await evaluateFreshness({ now: fixedNow });
+    expect(
+      result.checks.find((c) => c.name === "ad_spend_daily.product.hrs_al")?.status,
+    ).toBe("fail");
+  });
+
   it("detects cross-channel skew when shopify_us is fresh but shopify_intl lags >1 day", async () => {
     // Simulates the May-6 mixed-time-view bug class.
     await db.insert(dailySales).values([

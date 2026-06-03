@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { adSpendDaily, dailySales, rawPulls, skus } from "@/lib/db/schema";
+import { AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA } from "@/lib/sources/sheets";
 import { toEstDate } from "@/lib/tz";
 
 export type SalesChannel = "shopify_us" | "shopify_intl";
@@ -37,9 +38,11 @@ const PRODUCT_CONFIG = {
     // "HRS" tab in the AD_SPEND sheet (Supermetrics query: FB CS6, metric
     // Amount spent, split by Date, filter Ad name CONTAINS HRS) feeds this
     // card; "HRS" is also registered in AD_SPEND_TABS so the runner
-    // ingests it. No AppLovin HRS spend exists yet, so "HRS AL" is
-    // intentionally omitted until that tab is created + populated.
-    spendTabs: ["HRS"],
+    // ingests it. "HRS AL" (AppLovin) was wired 2026-06-03 so spend imports
+    // the day it starts even though AppLovin HRS spend is $0 today; it is
+    // exempt from the per-tab stale badge until its first dated row (see
+    // AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA).
+    spendTabs: ["HRS", "HRS AL"],
     productNamePatterns: ["High Rise Short%"],
   },
 } as const;
@@ -298,8 +301,14 @@ export async function getPerformanceRollup(opts: {
       const sourceError = errorByTab.get(tab);
       const latestDate = maxDateByTab.get(tab) ?? null;
       const behind = daysBehind(latestDate, realYesterdayEst);
+      // A newly-wired tab with no data yet (null latestDate) is exempt from
+      // the stale badge until its first dated row — don't flag HRS AppLovin
+      // as stale just because it hasn't spent its first dollar.
+      const exemptEmpty =
+        latestDate === null &&
+        AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA.has(tab);
       const staleness =
-        behind >= STALE_DAYS
+        behind >= STALE_DAYS && !exemptEmpty
           ? { latestDate, daysBehind: behind === Infinity ? -1 : behind }
           : undefined;
       const entry: PerformanceRow["spendByTab"][number] = { tab, spendUsd: spendUsdForTab };

@@ -39,9 +39,15 @@ describe("getPerformanceRollup — High Rise Short", () => {
     const hrs = res.rows.find((r) => r.key === "hrshort");
 
     expect(hrs).toBeDefined();
+    // Total is FB ($732.72) + AppLovin ($0, no spend yet) = $732.72.
     expect(hrs!.spendUsd).toBeCloseTo(732.72, 2);
     expect(hrs!.spendByTab).toEqual([
       expect.objectContaining({ tab: "HRS", spendUsd: 732.72 }),
+      expect.objectContaining({ tab: "HRS AL", spendUsd: 0 }),
     ]);
+    // HRS AppLovin is wired but has no data yet — it must NOT show a stale
+    // badge (exempt until its first dated row).
+    const hrsAl = hrs!.spendByTab.find((b) => b.tab === "HRS AL");
+    expect(hrsAl?.staleness).toBeUndefined();
   });
 });
