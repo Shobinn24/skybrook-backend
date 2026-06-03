@@ -758,6 +758,7 @@ export const AD_SPEND_TABS = [
   "Men",
   "Shapewear",
   "SuperHW",
+  "HRS",
   "Men AL",
   "Shapewear AL",
   "Super HW AL",

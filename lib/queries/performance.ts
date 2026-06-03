@@ -33,15 +33,13 @@ const PRODUCT_CONFIG = {
   },
   hrshort: {
     label: "High Rise Short",
-    // No spend tabs yet. HRS launched EV INTL 2026-05-22 and is selling,
-    // but there is no HRS tab in the Supermetrics ad-spend sheet (no HRS
-    // ads are named/isolated in the account as of 2026-05-31), so spend
-    // shows $0 until one exists. When an "HRS" / "HRS AL" tab is created
-    // AND added to AD_SPEND_TABS in lib/sources/sheets.ts, list its
-    // product key(s) here and spend lights up automatically. Left empty
-    // (not placeholder tab names) so the card doesn't show a false
-    // "stale feed" badge on a tab that never lands.
-    spendTabs: [] as string[],
+    // HRS launched EV INTL 2026-05-22 and began FB spend 2026-06-02. The
+    // "HRS" tab in the AD_SPEND sheet (Supermetrics query: FB CS6, metric
+    // Amount spent, split by Date, filter Ad name CONTAINS HRS) feeds this
+    // card; "HRS" is also registered in AD_SPEND_TABS so the runner
+    // ingests it. No AppLovin HRS spend exists yet, so "HRS AL" is
+    // intentionally omitted until that tab is created + populated.
+    spendTabs: ["HRS"],
     productNamePatterns: ["High Rise Short%"],
   },
 } as const;
