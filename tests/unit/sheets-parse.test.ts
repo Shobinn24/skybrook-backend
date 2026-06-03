@@ -636,6 +636,36 @@ describe("parseAdSpendTab", () => {
     expect(sourceErrors[0].signature).not.toContain("scott@skybrookecommerce.com");
   });
 
+  // A tab connected ahead of its first spend (e.g. HRS AppLovin) runs the
+  // query fine but its filter matches nothing, so Supermetrics writes
+  // "Error: No data found. Your filters excluded all data..." into the cell.
+  // That is NOT an upstream outage — it must NOT fire a P1 source-error
+  // alert (genuine staleness is covered separately by the date freshness
+  // check). Only real license/quota/auth errors should be flagged.
+  it("does NOT flag a benign 'no data / filters excluded all data' row as a sourceError", () => {
+    const grid = [
+      ["Date", "Spend"],
+      [
+        "Error: No data found. Your filters excluded all data returned by " +
+          "Axon by AppLovin.",
+        "",
+      ],
+    ];
+    const { rows, sourceErrors } = parseAdSpendTab("HRS AL", grid);
+    expect(rows).toEqual([]);
+    expect(sourceErrors).toEqual([]);
+  });
+
+  it("still flags a real license error even though both mention the data source", () => {
+    // Guard: the benign-exclusion must not swallow genuine outages.
+    const grid = [
+      ["Date", "Spend"],
+      [SUPERMETRICS_LICENSE_ERROR, ""],
+    ];
+    const { sourceErrors } = parseAdSpendTab("Super HW AL", grid);
+    expect(sourceErrors).toHaveLength(1);
+  });
+
   it("still parses valid rows when an error row is interspersed", () => {
     // Defensive: if Supermetrics returns mostly-good data with one
     // error row in the middle, we want the good rows landed AND an

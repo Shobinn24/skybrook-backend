@@ -790,6 +790,14 @@ export const AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA: ReadonlySet<string> =
 // dropping it (which masks the outage — see 2026-05-22 incident).
 const SUPERMETRICS_ERROR_PREFIX = /^Error[:\s]/i;
 const SUPERMETRICS_HINT = /license|data source|quota|Supermetrics/i;
+// A query that runs fine but whose filter matches nothing makes Supermetrics
+// write "Error: No data found. Your filters excluded all data..." into the
+// cell. That's a benign empty result (e.g. a product tab connected ahead of
+// its first spend, like HRS AppLovin), NOT an upstream outage — so it must
+// not raise a P1 source-error alert. Genuine staleness on a tab that SHOULD
+// have data is caught by the per-product date freshness check instead.
+const SUPERMETRICS_BENIGN_NO_DATA =
+  /no data found|filters? excluded all data|returned no data/i;
 
 function detectSupermetricsError(
   rawDate: string,
@@ -803,6 +811,9 @@ function detectSupermetricsError(
   ) {
     return null;
   }
+  // Benign empty-filter result — not an outage. Real license/quota/auth
+  // errors use different wording and still fall through to be flagged.
+  if (SUPERMETRICS_BENIGN_NO_DATA.test(combined)) return null;
   // Strip parenthetical sub-clauses (user IDs, team IDs vary per env) so
   // the signature is stable for Slack dedup across accounts and re-runs.
   return combined
