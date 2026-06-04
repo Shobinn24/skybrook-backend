@@ -13,6 +13,7 @@ import {
 import { decomposePackSku } from "@/lib/domain/sku-pack";
 import { extractMarketers } from "@/lib/domain/fb-marketers";
 import type { SourceRunner } from "@/lib/jobs/ingest";
+import { postAlert, type AlertInput } from "@/lib/notifications/slack";
 import { toEstDate } from "@/lib/tz";
 
 // Take the dash→x cosmetic rename from `decomposePackSku` but skip the
@@ -1293,6 +1294,37 @@ export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
   };
 };
 
+// Month-collapse guard thresholds. A completed past month re-pulls at
+// ~100% of its prior total (±small attribution drift); the current
+// in-progress month only grows pull-over-pull. So a previously-material
+// month whose incoming total drops below half is never legitimate — it
+// signals a broken/partial source pull (e.g. a Supermetrics query that
+// timed out mid-write and left a month hollow). We refuse the overwrite
+// rather than wipe good data. Floor of $50k sits well below the smallest
+// real month on record (~$154k) and well above hollow/noise (~$26k).
+const FB_MONTH_COLLAPSE_RATIO = 0.5;
+const FB_MONTH_MATERIAL_FLOOR_USD = 50_000;
+
+/**
+ * Pure detector: given incoming and existing per-month totals (keyed
+ * "YYYY-MM"), return the months whose incoming total has collapsed
+ * against a material existing total. No DB, no I/O — unit-testable.
+ */
+export function detectCollapsedMonths(
+  incomingByMonth: ReadonlyMap<string, number>,
+  existingByMonth: ReadonlyMap<string, number>,
+): Array<{ month: string; existing: number; incoming: number }> {
+  const collapsed: Array<{ month: string; existing: number; incoming: number }> = [];
+  for (const [month, existing] of existingByMonth) {
+    if (existing < FB_MONTH_MATERIAL_FLOOR_USD) continue;
+    const incoming = incomingByMonth.get(month) ?? 0;
+    if (incoming < FB_MONTH_COLLAPSE_RATIO * existing) {
+      collapsed.push({ month, existing, incoming });
+    }
+  }
+  return collapsed;
+}
+
 /**
  * Refresh the live window of `fb_ad_spend_daily` from a freshly-parsed
  * current-year pull, leaving everything below the window untouched.
@@ -1307,16 +1339,66 @@ export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
  *
  * An empty `aggregated` (e.g. a Supermetrics error pull) is a no-op: we
  * do NOT delete, so a bad pull can't wipe good current-year data.
+ *
+ * A *partially* hollow pull (e.g. a year-to-date Supermetrics query that
+ * timed out mid-write, leaving a whole month blank) is NOT empty, so the
+ * empty-guard above doesn't catch it. The month-collapse guard below
+ * does: if any previously-material month's incoming total has collapsed,
+ * we fire a P1 and abort the whole replace rather than overwrite good
+ * data with blanks. `opts.alert` is injectable for tests.
  */
 export async function replaceFbAdSpendLiveWindow(
   aggregated: ReadonlyArray<FbAdAggregated>,
   rawId: string,
+  opts: { alert?: (input: AlertInput) => Promise<unknown> } = {},
 ): Promise<void> {
   if (aggregated.length === 0) return;
 
   const liveMinDate = aggregated
     .flatMap((a) => a.dailySpend.map((d) => d.spendDate))
     .reduce((min, d) => (d < min ? d : min));
+
+  // Month-collapse guard: compare incoming per-month totals against what's
+  // already in the DB for the same live window. A material month dropping
+  // below half = a broken pull; refuse + alert instead of wiping.
+  const incomingByMonth = new Map<string, number>();
+  for (const ad of aggregated) {
+    for (const d of ad.dailySpend) {
+      const m = d.spendDate.slice(0, 7);
+      incomingByMonth.set(m, (incomingByMonth.get(m) ?? 0) + d.costUsd);
+    }
+  }
+  const existingRows = await db
+    .select({
+      month: sql<string>`to_char(${fbAdSpendDaily.spendDate}, 'YYYY-MM')`,
+      total: sql<number>`sum(${fbAdSpendDaily.costUsd})::float`,
+    })
+    .from(fbAdSpendDaily)
+    .where(gte(fbAdSpendDaily.spendDate, liveMinDate))
+    .groupBy(sql`to_char(${fbAdSpendDaily.spendDate}, 'YYYY-MM')`);
+  const existingByMonth = new Map<string, number>(
+    existingRows.map((r) => [r.month, Number(r.total)]),
+  );
+  const collapsed = detectCollapsedMonths(incomingByMonth, existingByMonth);
+  if (collapsed.length > 0) {
+    const alert = opts.alert ?? postAlert;
+    const detail = collapsed
+      .map((c) => `${c.month}: $${Math.round(c.existing).toLocaleString()} -> $${Math.round(c.incoming).toLocaleString()}`)
+      .join("; ");
+    await alert({
+      severity: "p1",
+      channel: "alerts",
+      dedupKey: "anomaly:fb_ad_spend_month_collapse",
+      title: "FB ad-spend ingest blocked: a month total collapsed",
+      fields: {
+        blocked_months: collapsed.map((c) => c.month).join(", "),
+        detail,
+        action:
+          "Ingest skipped to protect existing data. Likely a broken/partial source pull. Fix the source, then re-run.",
+      },
+    });
+    return; // ABORT: do not delete or insert.
+  }
 
   await db.transaction(async (tx) => {
     await tx

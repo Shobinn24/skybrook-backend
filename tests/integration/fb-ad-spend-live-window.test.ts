@@ -83,4 +83,52 @@ describe("replaceFbAdSpendLiveWindow", () => {
     const count = await db.select({ n: sql<number>`count(*)::int` }).from(fbAdSpendDaily);
     expect(count[0].n).toBe(2);
   });
+
+  it("BLOCKS the write and leaves data intact when a month total collapses", async () => {
+    const seedPull = await makeRawPull();
+    // Material May already in the DB ($100k, above the $50k floor).
+    await db.insert(fbAdSpendDaily).values([
+      { adNumber: "200", adName: "live", adNameRaw: "(HW) live", adLink: null, marketers: [], spendDate: "2026-05-01", costUsd: "100000", sourcePullId: seedPull },
+    ]);
+
+    // A hollow pull for the same month ($1k) — would wipe May if allowed.
+    const alertCalls: Array<{ severity: string; dedupKey: string }> = [];
+    const spyAlert = async (input: { severity: string; dedupKey: string }) => {
+      alertCalls.push(input);
+      return { fired: true as const };
+    };
+
+    await replaceFbAdSpendLiveWindow(
+      [ad("200", "hollow", [["2026-05-01", 1000]])],
+      await makeRawPull(),
+      { alert: spyAlert as never },
+    );
+
+    // DB untouched — still the original $100k, not the hollow $1k.
+    const may = await db.select({ t: sql<number>`coalesce(sum(cost_usd),0)::float` }).from(fbAdSpendDaily);
+    expect(may[0].t).toBe(100000);
+    // A single P1 collapse alert fired.
+    expect(alertCalls).toHaveLength(1);
+    expect(alertCalls[0].severity).toBe("p1");
+    expect(alertCalls[0].dedupKey).toBe("anomaly:fb_ad_spend_month_collapse");
+  });
+
+  it("writes normally when a re-pull is healthy (no false block)", async () => {
+    const seedPull = await makeRawPull();
+    await db.insert(fbAdSpendDaily).values([
+      { adNumber: "200", adName: "live", adNameRaw: "(HW) live", adLink: null, marketers: [], spendDate: "2026-05-01", costUsd: "100000", sourcePullId: seedPull },
+    ]);
+
+    const alertCalls: unknown[] = [];
+    await replaceFbAdSpendLiveWindow(
+      [ad("200", "fresh", [["2026-05-01", 95000]])],
+      await makeRawPull(),
+      { alert: (async (i: unknown) => { alertCalls.push(i); return { fired: true }; }) as never },
+    );
+
+    // Overwrote with the fresh (healthy) value; no alert.
+    const may = await db.select({ t: sql<number>`coalesce(sum(cost_usd),0)::float` }).from(fbAdSpendDaily);
+    expect(may[0].t).toBe(95000);
+    expect(alertCalls).toHaveLength(0);
+  });
 });
