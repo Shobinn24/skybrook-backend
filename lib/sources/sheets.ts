@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { google, type sheets_v4 } from "googleapis";
-import { gte, sql } from "drizzle-orm";
+import { eq, gte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   adSpendDaily,
@@ -655,6 +655,72 @@ export function parseIncomingGrid(grid: unknown[][], _todayYmd: string): ParseIn
   return { rows, poColumns, skippedColumns, receipts };
 }
 
+// When the sheet nudges a received PO's ETA (observed: KAI Sec Mar26 + KAI
+// Mens Apr26 drifted 06-03 -> 06-04 after the auto-receipt was recorded), the
+// receipt's natural key (name, destination, expectedArrival) no longer matches
+// any current shipment, so the PO falsely shows as overdue. This re-points each
+// orphaned receipt to the nearest current shipment ETA with the same
+// name+destination, within a tolerance. Pure + unit-tested; applied in the
+// incoming ingest after the shipment truncate-replace.
+const RECEIPT_REKEY_TOLERANCE_DAYS = 7;
+
+export function reconcileReceiptKeys(
+  shipments: ReadonlyArray<{ shipmentName: string; destination: string; expectedArrival: string }>,
+  receipts: ReadonlyArray<{
+    id: string;
+    shipmentName: string;
+    destination: string;
+    expectedArrival: string;
+  }>,
+  toleranceDays: number = RECEIPT_REKEY_TOLERANCE_DAYS,
+): Array<{ id: string; newExpectedArrival: string }> {
+  const key = (name: string, dest: string, eta: string) => `${name} ${dest} ${eta}`;
+  const shipmentKeys = new Set(
+    shipments.map((s) => key(s.shipmentName, s.destination, s.expectedArrival)),
+  );
+  const etasByNameDest = new Map<string, string[]>();
+  for (const s of shipments) {
+    const k = `${s.shipmentName} ${s.destination}`;
+    const arr = etasByNameDest.get(k) ?? [];
+    arr.push(s.expectedArrival);
+    etasByNameDest.set(k, arr);
+  }
+  // ETAs already claimed by a receipt (so we never put two receipts on one
+  // shipment). Seeded with every receipt's current ETA, then grown as we
+  // assign re-keys.
+  const occupied = new Set<string>(
+    receipts.map((rec) => key(rec.shipmentName, rec.destination, rec.expectedArrival)),
+  );
+  const dayDiff = (a: string, b: string) =>
+    Math.abs((Date.parse(a) - Date.parse(b)) / 86_400_000);
+
+  const out: Array<{ id: string; newExpectedArrival: string }> = [];
+  // Deterministic: earliest receipt ETA wins a contested slot; ties by id.
+  const ordered = [...receipts].sort(
+    (a, b) => a.expectedArrival.localeCompare(b.expectedArrival) || a.id.localeCompare(b.id),
+  );
+  for (const rec of ordered) {
+    if (shipmentKeys.has(key(rec.shipmentName, rec.destination, rec.expectedArrival))) continue;
+    const candidates = etasByNameDest.get(`${rec.shipmentName} ${rec.destination}`) ?? [];
+    let best: string | null = null;
+    let bestDiff = Infinity;
+    for (const eta of candidates) {
+      const diff = dayDiff(rec.expectedArrival, eta);
+      if (diff > toleranceDays) continue;
+      if (occupied.has(key(rec.shipmentName, rec.destination, eta))) continue;
+      if (diff < bestDiff || (diff === bestDiff && best !== null && eta < best)) {
+        best = eta;
+        bestDiff = diff;
+      }
+    }
+    if (best !== null) {
+      out.push({ id: rec.id, newExpectedArrival: best });
+      occupied.add(key(rec.shipmentName, rec.destination, best));
+    }
+  }
+  return out;
+}
+
 export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
   const sheetId = process.env.INCOMING_PO_SHEET_ID;
   if (!sheetId) throw new Error("sheets_incoming: missing INCOMING_PO_SHEET_ID");
@@ -762,6 +828,35 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
                 incomingReceipts.expectedArrival,
               ],
             });
+        }
+        // Re-point receipts orphaned by an ETA nudge to the nearest current
+        // shipment (same name+destination). Read receipts back inside the txn
+        // so both sheet-receipts (above) and auto-receipts are reconciled.
+        const currentShipments = Array.from(
+          new Map(
+            rows.map((row) => [
+              `${row.shipmentName} ${row.destination} ${row.expectedArrival}`,
+              {
+                shipmentName: row.shipmentName,
+                destination: row.destination,
+                expectedArrival: row.expectedArrival,
+              },
+            ]),
+          ).values(),
+        );
+        const existingReceipts = await tx
+          .select({
+            id: incomingReceipts.id,
+            shipmentName: incomingReceipts.shipmentName,
+            destination: incomingReceipts.destination,
+            expectedArrival: incomingReceipts.expectedArrival,
+          })
+          .from(incomingReceipts);
+        for (const rk of reconcileReceiptKeys(currentShipments, existingReceipts)) {
+          await tx
+            .update(incomingReceipts)
+            .set({ expectedArrival: rk.newExpectedArrival })
+            .where(eq(incomingReceipts.id, rk.id));
         }
       });
     },
