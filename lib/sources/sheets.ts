@@ -12,6 +12,7 @@ import {
 } from "@/lib/db/schema";
 import { decomposePackSku } from "@/lib/domain/sku-pack";
 import { extractMarketers } from "@/lib/domain/fb-marketers";
+import { logger } from "@/lib/logger";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { postAlert, type AlertInput } from "@/lib/notifications/slack";
 import { toEstDate } from "@/lib/tz";
@@ -49,6 +50,30 @@ export function buildSheetsClient() {
   }
   throw new Error(
     "sheets: set GOOGLE_APPLICATION_CREDENTIALS (file path) or GOOGLE_SERVICE_ACCOUNT_JSON (content)"
+  );
+}
+
+// Drive client (metadata scope only) for reading a file's modifiedTime.
+// Used to record when Supermetrics last refreshed the FB Ads sheet relative
+// to each pull, so we can tune the cron to run after the daily refresh.
+export function buildDriveClient() {
+  const scopes = ["https://www.googleapis.com/auth/drive.metadata.readonly"];
+  const jsonContent = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
+  const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+  if (jsonContent) {
+    return google.drive({
+      version: "v3",
+      auth: new google.auth.GoogleAuth({ credentials: JSON.parse(jsonContent), scopes }),
+    });
+  }
+  if (keyFile) {
+    return google.drive({
+      version: "v3",
+      auth: new google.auth.GoogleAuth({ keyFile, scopes }),
+    });
+  }
+  throw new Error(
+    "drive: set GOOGLE_APPLICATION_CREDENTIALS (file path) or GOOGLE_SERVICE_ACCOUNT_JSON (content)"
   );
 }
 
@@ -1238,6 +1263,26 @@ export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
   });
   const grid = (resp.data.values ?? []) as unknown[][];
 
+  // Record when Supermetrics last refreshed the sheet, so we can compare it
+  // against this pull's time and tune the cron to run after the daily
+  // refresh. Best-effort: a Drive hiccup must never fail the ingest.
+  let sheetModifiedTime: string | null = null;
+  try {
+    const drive = buildDriveClient();
+    const meta = await drive.files.get({
+      fileId: sheetId,
+      fields: "modifiedTime",
+      supportsAllDrives: true,
+    });
+    sheetModifiedTime = meta.data.modifiedTime ?? null;
+  } catch (e) {
+    logger.warn(
+      `sheets_fb_ads: could not read sheet modifiedTime (non-fatal): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+
   // The live tab covers the current year only. Pre-2026 history is a
   // one-time DB import (scripts/import_fb_history_to_db.ts) that lives
   // below this runner's live window, so the daily cron never re-reads it
@@ -1277,6 +1322,10 @@ export const sheetsFbAdsRunner: SourceRunner = async (_batchId) => {
     rowCount,
     rawPayload: {
       tab,
+      // When Supermetrics last refreshed the sheet (UTC ISO). Compared to
+      // this pull's pulled_at to learn the daily refresh time and tune the
+      // cron to run after it. null if the Drive read failed.
+      sheetModifiedTime,
       variantCount: variants.length,
       adCount: aggregated.length,
       sample: aggregated.slice(0, 5).map((a) => ({
