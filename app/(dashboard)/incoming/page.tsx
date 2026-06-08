@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { KpiCard } from "@/components/inventory/KpiCard";
 import { StatusPill } from "@/components/shell/StatusPill";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
+import { compareWithinProduct } from "@/lib/domain/sku-sort";
 import { trpc } from "@/lib/trpc/client";
 
 type LocationFilter = "all" | "US" | "CN";
@@ -200,10 +201,10 @@ function IncomingShipmentsPageInner() {
       });
     }
 
-    // Stable SKU order within each group — alphabetical so size lists
-    // (s, m, l, xl) at least cluster by family.
+    // Within-group SKU order (Scott 2026-06-06): largest size -> smallest,
+    // grouped by color.
     for (const g of byKey.values()) {
-      g.skuRows.sort((a, b) => a.sku.localeCompare(b.sku));
+      g.skuRows.sort((a, b) => compareWithinProduct(a.sku, b.sku));
     }
 
     const dir = sort.direction === "asc" ? 1 : -1;

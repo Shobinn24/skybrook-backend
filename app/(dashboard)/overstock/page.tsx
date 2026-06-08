@@ -5,6 +5,7 @@ import Link from "next/link";
 import { KpiCard } from "@/components/inventory/KpiCard";
 import { ProductRollupTable } from "@/components/inventory/ProductRollupTable";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
+import { compareWithinProduct } from "@/lib/domain/sku-sort";
 import { trpc } from "@/lib/trpc/client";
 
 type LocationFilter = "all" | "US" | "CN";
@@ -79,7 +80,7 @@ export default function OverstockPage() {
     return [...matched].sort((a, b) => {
       switch (sort.key) {
         case "sku": return a.sku.localeCompare(b.sku) * dir;
-        case "productName": return a.productName.localeCompare(b.productName) * dir;
+        case "productName": return a.productName.localeCompare(b.productName) * dir || compareWithinProduct(a.sku, b.sku);
         case "location": return a.location.localeCompare(b.location) * dir;
         case "onHand": return (a.onHand - b.onHand) * dir;
         case "velocity": return (nullish(a.velocityPerDay7d) - nullish(b.velocityPerDay7d)) * dir;

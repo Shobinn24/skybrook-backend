@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FlagPill } from "./FlagPill";
 import { TracedNumber } from "@/components/trace/TracedNumber";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
+import { compareWithinProduct } from "@/lib/domain/sku-sort";
 import type { WarehouseSelection } from "./WarehouseToggle";
 import type { InventoryRow } from "@/lib/queries/inventory";
 
@@ -87,7 +88,12 @@ export function InventoryTable({
         case "sku":
           return a.sku.localeCompare(b.sku) * dir;
         case "productName":
-          return a.productName.localeCompare(b.productName) * dir;
+          // Within a product, hold Scott's size-desc / color order regardless
+          // of the product sort direction.
+          return (
+            a.productName.localeCompare(b.productName) * dir ||
+            compareWithinProduct(a.sku, b.sku)
+          );
         case "location":
           return a.location.localeCompare(b.location) * dir;
         case "onHand":

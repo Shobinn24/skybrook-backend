@@ -3,6 +3,7 @@
 import { Fragment, useMemo, useState } from "react";
 import Link from "next/link";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
+import { compareWithinProduct } from "@/lib/domain/sku-sort";
 import { TracedNumber } from "@/components/trace/TracedNumber";
 import type { NumberTrace } from "@/lib/queries/inventory";
 import type { SustainabilityTimelineResult } from "@/lib/queries/sustainability-timeline";
@@ -80,7 +81,12 @@ export function SustainabilityTimelineTable({
         case "sku":
           return a.sku.localeCompare(b.sku) * dir;
         case "product":
-          return a.productName.localeCompare(b.productName) * dir;
+          // Within a product, hold Scott's size-desc / color order regardless
+          // of the product sort direction.
+          return (
+            a.productName.localeCompare(b.productName) * dir ||
+            compareWithinProduct(a.sku, b.sku)
+          );
         case "sales":
           return (a.salesInWindow - b.salesInWindow) * dir;
         case "salesDollars":

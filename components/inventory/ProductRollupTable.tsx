@@ -3,6 +3,7 @@ import { Fragment, useMemo, useState } from "react";
 import Link from "next/link";
 import { FlagPill } from "./FlagPill";
 import { SortableHeader, type SortConfig } from "@/components/shell/SortableHeader";
+import { compareWithinProduct } from "@/lib/domain/sku-sort";
 import type { WarehouseSelection } from "./WarehouseToggle";
 import type { InventoryRow } from "@/lib/queries/inventory";
 
@@ -150,9 +151,13 @@ export function ProductRollupTable({
       g.futureDaysOfStock = g.velocityPerDay7d > 0
         ? g.futureStock / g.velocityPerDay7d
         : null;
-      // Stable SKU order in the expanded view — alphabetical so size
-      // lists at least cluster by family.
-      g.skus.sort((a, b) => a.sku.localeCompare(b.sku) || a.location.localeCompare(b.location));
+      // Within-product SKU order (Scott 2026-06-06): largest size ->
+      // smallest, grouped by color. Location is the final tiebreak so the
+      // same SKU at both warehouses stays adjacent.
+      g.skus.sort(
+        (a, b) =>
+          compareWithinProduct(a.sku, b.sku) || a.location.localeCompare(b.location),
+      );
     }
 
     const dir = sort.direction === "asc" ? 1 : -1;
