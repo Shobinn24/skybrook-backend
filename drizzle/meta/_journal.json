@@ -134,6 +134,13 @@
       "when": 1780061297202,
       "tag": "0018_shipping_flags_persisted",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1780572679230,
+      "tag": "0019_kind_king_cobra",
+      "breakpoints": true
     }
   ]
 }

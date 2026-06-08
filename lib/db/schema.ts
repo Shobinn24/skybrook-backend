@@ -12,6 +12,7 @@ import {
   pgEnum,
   primaryKey,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
 
 // Enums
@@ -584,3 +585,78 @@ export const factoryOrderLines = pgTable(
     ),
   }),
 );
+
+// ============================================================================
+// Cashflow forecast (requests #10). Single events table + editable assumptions
+// + per-week manual inputs. See docs/superpowers/specs/2026-06-03-cashflow-...
+// ============================================================================
+export const cashflowKindEnum = pgEnum("cashflow_kind", ["forecast", "actual"]);
+export const cashflowDirectionEnum = pgEnum("cashflow_direction", ["in", "out"]);
+export const cashflowCategoryEnum = pgEnum("cashflow_category", [
+  "revenue_ev", "revenue_jm", "revenue_ewc", "cogs_addback", "profit_payout",
+  "bulk_order", "ad_spend_google", "ad_spend_meta", "sales_tax", "tax",
+  "payroll", "whitelisting", "software", "tatari", "agency", "one_off",
+]);
+export const cashflowSourceEnum = pgEnum("cashflow_source", [
+  "manual", "auto_revenue", "auto_accrual", "sheet_pull", "recurring",
+]);
+export const cashflowVarianceReasonEnum = pgEnum("cashflow_variance_reason", [
+  "volume", "spending", "timing",
+]);
+
+export const cashflowEvents = pgTable(
+  "cashflow_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kind: cashflowKindEnum("kind").notNull(),
+    forecastEventId: uuid("forecast_event_id"),
+    category: cashflowCategoryEnum("category").notNull(),
+    direction: cashflowDirectionEnum("direction").notNull(),
+    amountUsd: numeric("amount_usd", { precision: 14, scale: 2 }).notNull(),
+    accrualDate: date("accrual_date").notNull(),
+    cashDate: date("cash_date").notNull(),
+    source: cashflowSourceEnum("source").notNull(),
+    sourceRef: text("source_ref"),
+    description: text("description").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdBy: text("created_by").notNull().default("system"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: text("updated_by").notNull().default("system"),
+  },
+  (t) => ({
+    uxSourceRef: uniqueIndex("cashflow_events_source_ref_ux")
+      .on(t.source, t.sourceRef)
+      .where(sql`${t.source} <> 'manual' AND ${t.sourceRef} IS NOT NULL`),
+    cashDateIdx: index("cashflow_events_cash_date_idx").on(t.cashDate),
+  }),
+);
+
+export const cashflowAssumptions = pgTable("cashflow_assumptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  evRevenueStart: numeric("ev_revenue_start", { precision: 14, scale: 2 }).notNull().default("0"),
+  evWeeklyGrowth: numeric("ev_weekly_growth", { precision: 8, scale: 4 }).notNull().default("1"),
+  evNetMargin: numeric("ev_net_margin", { precision: 6, scale: 4 }).notNull().default("0"),
+  jmRevenueStart: numeric("jm_revenue_start", { precision: 14, scale: 2 }).notNull().default("0"),
+  jmWeeklyGrowth: numeric("jm_weekly_growth", { precision: 8, scale: 4 }).notNull().default("1"),
+  jmNetMargin: numeric("jm_net_margin", { precision: 6, scale: 4 }).notNull().default("0"),
+  ewcRevenueStart: numeric("ewc_revenue_start", { precision: 14, scale: 2 }).notNull().default("0"),
+  ewcWeeklyGrowth: numeric("ewc_weekly_growth", { precision: 8, scale: 4 }).notNull().default("1"),
+  ewcNetMargin: numeric("ewc_net_margin", { precision: 6, scale: 4 }).notNull().default("0"),
+  cogsPct: numeric("cogs_pct", { precision: 6, scale: 4 }).notNull().default("0.15"),
+  profitPayoutPct: numeric("profit_payout_pct", { precision: 6, scale: 4 }).notNull().default("0.90"),
+  varianceThresholdUsd: numeric("variance_threshold_usd", { precision: 14, scale: 2 }).notNull().default("30000"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: text("updated_by").notNull().default("system"),
+});
+
+export const cashflowWeekly = pgTable("cashflow_weekly", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  weekStart: date("week_start").notNull().unique(),
+  actualTotalCashUsd: numeric("actual_total_cash_usd", { precision: 14, scale: 2 }),
+  payoutOverrideUsd: numeric("payout_override_usd", { precision: 14, scale: 2 }),
+  payoutSkipped: boolean("payout_skipped").notNull().default(false),
+  varianceReason: cashflowVarianceReasonEnum("variance_reason"),
+  varianceNote: text("variance_note"),
+  recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  recordedBy: text("recorded_by").notNull().default("system"),
+});

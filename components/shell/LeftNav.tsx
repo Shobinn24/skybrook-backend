@@ -20,7 +20,15 @@ const NAV_ITEMS: ReadonlyArray<{ href: string; label: string; roles: ReadonlyArr
 
 const LINK_CLS = "block rounded px-2 py-1.5 text-neutral-700 hover:bg-neutral-100";
 
-export function LeftNav({ role = "ops" }: { role?: Role }) {
+export function LeftNav({
+  role = "ops",
+  showCashflow = false,
+}: {
+  role?: Role;
+  // Cashflow is gated to its own allowlist (SKYBROOK_CASHFLOW_EMAILS), not the
+  // ops/marketing role, so the link is shown independently of `role`.
+  showCashflow?: boolean;
+}) {
   const items = NAV_ITEMS.filter((i) => i.roles.includes(role));
   return (
     <aside className="w-56 shrink-0 border-r border-neutral-200 bg-white p-4 space-y-1 text-sm">
@@ -30,20 +38,32 @@ export function LeftNav({ role = "ops" }: { role?: Role }) {
           {item.label}
         </Link>
       ))}
-      {role === "ops" && (
+      {/* Admin section shows for ops (its admin links) and/or for anyone on
+          the cashflow allowlist (the Cashflow link) — the latter is independent
+          of the ops/marketing role. */}
+      {(role === "ops" || showCashflow) && (
         <div className="!mt-4 border-t border-neutral-200 pt-3">
           <div className="mb-1 px-2 text-[11px] uppercase tracking-wide text-neutral-400">
             Admin
           </div>
-          <Link href="/admin/product-names" className={LINK_CLS}>
-            Product names
-          </Link>
-          <Link href="/admin/data-sources" className={LINK_CLS}>
-            Data sources
-          </Link>
-          <Link href="/pipeline" className={LINK_CLS}>
-            Pipeline
-          </Link>
+          {role === "ops" && (
+            <>
+              <Link href="/admin/product-names" className={LINK_CLS}>
+                Product names
+              </Link>
+              <Link href="/admin/data-sources" className={LINK_CLS}>
+                Data sources
+              </Link>
+              <Link href="/pipeline" className={LINK_CLS}>
+                Pipeline
+              </Link>
+            </>
+          )}
+          {showCashflow && (
+            <Link href="/cashflow" className={LINK_CLS}>
+              Cashflow
+            </Link>
+          )}
         </div>
       )}
     </aside>

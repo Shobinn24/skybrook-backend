@@ -6,6 +6,7 @@ import {
   createSessionToken,
   decodeIdToken,
   getUserRole,
+  isCashflowAllowed,
   isMarketingAllowedPath,
   parseAllowedEmails,
   verifyOAuthStateToken,
@@ -336,5 +337,18 @@ describe("isMarketingAllowedPath", () => {
     // path + "/" subroutes count.
     expect(isMarketingAllowedPath("/launches-history")).toBe(false);
     expect(isMarketingAllowedPath("/performance-old")).toBe(false);
+  });
+});
+
+describe("isCashflowAllowed", () => {
+  const LIST = "a@x.com, b@x.com, c@x.com, d@x.com";
+  it("allows listed emails (case-insensitive), denies others", () => {
+    expect(isCashflowAllowed("A@x.com", LIST)).toBe(true);
+    expect(isCashflowAllowed("c@x.com", LIST)).toBe(true);
+    expect(isCashflowAllowed("random@x.com", LIST)).toBe(false);
+    expect(isCashflowAllowed(null, LIST)).toBe(false);
+  });
+  it("denies everyone when the list is empty (fail-closed for sensitive cash data)", () => {
+    expect(isCashflowAllowed("a@x.com", "")).toBe(false);
   });
 });

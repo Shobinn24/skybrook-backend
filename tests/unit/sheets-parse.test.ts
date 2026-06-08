@@ -5,6 +5,7 @@ import {
   extractArrivalDates,
   findIntlBoundary,
   parseAdSpendTab,
+  parseBulkOrderForecast,
   parseDayMonth,
   parseFbAdsSheet,
   parseIncomingGrid,
@@ -884,5 +885,29 @@ describe("dedupeAdSpendRows", () => {
     const { dedupedRows, dupesCollapsed } = dedupeAdSpendRows(input);
     expect(dedupedRows).toEqual(input);
     expect(dupesCollapsed).toEqual([]);
+  });
+});
+
+describe("parseBulkOrderForecast", () => {
+  it("reads (Week,Total) from the right-side summary cols and skips $0/blank", () => {
+    // grid columns A..L ; K=10 (week), L=11 (total)
+    const row = (week: string, total: string) => {
+      const r = new Array(12).fill("");
+      r[9] = "Bulk Order Pay";
+      r[10] = week;
+      r[11] = total;
+      return r;
+    };
+    const grid = [
+      row("Title", "Total"), // header-ish, unparseable date -> skipped
+      row("8-Apr-24", "$413,028.96"),
+      row("15-Apr-24", "$0.00"), // zero -> skipped
+      row("22-Apr-24", "146801.19"),
+    ];
+    const { rows } = parseBulkOrderForecast(grid);
+    expect(rows).toEqual([
+      { weekDate: "2024-04-08", amountUsd: 413028.96 },
+      { weekDate: "2024-04-22", amountUsd: 146801.19 },
+    ]);
   });
 });

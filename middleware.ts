@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   SESSION_COOKIE,
   getUserRole,
+  isCashflowAllowed,
   isMarketingAllowedPath,
   MARKETING_LANDING_PATH,
   verifySessionToken,
@@ -49,6 +50,18 @@ export async function middleware(req: NextRequest) {
     // /launches, /fb-ads, /bonus-tracker, /performance. Any other page
     // path silently redirects to MARKETING_LANDING_PATH. tRPC routes
     // stay open to marketing in Phase 1 — see isMarketingAllowedPath.
+    // /cashflow is gated to its own allowlist (sensitive cash data),
+    // regardless of ops/marketing role.
+    if (pathname === "/cashflow" || pathname.startsWith("/cashflow/")) {
+      if (!isCashflowAllowed(session.email)) {
+        const url = req.nextUrl.clone();
+        url.pathname = "/performance";
+        url.search = "";
+        return NextResponse.redirect(url);
+      }
+      return NextResponse.next();
+    }
+
     const role = getUserRole(session.email);
     if (role === "marketing" && !isMarketingAllowedPath(pathname)) {
       const url = req.nextUrl.clone();

@@ -308,6 +308,18 @@ export function getUserRole(
   return list.includes(email.toLowerCase()) ? "marketing" : "ops";
 }
 
+/** Cashflow is sensitive (company cash position) so it is gated to an
+ * explicit allowlist (`SKYBROOK_CASHFLOW_EMAILS`), independent of the
+ * ops/marketing role split. Fail-closed: empty/unset list = nobody. */
+export function isCashflowAllowed(
+  email: string | null | undefined,
+  cashflowEmailsRaw?: string,
+): boolean {
+  if (!email) return false;
+  const list = parseAllowedEmails(cashflowEmailsRaw ?? process.env.SKYBROOK_CASHFLOW_EMAILS);
+  return list.includes(email.toLowerCase());
+}
+
 // URL prefixes a marketing user is permitted to load. Anything else
 // redirects to MARKETING_LANDING_PATH. tRPC procedure paths
 // (/api/trpc/*) are intentionally NOT narrowed here because every page
