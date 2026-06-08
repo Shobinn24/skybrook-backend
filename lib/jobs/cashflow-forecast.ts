@@ -121,3 +121,28 @@ export async function generateBulkOrderForecast(): Promise<void> {
   await upsertGeneratedEvents(rows);
   logger.info("cashflow-forecast.bulk-order.done", { rows: rows.length, skipped });
 }
+
+/**
+ * Daily cron entry point: rolls the revenue/COGS forecast forward to the
+ * current week and refreshes the bulk-order pull. The bulk pull hits the live
+ * sheet, so it's best-effort — a sheet hiccup must not block the rest of the
+ * ingest cron. (EV actuals aren't generated here yet — the grid reads only
+ * `forecast` events, so actuals have no consumer until a later phase.)
+ */
+export async function runCashflowGenerators(asOfDate: string): Promise<{
+  forecastWeek: string;
+  bulkOk: boolean;
+}> {
+  const forecastWeek = weekStartEst(asOfDate);
+  await generateRevenueForecast(forecastWeek);
+  let bulkOk = false;
+  try {
+    await generateBulkOrderForecast();
+    bulkOk = true;
+  } catch (e) {
+    logger.error("cashflow-forecast.bulk-order.failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+  return { forecastWeek, bulkOk };
+}

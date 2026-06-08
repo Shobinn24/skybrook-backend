@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import { cashflowAssumptions, cashflowWeekly, cashflowEvents } from "@/lib/db/schema";
 import { getAssumptions } from "@/lib/queries/cashflow";
+import { generateRevenueForecast } from "@/lib/jobs/cashflow-forecast";
 import { logger } from "@/lib/logger";
 
 const HORIZON_WEEKS = 13;
@@ -14,7 +15,16 @@ export interface AssumptionPatch {
   cogsPct?: number; profitPayoutPct?: number; varianceThresholdUsd?: number;
 }
 
-export async function setAssumptions(patch: AssumptionPatch, by: string): Promise<void> {
+/**
+ * Update the assumptions row. When `firstWeekStart` (a Monday) is given, the
+ * 13-week revenue/COGS forecast is regenerated from the new assumptions so the
+ * grid reflects the change immediately — the interactive loop the UI relies on.
+ */
+export async function setAssumptions(
+  patch: AssumptionPatch,
+  by: string,
+  firstWeekStart?: string,
+): Promise<void> {
   const current = await getAssumptions(); // ensures a row exists
   const toStr = (v: number | undefined) => (v == null ? undefined : String(v));
   await db.update(cashflowAssumptions)
@@ -27,6 +37,7 @@ export async function setAssumptions(patch: AssumptionPatch, by: string): Promis
     })
     .where(eq(cashflowAssumptions.id, current.id));
   logger.info("cashflow.assumptions.set", { patch, by });
+  if (firstWeekStart) await generateRevenueForecast(firstWeekStart);
 }
 
 async function upsertWeekly(

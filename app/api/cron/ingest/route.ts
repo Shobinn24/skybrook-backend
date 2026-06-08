@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runArrivalEvidenceCheck } from "@/lib/jobs/arrival-evidence-check";
 import { runAutoReceiptDetection } from "@/lib/jobs/auto-receipt";
+import { runCashflowGenerators } from "@/lib/jobs/cashflow-forecast";
 import { detectAndInsertBonusCrossings } from "@/lib/jobs/bonus-crossings";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
@@ -141,6 +142,18 @@ export async function POST(req: Request) {
       },
     });
   }
+  // Cashflow: roll the revenue/COGS forecast forward to the current week and
+  // refresh the bulk-order pull, so /cashflow stays current without a manual
+  // run. Best-effort — never block the cron (the bulk pull hits a live sheet).
+  let cashflow: Awaited<ReturnType<typeof runCashflowGenerators>> | null = null;
+  try {
+    cashflow = await runCashflowGenerators(asOfDate);
+  } catch (e) {
+    logger.error("cashflow.generators.failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+
   // Freshness sweep runs LAST so its checks see the post-phase2 state of
   // every table. Catches silent emptiness that per-source ingest alerts
   // miss (e.g. May-6 cross-channel skew, partial sheet refreshes).
@@ -192,6 +205,7 @@ export async function POST(req: Request) {
     orphanSweep,
     bonusCrossings,
     shippingSnapshot,
+    cashflow,
     phase2,
     freshness,
   });

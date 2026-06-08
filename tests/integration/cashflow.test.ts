@@ -213,3 +213,23 @@ describe("manual entries", () => {
     expect(events).toHaveLength(0);
   });
 });
+
+describe("assumptions regeneration", () => {
+  beforeEach(truncate);
+  afterEach(truncate);
+  it("setAssumptions(patch, by, firstWeekStart) regenerates the 13-week revenue forecast", async () => {
+    await getAssumptions();
+    // No forecast events before saving.
+    const before = await db.select().from(cashflowEvents).where(eq(cashflowEvents.category, "revenue_ev"));
+    expect(before).toHaveLength(0);
+    await setAssumptions(
+      { evRevenueStart: 500000, evWeeklyGrowth: 1, evNetMargin: 0.2, jmRevenueStart: 0, ewcRevenueStart: 0, cogsPct: 0.15 },
+      "t",
+      "2026-06-01",
+    );
+    const ev = await db.select().from(cashflowEvents)
+      .where(and(eq(cashflowEvents.category, "revenue_ev"), eq(cashflowEvents.kind, "forecast")));
+    expect(ev).toHaveLength(13); // one per week in the window
+    expect(Number(ev[0].amountUsd)).toBeCloseTo(500000, 0);
+  });
+});

@@ -142,7 +142,7 @@ export default function CashflowPage() {
           <AssumptionsEditor
             initial={assumptions.data}
             pending={saveAssumptions.isPending}
-            onSave={(patch) => saveAssumptions.mutate({ patch, by: BY })}
+            onSave={(patch) => saveAssumptions.mutate({ patch, by: BY, firstWeekStart: firstWeek })}
           />
         )}
       </div>

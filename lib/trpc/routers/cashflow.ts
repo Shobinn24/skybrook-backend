@@ -29,8 +29,9 @@ export const cashflowRouter = router({
         cogsPct: z.number().optional(), profitPayoutPct: z.number().optional(), varianceThresholdUsd: z.number().optional(),
       }),
       by: z.string(),
+      firstWeekStart: ymd.optional(),
     }))
-    .mutation(({ input }) => setAssumptions(input.patch, input.by)),
+    .mutation(({ input }) => setAssumptions(input.patch, input.by, input.firstWeekStart)),
 
   enterWeeklyCash: publicProcedure
     .input(z.object({ weekStart: ymd, totalCashUsd: z.number(), by: z.string() }))
