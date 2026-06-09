@@ -1,0 +1,68 @@
+name: Sheet-change poll (near-real-time sync)
+
+# Near-real-time sheet sync (Todo #36). Polls each sheet-fed source's Drive
+# modifiedTime and fires a targeted re-ingest only when a sheet actually
+# changed (full ingest for inventory/incoming/velocity/cost; light
+# refresh-ad-spend for ad-spend/fb-only changes).
+#
+# Railway native cron (service skybrook-cron-poll, running
+# scripts/cron_run_poll_sheets.mjs) is the PRIMARY trigger and runs every
+# 5 min in-container. GitHub scheduled runs fire 30min-2hr late (runner
+# queue), which would defeat "near-real-time", so this workflow is only an
+# idempotent BACKSTOP for when Railway cron is down. The endpoint is safe to
+# call repeatedly: it no-ops unless a sheet's modifiedTime changed, and a
+# short per-source lock stops a re-ingest from stacking on an in-flight one.
+#
+# Manual trigger via workflow_dispatch for ad-hoc resyncs.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+# Don't pile runs up if a previous one is slow / the queue backs up.
+concurrency:
+  group: poll-sheets
+  cancel-in-progress: true
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger /api/cron/poll-sheets
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::CRON_SECRET secret not set"
+            exit 1
+          fi
+          # The poll endpoint is fast (a few Drive metadata reads + fire-and-
+          # forget triggers). 60s is ample; tolerate a client timeout the same
+          # way the other cron workflows do (server keeps running on timeout).
+          set +e
+          response=$(mktemp)
+          status=$(curl -sS -X POST -o "$response" -w "%{http_code}" \
+            "https://skybrook-backend-production.up.railway.app/api/cron/poll-sheets" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            --max-time 60)
+          curl_exit=$?
+          set -e
+          # 0 = ok response, 28 = client timeout but server keeps running.
+          if [ "$curl_exit" != 0 ] && [ "$curl_exit" != 28 ]; then
+            echo "::error::curl exited $curl_exit (network error)"
+            exit 1
+          fi
+          if [ "$curl_exit" = "0" ]; then
+            echo "HTTP status: $status"
+            if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+              echo "::error::poll-sheets returned non-2xx ($status)"
+              cat "$response"
+              exit 1
+            fi
+            echo "Response:"
+            cat "$response"
+          else
+            echo "curl timed out client-side (exit 28); server keeps running. OK."
+          fi

@@ -660,3 +660,17 @@ export const cashflowWeekly = pgTable("cashflow_weekly", {
   recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
   recordedBy: text("recorded_by").notNull().default("system"),
 });
+
+// Near-real-time sheet sync (Todo #36): one row per sheet-fed source. The
+// poll job reads each sheet's Drive `modifiedTime` every few minutes and
+// compares it to `lastModifiedTime` here; a difference means the sheet was
+// edited since our last pull, so the poller fires a targeted re-ingest
+// instead of waiting for the next scheduled cron. `lastTriggeredAt` backs a
+// short lock that stops consecutive polls from stacking ingests.
+export const sheetPollState = pgTable("sheet_poll_state", {
+  source: text("source").primaryKey(),
+  sheetId: text("sheet_id").notNull(),
+  lastModifiedTime: text("last_modified_time"),
+  lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+  lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
+});
