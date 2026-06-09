@@ -728,10 +728,15 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
   const sheets = buildSheetsClient();
   const todayYmd = toEstDate(new Date());
 
-  // Read the full Incoming_new tab — bounded (~325 rows × ~35 cols), one round trip.
+  // Read the full Incoming_new tab. Columns are UNBOUNDED to the right (A1:ZZ)
+  // because PO columns accrue rightward over time — a hard `AG` cap silently
+  // dropped new POs once the sheet grew past column AG (observed 2026-06-09: a
+  // PO that had grown into column AH was never ingested, so its arrival date
+  // did not surface in the tool). values.get trims trailing empty columns, so
+  // an over-wide range costs nothing. Rows stay bounded (~360 used).
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `'${INCOMING_TAB}'!A1:AG400`,
+    range: `'${INCOMING_TAB}'!A1:ZZ400`,
   });
   const grid = (resp.data.values ?? []) as unknown[][];
 

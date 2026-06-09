@@ -287,6 +287,27 @@ describe("parseIncomingGrid", () => {
     return grid;
   }
 
+  // Regression (2026-06-09): the Incoming_new fetch range was hard-capped at
+  // column AG, which silently dropped a PO that had grown into column AH, so
+  // its arrival date did not surface. The runner range is now A1:ZZ; the
+  // parser itself must never cap columns.
+  it("parses a PO column far to the right (no column cap)", () => {
+    const FAR = 40; // well past the old AG (col index 32) cap
+    const grid: unknown[][] = Array.from({ length: 7 }, () => []);
+    grid[1][2] = "SHIPMENT NAME";
+    grid[1][FAR] = "KAI 27";
+    grid[2][2] = "ESTIMATED ARRIVAL";
+    grid[2][FAR] = "21 Jul 2026";
+    grid[3][2] = "Total";
+    grid[5][2] = "ev-9055-5x-m";
+    grid[5][FAR] = "6100";
+    const out = parseIncomingGrid(grid, "2026-06-09");
+    const far = out.rows.find((r) => r.shipmentName === "KAI 27");
+    expect(far).toBeDefined();
+    expect(far?.expectedArrival).toBe("2026-07-21");
+    expect(far?.quantity).toBe(6100);
+  });
+
   it("emits one row per (sku, PO with positive qty)", () => {
     const out = parseIncomingGrid(makeGrid(), "2026-04-23");
     expect(out.rows).toEqual([
