@@ -18,8 +18,28 @@ function mondayOfThisWeek(): string {
   return now.toISOString().slice(0, 10);
 }
 
-const ROW_ORDER = ["beginning", "cashIn", "cashOut", "ending"] as const;
-const ROW_LABEL: Record<string, string> = { beginning: "Begin", cashIn: "+ In", cashOut: "− Out", ending: "End" };
+// Per-week line items requested by the owner (2026-06-09):
+// Begin + Profit + COGS − Payouts − Bulk orders − Other = End.
+type GridWeek = { weekStart: string; beginning: number; ending: number; byCategory: Record<string, number> };
+
+// "Other payments" = every category that isn't one of the named lines
+// (e.g. Google/Meta ad invoices, sales tax, payroll — the manual entries).
+const NAMED_LINE_KEYS = new Set(["net_profit", "cogs", "profit_payout", "bulk_order"]);
+function otherOutTotal(byCategory: Record<string, number>): number {
+  return Object.entries(byCategory)
+    .filter(([k]) => !NAMED_LINE_KEYS.has(k))
+    .reduce((sum, [, v]) => sum + v, 0); // signed; out categories are negative
+}
+
+const LINE_ITEMS: ReadonlyArray<{ label: string; bold?: boolean; get: (w: GridWeek) => number }> = [
+  { label: "Begin", get: (w) => w.beginning },
+  { label: "+ Profit", get: (w) => w.byCategory.net_profit ?? 0 },
+  { label: "+ COGS", get: (w) => w.byCategory.cogs ?? 0 },
+  { label: "− Payouts", get: (w) => Math.abs(w.byCategory.profit_payout ?? 0) },
+  { label: "− Bulk orders", get: (w) => Math.abs(w.byCategory.bulk_order ?? 0) },
+  { label: "− Other", get: (w) => Math.abs(otherOutTotal(w.byCategory)) },
+  { label: "End", bold: true, get: (w) => w.ending },
+];
 
 type ManualCategory =
   | "sales_tax" | "tax" | "payroll" | "whitelisting" | "software" | "agency"
@@ -142,6 +162,7 @@ export default function CashflowPage() {
           <AssumptionsEditor
             initial={assumptions.data}
             pending={saveAssumptions.isPending}
+            saved={saveAssumptions.isSuccess}
             onSave={(patch) => saveAssumptions.mutate({ patch, by: BY, firstWeekStart: firstWeek })}
           />
         )}
@@ -179,12 +200,12 @@ export default function CashflowPage() {
             </tr>
           </thead>
           <tbody>
-            {ROW_ORDER.map((key) => (
-              <tr key={key} className={key === "ending" ? "font-medium" : ""}>
-                <td className="p-1 pr-3">{ROW_LABEL[key]}</td>
+            {LINE_ITEMS.map((item) => (
+              <tr key={item.label} className={item.bold ? "font-medium border-t border-gray-300" : ""}>
+                <td className="p-1 pr-3 whitespace-nowrap">{item.label}</td>
                 {data.weeks.map((w) => (
-                  <td key={w.weekStart} className={`p-1 text-right ${key === "ending" && w.ending < 0 ? "text-red-600" : ""}`}>
-                    {fmtMoney(w[key as "beginning" | "cashIn" | "cashOut" | "ending"])}
+                  <td key={w.weekStart} className={`p-1 text-right ${item.label === "End" && w.ending < 0 ? "text-red-600" : ""}`}>
+                    {fmtMoney(item.get(w))}
                   </td>
                 ))}
               </tr>
@@ -208,10 +229,12 @@ type Assumptions = {
 function AssumptionsEditor({
   initial,
   pending,
+  saved,
   onSave,
 }: {
   initial: Assumptions;
   pending: boolean;
+  saved: boolean;
   onSave: (patch: Record<string, number>) => void;
 }) {
   // Percent fields are shown as whole numbers (18 = 18%) and converted on save.
@@ -242,15 +265,18 @@ function AssumptionsEditor({
         {field("profitPayoutPct", "Profit payout %")}
         {field("varianceThresholdUsd", "Variance flag $")}
       </div>
-      <button className={`${BTN_CLS} bg-black text-white`} disabled={pending}
-        onClick={() => onSave({
-          evRevenueStart: num(f.evRevenueStart), evWeeklyGrowth: num(f.evWeeklyGrowth), evNetMargin: num(f.evNetMargin) / 100,
-          jmRevenueStart: num(f.jmRevenueStart), jmWeeklyGrowth: num(f.jmWeeklyGrowth), jmNetMargin: num(f.jmNetMargin) / 100,
-          ewcRevenueStart: num(f.ewcRevenueStart), ewcWeeklyGrowth: num(f.ewcWeeklyGrowth), ewcNetMargin: num(f.ewcNetMargin) / 100,
-          cogsPct: num(f.cogsPct) / 100, profitPayoutPct: num(f.profitPayoutPct) / 100, varianceThresholdUsd: num(f.varianceThresholdUsd),
-        })}>
-        Save assumptions
-      </button>
+      <div className="flex items-center gap-3">
+        <button className={`${BTN_CLS} bg-black text-white`} disabled={pending}
+          onClick={() => onSave({
+            evRevenueStart: num(f.evRevenueStart), evWeeklyGrowth: num(f.evWeeklyGrowth), evNetMargin: num(f.evNetMargin) / 100,
+            jmRevenueStart: num(f.jmRevenueStart), jmWeeklyGrowth: num(f.jmWeeklyGrowth), jmNetMargin: num(f.jmNetMargin) / 100,
+            ewcRevenueStart: num(f.ewcRevenueStart), ewcWeeklyGrowth: num(f.ewcWeeklyGrowth), ewcNetMargin: num(f.ewcNetMargin) / 100,
+            cogsPct: num(f.cogsPct) / 100, profitPayoutPct: num(f.profitPayoutPct) / 100, varianceThresholdUsd: num(f.varianceThresholdUsd),
+          })}>
+          {pending ? "Saving..." : "Save assumptions"}
+        </button>
+        {saved && !pending && <span className="text-sm text-green-600">Saved ✓</span>}
+      </div>
     </div>
   );
 }

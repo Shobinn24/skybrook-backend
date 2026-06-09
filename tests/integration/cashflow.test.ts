@@ -36,19 +36,22 @@ describe("cashflow assumptions", () => {
 
 describe("revenue forecast generator", () => {
   beforeEach(truncate);
-  it("writes per-channel revenue + cogs forecast events for 13 weeks, idempotently", async () => {
+  it("clears stale auto_revenue inflow events (inflow is now computed live from assumptions)", async () => {
     await getAssumptions();
-    await setAssumptions({ evRevenueStart: 500000, evWeeklyGrowth: 1, evNetMargin: 0.2 }, "t");
+    // Simulate the old model's full-revenue inflow events sitting in the table.
+    await upsertGeneratedEvents([{
+      kind: "forecast", category: "revenue_ev", direction: "in",
+      amountUsd: "500000", accrualDate: "2026-06-01", cashDate: "2026-06-01",
+      source: "auto_revenue", sourceRef: "revenue:ev:2026-06-01", description: "stale",
+    }, {
+      kind: "forecast", category: "cogs_addback", direction: "in",
+      amountUsd: "75000", accrualDate: "2026-06-01", cashDate: "2026-06-01",
+      source: "auto_revenue", sourceRef: "cogs:2026-06-01", description: "stale",
+    }]);
     await generateRevenueForecast("2026-06-01");
-    const evRows = await db.select().from(cashflowEvents)
-      .where(and(eq(cashflowEvents.kind, "forecast"), eq(cashflowEvents.category, "revenue_ev")));
-    expect(evRows).toHaveLength(13);
-    expect(Number(evRows[0].amountUsd)).toBeCloseTo(500000, 0);
-    // Re-run is a no-op (idempotent upsert on source_ref)
-    await generateRevenueForecast("2026-06-01");
-    const after = await db.select().from(cashflowEvents)
-      .where(and(eq(cashflowEvents.kind, "forecast"), eq(cashflowEvents.category, "revenue_ev")));
-    expect(after).toHaveLength(13);
+    const stale = await db.select().from(cashflowEvents)
+      .where(and(eq(cashflowEvents.kind, "forecast"), eq(cashflowEvents.source, "auto_revenue")));
+    expect(stale).toHaveLength(0);
   });
 });
 
@@ -114,17 +117,22 @@ describe("cashflow grid", () => {
     await getAssumptions();
     await setAssumptions({ evRevenueStart: 500000, evWeeklyGrowth: 1, evNetMargin: 0.2, jmRevenueStart: 0, ewcRevenueStart: 0, cogsPct: 0.15, profitPayoutPct: 0.9 }, "t");
     await generateRevenueForecast("2026-06-01");
-    // Net profit/wk = 500000*0.2 = 100000 ; payout = 90000 ; cogs = 75000
-    // Grid computes: cash_in = Σ in-events (revenue + cogs_addback), cash_out = Σ out-events + payout
+    // Net profit/wk = 500000*0.2 = 100000 ; cogs = 0.15*500000 = 75000 ; payout = 90000
+    // Grid computes cash_in from assumptions = profit + cogs (NOT full revenue);
+    // cash_out = Σ out-events + payout.
     await enterWeeklyCash("2026-06-01", 200000, "t"); // beginning anchor
     const grid = await getCashflowGrid("2026-06-01");
     expect(grid.weeks).toHaveLength(13);
     expect(grid.weeks[0].weekStart).toBe("2026-06-01");
     expect(grid.weeks[0].beginning).toBeCloseTo(200000, 0);
-    // in = revenue(500k) + cogs_addback(75k) = 575000 ; out = payout 90000
-    expect(grid.weeks[0].cashIn).toBeCloseTo(575000, 0);
+    // in = profit(100k) + cogs(75k) = 175000 ; out = payout 90000
+    expect(grid.weeks[0].cashIn).toBeCloseTo(175000, 0);
     expect(grid.weeks[0].cashOut).toBeCloseTo(90000, 0);
-    expect(grid.weeks[0].ending).toBeCloseTo(200000 + 575000 - 90000, 0);
+    expect(grid.weeks[0].ending).toBeCloseTo(200000 + 175000 - 90000, 0);
+    // requested line items are exposed per week
+    expect(grid.weeks[0].byCategory["net_profit"]).toBeCloseTo(100000, 0);
+    expect(grid.weeks[0].byCategory["cogs"]).toBeCloseTo(75000, 0);
+    expect(grid.weeks[0].byCategory["profit_payout"]).toBeCloseTo(-90000, 0);
     // wk1 beginning = wk0 ending (snowball)
     expect(grid.weeks[1].beginning).toBeCloseTo(grid.weeks[0].ending, 0);
   });
@@ -217,19 +225,20 @@ describe("manual entries", () => {
 describe("assumptions regeneration", () => {
   beforeEach(truncate);
   afterEach(truncate);
-  it("setAssumptions(patch, by, firstWeekStart) regenerates the 13-week revenue forecast", async () => {
+  it("setAssumptions updates the live grid (cash-in = profit + cogs, no persisted revenue events)", async () => {
     await getAssumptions();
-    // No forecast events before saving.
-    const before = await db.select().from(cashflowEvents).where(eq(cashflowEvents.category, "revenue_ev"));
-    expect(before).toHaveLength(0);
     await setAssumptions(
       { evRevenueStart: 500000, evWeeklyGrowth: 1, evNetMargin: 0.2, jmRevenueStart: 0, ewcRevenueStart: 0, cogsPct: 0.15 },
       "t",
       "2026-06-01",
     );
-    const ev = await db.select().from(cashflowEvents)
+    // Inflow is computed live from assumptions now, NOT persisted as
+    // full-revenue events (the old overstatement bug).
+    const revEvents = await db.select().from(cashflowEvents)
       .where(and(eq(cashflowEvents.category, "revenue_ev"), eq(cashflowEvents.kind, "forecast")));
-    expect(ev).toHaveLength(13); // one per week in the window
-    expect(Number(ev[0].amountUsd)).toBeCloseTo(500000, 0);
+    expect(revEvents).toHaveLength(0);
+    // The grid reflects the saved assumptions immediately: in = profit(100k) + cogs(75k).
+    const grid = await getCashflowGrid("2026-06-01");
+    expect(grid.weeks[0].cashIn).toBeCloseTo(175000, 0);
   });
 });

@@ -1,45 +1,26 @@
 import { db } from "@/lib/db";
 import { cashflowEvents, dailySales } from "@/lib/db/schema";
-import { getAssumptions } from "@/lib/queries/cashflow";
-import { weekStartsForward, weekStartEst } from "@/lib/domain/cashflow-weeks";
-import { projectRevenue } from "@/lib/domain/cashflow-math";
-import type { ChannelKey } from "@/lib/domain/cashflow-math";
-import { sql, gte, lte, and } from "drizzle-orm";
+import { weekStartEst } from "@/lib/domain/cashflow-weeks";
+import { sql, gte, lte, and, eq } from "drizzle-orm";
 import { logger } from "@/lib/logger";
 import { buildSheetsClient, parseBulkOrderForecast } from "@/lib/sources/sheets";
 
-const HORIZON_WEEKS = 13;
-const REVENUE_CATEGORY: Record<ChannelKey, "revenue_ev" | "revenue_jm" | "revenue_ewc"> = {
-  ev: "revenue_ev", jm: "revenue_jm", ewc: "revenue_ewc",
-};
-
-/** Generates 13 weeks of revenue (per channel) + cogs_addback forecast events
- * from the current assumptions, starting at `firstWeekStart` (a Monday). */
-export async function generateRevenueForecast(firstWeekStart: string): Promise<void> {
-  const a = await getAssumptions();
-  const weeks = weekStartsForward(firstWeekStart, HORIZON_WEEKS);
-  const rows: (typeof cashflowEvents.$inferInsert)[] = [];
-  weeks.forEach((week, i) => {
-    let totalRev = 0;
-    (Object.keys(REVENUE_CATEGORY) as ChannelKey[]).forEach((k) => {
-      const rev = projectRevenue(a[k], i);
-      totalRev += rev;
-      rows.push({
-        kind: "forecast", category: REVENUE_CATEGORY[k], direction: "in",
-        amountUsd: rev.toFixed(2), accrualDate: week, cashDate: week,
-        source: "auto_revenue", sourceRef: `revenue:${k}:${week}`,
-        description: `${k.toUpperCase()} forecast revenue`,
-      });
-    });
-    rows.push({
-      kind: "forecast", category: "cogs_addback", direction: "in",
-      amountUsd: (a.cogsPct * totalRev).toFixed(2), accrualDate: week, cashDate: week,
-      source: "auto_revenue", sourceRef: `cogs:${week}`,
-      description: "COGS add-back (paid via bulk orders)",
-    });
-  });
-  await upsertGeneratedEvents(rows);
-  logger.info("cashflow-forecast.revenue.done", { firstWeekStart, weeks: weeks.length, rows: rows.length });
+/**
+ * Cash in (net profit + COGS) is computed live in getCashflowGrid from the
+ * current assumptions, so we no longer persist full-revenue inflow events —
+ * the old model overstated cash-in by treating gross revenue as inflow, which
+ * ballooned the forecast balance. This now just purges any stale `auto_revenue`
+ * forecast events left over from that model so they cannot double-count.
+ * Idempotent; safe to call from the daily cron and on every assumptions save.
+ */
+export async function generateRevenueForecast(_firstWeekStart: string): Promise<void> {
+  const deleted = await db
+    .delete(cashflowEvents)
+    .where(and(eq(cashflowEvents.kind, "forecast"), eq(cashflowEvents.source, "auto_revenue")))
+    .returning({ id: cashflowEvents.id });
+  if (deleted.length > 0) {
+    logger.info("cashflow-forecast.revenue.purged_stale", { count: deleted.length });
+  }
 }
 
 /** Upsert generated events on the (source, source_ref) unique index so

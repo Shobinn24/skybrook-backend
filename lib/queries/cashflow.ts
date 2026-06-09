@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { cashflowAssumptions, cashflowEvents, cashflowWeekly } from "@/lib/db/schema";
 import type { CashflowAssumptions } from "@/lib/domain/cashflow-math";
-import { netProfit, profitPayout, variance, isVarianceSignificant } from "@/lib/domain/cashflow-math";
+import { netProfit, cogs, profitPayout, variance, isVarianceSignificant } from "@/lib/domain/cashflow-math";
 import { weekStartsForward } from "@/lib/domain/cashflow-weeks";
 
 /** Reads the single assumptions row, seeding defaults on first access. */
@@ -66,6 +66,7 @@ export async function getCashflowGrid(firstWeekStart: string): Promise<CashflowG
     })
     .from(cashflowEvents)
     .where(sql`${cashflowEvents.kind} = 'forecast'
+      AND ${cashflowEvents.source} <> 'auto_revenue'
       AND ${cashflowEvents.cashDate} >= ${firstWeekStart}
       AND ${cashflowEvents.cashDate} <= ${lastWeek}`)
     .groupBy(sql`1`, cashflowEvents.category, cashflowEvents.direction);
@@ -98,17 +99,27 @@ export async function getCashflowGrid(firstWeekStart: string): Promise<CashflowG
     const beginning = enteredCash != null ? enteredCash : (expectedBeginning ?? 0);
 
     const np = netProfit(a, i);
+    const fcCogs = cogs(a, i);
     const payout = profitPayout(np, {
       payoutPct: a.profitPayoutPct,
       overrideUsd: manual?.payoutOverrideUsd != null ? Number(manual.payoutOverrideUsd) : null,
       skipped: manual?.payoutSkipped ?? false,
     });
 
-    const cashIn = inByWeek.get(week) ?? 0;
+    // Cash in = the store cash the business actually banks each week: net
+    // profit + COGS (the owner's model), computed live from assumptions, NOT from
+    // full-revenue events. The old bug summed gross revenue as inflow, which
+    // overstated In by revenue×(1−margin) and ballooned the balance. Any manual
+    // IN entries for the week are added on top.
+    const cashIn = np + fcCogs + (inByWeek.get(week) ?? 0);
     const cashOut = (outByWeek.get(week) ?? 0) + payout;
     const ending = beginning + cashIn - cashOut;
 
+    // Per-week line items requested: +Profit, +COGS, −Payouts, plus
+    // the −Bulk orders / −Other lines already carried in catByWeek from events.
     const cat = { ...(catByWeek.get(week) ?? {}) };
+    cat["net_profit"] = (cat["net_profit"] ?? 0) + np;
+    cat["cogs"] = (cat["cogs"] ?? 0) + fcCogs;
     cat["profit_payout"] = (cat["profit_payout"] ?? 0) - payout;
 
     // Variance (the reference sheet's "Difference" row): the actual cash entered
