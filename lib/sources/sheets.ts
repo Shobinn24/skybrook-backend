@@ -533,6 +533,23 @@ export type ParseIncomingResult = {
   }>;
 };
 
+// Build a P2-alert spec for PO columns skipped during incoming ingest: a
+// shipment name is present but its arrival date cannot be read (e.g. a date
+// typed without a year). Returns null when nothing was skipped. Wired into the
+// daily ingest cron so a silently-dropped PO surfaces in Slack instead of just
+// vanishing from /incoming.
+export function buildIncomingSkippedAlert(
+  skipped: ParseIncomingResult["skippedColumns"],
+): { title: string; fields: Record<string, string> } | null {
+  if (!skipped || skipped.length === 0) return null;
+  return {
+    title: `${skipped.length} incoming PO column(s) skipped — unreadable arrival date`,
+    fields: Object.fromEntries(
+      skipped.slice(0, 10).map((s) => [s.label || `col ${s.colIdx}`, s.reason]),
+    ),
+  };
+}
+
 // Match Grace's receipt-status row markers. Case-insensitive, leading
 // "received" or "delivered" both count — the suffix ("invty updated" vs
 // "invty not yet updated") is captured in the note so the operator can

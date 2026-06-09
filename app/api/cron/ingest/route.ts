@@ -13,6 +13,7 @@ import { runShippingSnapshot } from "@/lib/jobs/shipping-snapshot";
 import { syncUnitCosts } from "@/lib/jobs/unit-costs";
 import { postAlert, resolveAlert } from "@/lib/notifications/slack";
 import {
+  buildIncomingSkippedAlert,
   sheetsAdSpendRunner,
   sheetsFbAdsRunner,
   sheetsIncomingRunner,
@@ -21,6 +22,9 @@ import {
 import { shopifyIntlRunner, shopifyUsRunner } from "@/lib/sources/shopify";
 import { toEstDate } from "@/lib/tz";
 import { logger } from "@/lib/logger";
+import { db } from "@/lib/db";
+import { rawPulls } from "@/lib/db/schema";
+import { and, eq } from "drizzle-orm";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -48,6 +52,37 @@ export async function POST(req: Request) {
   const asOfDate = toEstDate(new Date());
   const ingest = await runIngest({ sources: SOURCES });
   const batchId = ingest.batchId;
+  // Surface any PO column the incoming sheet ingest had to skip (shipment name
+  // present but an arrival date the parser can't read, e.g. typed without a
+  // year). Without this the PO silently vanishes from /incoming — the same
+  // failure class as the read-range cap that hid a PO in 2026-06-09.
+  // Best-effort; never block the cron.
+  try {
+    const [incomingPull] = await db
+      .select({ payload: rawPulls.payload })
+      .from(rawPulls)
+      .where(and(eq(rawPulls.source, "sheets_incoming"), eq(rawPulls.pullBatchId, batchId)))
+      .limit(1);
+    const skipped =
+      (incomingPull?.payload as
+        | { skippedColumns?: Array<{ colIdx: number; label: string; reason: string }> }
+        | undefined)?.skippedColumns ?? [];
+    const skippedAlert = buildIncomingSkippedAlert(skipped);
+    if (skippedAlert) {
+      await postAlert({
+        severity: "p2",
+        title: skippedAlert.title,
+        dedupKey: "incoming.skipped_columns",
+        fields: skippedAlert.fields,
+      });
+    } else {
+      await resolveAlert("incoming.skipped_columns");
+    }
+  } catch (e) {
+    logger.error("incoming.skipped_columns.check_failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
   const productNames = await syncProductNames();
   const unitCosts = await syncUnitCosts();
   // Auto-receipt detection runs after ingest (today's stock snapshot

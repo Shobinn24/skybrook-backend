@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildIncomingSkippedAlert,
   colIndexToA1,
   dedupeAdSpendRows,
   extractArrivalDates,
@@ -15,6 +16,22 @@ import {
   trimFbAdDisplayName,
   walkDateHeaders,
 } from "@/lib/sources/sheets";
+
+describe("buildIncomingSkippedAlert", () => {
+  it("returns null when no PO columns were skipped", () => {
+    expect(buildIncomingSkippedAlert([])).toBeNull();
+  });
+  it("summarizes skipped PO columns into a P2 alert spec", () => {
+    const alert = buildIncomingSkippedAlert([
+      { colIdx: 33, label: "KAI 27", reason: "unparseable arrival cell: 21 July" },
+      { colIdx: 40, label: "AI 9055", reason: "unparseable arrival cell: (empty)" },
+    ]);
+    expect(alert).not.toBeNull();
+    expect(alert!.title).toContain("2");
+    expect(Object.keys(alert!.fields)).toContain("KAI 27");
+    expect(Object.keys(alert!.fields)).toContain("AI 9055");
+  });
+});
 
 describe("colIndexToA1", () => {
   it("handles single-letter columns", () => {
