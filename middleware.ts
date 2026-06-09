@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   SESSION_COOKIE,
+  FB_ADS_ONLY_LANDING_PATH,
   getUserRole,
   isCashflowAllowed,
+  isFbAdsOnly,
+  isFbAdsOnlyAllowedPath,
   isMarketingAllowedPath,
   MARKETING_LANDING_PATH,
   verifySessionToken,
@@ -46,6 +49,20 @@ export async function middleware(req: NextRequest) {
   const token = req.cookies.get(SESSION_COOKIE)?.value;
   const session = token ? await verifySessionToken(secret, token) : null;
   if (session) {
+    // FB-ads-only tier (owner request 2026-06-09): external media buyers are
+    // restricted to the FB Ads Tracker. This is the tightest tier, so it's
+    // checked BEFORE cashflow/marketing — a restricted user hitting anything
+    // else (including /cashflow) lands on /fb-ads, not /performance.
+    if (isFbAdsOnly(session.email)) {
+      if (!isFbAdsOnlyAllowedPath(pathname)) {
+        const url = req.nextUrl.clone();
+        url.pathname = FB_ADS_ONLY_LANDING_PATH;
+        url.search = "";
+        return NextResponse.redirect(url);
+      }
+      return NextResponse.next();
+    }
+
     // Role-based scoping (Scott 2026-05-15): marketing users only see
     // /launches, /fb-ads, /bonus-tracker, /performance. Any other page
     // path silently redirects to MARKETING_LANDING_PATH. tRPC routes

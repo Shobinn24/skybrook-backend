@@ -7,6 +7,8 @@ import {
   decodeIdToken,
   getUserRole,
   isCashflowAllowed,
+  isFbAdsOnly,
+  isFbAdsOnlyAllowedPath,
   isMarketingAllowedPath,
   parseAllowedEmails,
   verifyOAuthStateToken,
@@ -350,5 +352,44 @@ describe("isCashflowAllowed", () => {
   });
   it("denies everyone when the list is empty (fail-closed for sensitive cash data)", () => {
     expect(isCashflowAllowed("a@x.com", "")).toBe(false);
+  });
+});
+
+describe("isFbAdsOnly (external buyers scoped to the FB Ads Tracker only)", () => {
+  const LIST = "buyer1@example.com, buyer2@gmail.test, buyer3@example.net";
+  it("matches listed emails case-insensitively", () => {
+    expect(isFbAdsOnly("buyer1@example.com", LIST)).toBe(true);
+    expect(isFbAdsOnly("Buyer2@gmail.test", LIST)).toBe(true);
+    expect(isFbAdsOnly("buyer3@example.net", LIST)).toBe(true);
+  });
+  it("denies non-listed emails and null", () => {
+    expect(isFbAdsOnly("ops-user@everdries.com", LIST)).toBe(false);
+    expect(isFbAdsOnly(null, LIST)).toBe(false);
+  });
+  it("fail-closed: empty/unset list = nobody is restricted-tier", () => {
+    // Empty list means the tier is inactive — callers treat a false here as
+    // "not an fb-ads-only user", so they fall through to their normal role.
+    expect(isFbAdsOnly("buyer1@example.com", "")).toBe(false);
+  });
+});
+
+describe("isFbAdsOnlyAllowedPath", () => {
+  it("allows only the FB Ads Tracker page + its subpaths", () => {
+    expect(isFbAdsOnlyAllowedPath("/fb-ads")).toBe(true);
+    expect(isFbAdsOnlyAllowedPath("/fb-ads/anything")).toBe(true);
+  });
+  it("allows tRPC paths (Phase 1, same as marketing)", () => {
+    expect(isFbAdsOnlyAllowedPath("/api/trpc/inventory.getFbAds")).toBe(true);
+  });
+  it("blocks every other page, including the other marketing pages and cashflow", () => {
+    expect(isFbAdsOnlyAllowedPath("/performance")).toBe(false);
+    expect(isFbAdsOnlyAllowedPath("/bonus-tracker")).toBe(false);
+    expect(isFbAdsOnlyAllowedPath("/launches")).toBe(false);
+    expect(isFbAdsOnlyAllowedPath("/cashflow")).toBe(false);
+    expect(isFbAdsOnlyAllowedPath("/inventory")).toBe(false);
+    expect(isFbAdsOnlyAllowedPath("/")).toBe(false);
+  });
+  it("no false positive on a similarly-prefixed path", () => {
+    expect(isFbAdsOnlyAllowedPath("/fb-ads-history")).toBe(false);
   });
 });

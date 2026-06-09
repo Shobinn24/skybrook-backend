@@ -348,3 +348,36 @@ export function isMarketingAllowedPath(pathname: string): boolean {
   if (pathname.startsWith("/api/trpc/")) return true;
   return false;
 }
+
+// --- FB-ads-only tier ------------------------------------------------------
+// Owner request 2026-06-09: external media buyers should see ONLY the FB Ads Tracker
+// (/fb-ads), not the rest of the marketing surface (the bonus tracker exposes
+// everyone's commission payouts, plus performance/launches). This is a tier
+// tighter than "marketing": membership comes from SKYBROOK_FB_ADS_ONLY_EMAILS
+// and the middleware lets these users reach /fb-ads only. Fail-closed: an
+// empty/unset list means nobody is in this tier (they fall through to their
+// normal ops/marketing role). These are non-workspace logins, so they also
+// need to be in EXTERNAL_ALLOWED_EMAILS to sign in at all.
+
+export const FB_ADS_ONLY_LANDING_PATH = "/fb-ads";
+
+/** True when `email` is restricted to the FB Ads Tracker only. Controlled by
+ * SKYBROOK_FB_ADS_ONLY_EMAILS (comma-separated). Empty/unset = false for
+ * everyone (tier inactive). */
+export function isFbAdsOnly(
+  email: string | null | undefined,
+  fbAdsOnlyEmailsRaw?: string,
+): boolean {
+  if (!email) return false;
+  const list = parseAllowedEmails(fbAdsOnlyEmailsRaw ?? process.env.SKYBROOK_FB_ADS_ONLY_EMAILS);
+  return list.includes(email.toLowerCase());
+}
+
+/** Paths an fb-ads-only user may load: the FB Ads Tracker (+ subpaths) and
+ * tRPC (Phase 1, same caveat as marketing — per-procedure gating is a
+ * follow-up). Everything else redirects to FB_ADS_ONLY_LANDING_PATH. */
+export function isFbAdsOnlyAllowedPath(pathname: string): boolean {
+  if (pathname === "/fb-ads" || pathname.startsWith("/fb-ads/")) return true;
+  if (pathname.startsWith("/api/trpc/")) return true;
+  return false;
+}
