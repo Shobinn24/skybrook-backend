@@ -293,6 +293,20 @@ export function parseAllowedEmails(raw: string | undefined): string[] {
 
 export type Role = "ops" | "marketing";
 
+/** Access tier for server-side authorization (tRPC + middleware).
+ * Strictly ordered: fb_ads_only ⊂ marketing ⊂ ops. The fb-ads-only
+ * check wins over marketing when an email appears in both lists. */
+export type AccessTier = "ops" | "marketing" | "fb_ads_only";
+
+/** Resolves the single effective tier for an email. Used by the tRPC
+ * context so every procedure can enforce its own minimum tier
+ * (default-deny — see lib/trpc/server.ts). */
+export function getAccessTier(email: string | null | undefined): AccessTier {
+  if (!email) return "fb_ads_only"; // most restrictive; callers reject null email anyway
+  if (isFbAdsOnly(email)) return "fb_ads_only";
+  return getUserRole(email);
+}
+
 /** Returns the role for a signed-in email. Marketing membership is
  * controlled by `SKYBROOK_MARKETING_EMAILS` (comma-separated, normalized
  * to lowercase). When the env var is empty or unset, no one is in the
@@ -322,11 +336,12 @@ export function isCashflowAllowed(
 
 // URL prefixes a marketing user is permitted to load. Anything else
 // redirects to MARKETING_LANDING_PATH. tRPC procedure paths
-// (/api/trpc/*) are intentionally NOT narrowed here because every page
-// — marketing and ops — calls into the same `inventory` router; a
-// prefix gate would block legitimate marketing reads too. Phase 2
-// follow-up: per-procedure allowlist in a tRPC middleware, with the
-// router's procedure name as the key (default-deny for marketing).
+// (/api/trpc/*) pass through this prefix gate because authorization
+// for procedures lives in the tRPC layer itself: every procedure is
+// built from a tier-scoped builder (opsProcedure / marketingProcedure /
+// fbAdsProcedure / cashflowProcedure in lib/trpc/server.ts) that
+// rejects under-privileged sessions with FORBIDDEN. Default-deny —
+// there is no ungated procedure builder.
 const MARKETING_ALLOWED_PREFIXES: ReadonlyArray<string> = [
   "/launches",
   "/fb-ads",
@@ -344,7 +359,7 @@ export function isMarketingAllowedPath(pathname: string): boolean {
   for (const prefix of MARKETING_ALLOWED_PREFIXES) {
     if (pathname === prefix || pathname.startsWith(prefix + "/")) return true;
   }
-  // tRPC: allow Phase 1; narrow in Phase 2.
+  // tRPC: per-procedure tiers are enforced inside the tRPC layer.
   if (pathname.startsWith("/api/trpc/")) return true;
   return false;
 }
@@ -374,8 +389,9 @@ export function isFbAdsOnly(
 }
 
 /** Paths an fb-ads-only user may load: the FB Ads Tracker (+ subpaths) and
- * tRPC (Phase 1, same caveat as marketing — per-procedure gating is a
- * follow-up). Everything else redirects to FB_ADS_ONLY_LANDING_PATH. */
+ * tRPC (per-procedure tiers are enforced inside the tRPC layer — an
+ * fb-ads-only session can only invoke fbAdsProcedure procedures).
+ * Everything else redirects to FB_ADS_ONLY_LANDING_PATH. */
 export function isFbAdsOnlyAllowedPath(pathname: string): boolean {
   if (pathname === "/fb-ads" || pathname.startsWith("/fb-ads/")) return true;
   if (pathname.startsWith("/api/trpc/")) return true;

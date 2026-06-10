@@ -1,4 +1,4 @@
-import { router, publicProcedure } from "@/lib/trpc/server";
+import { router, opsProcedure } from "@/lib/trpc/server";
 import { getShippingPerformanceView } from "@/lib/queries/shipping-audit";
 
 export const shippingAuditRouter = router({
@@ -10,5 +10,5 @@ export const shippingAuditRouter = router({
   // lists. Flags are computed live each call against current Shopify
   // state; stats are read from the persisted daily snapshot but
   // overridden by a live recompute when Shopify is reachable.
-  getView: publicProcedure.query(() => getShippingPerformanceView()),
+  getView: opsProcedure.query(() => getShippingPerformanceView()),
 });

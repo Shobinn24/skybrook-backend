@@ -435,8 +435,7 @@ export default function FactoryOrdersPage() {
           {!isApproved && (
             <button
               onClick={() => {
-                const approver = window.prompt("Approve as (your name)?")?.trim();
-                if (!approver) return;
+                // Approver identity comes from the session server-side.
                 if (
                   !window.confirm(
                     "Approve and freeze this order? The inputs will become read-only.",
@@ -445,7 +444,7 @@ export default function FactoryOrdersPage() {
                   return;
                 }
                 approve.mutate(
-                  { orderId: draft.data!.header.id, approvedBy: approver },
+                  { orderId: draft.data!.header.id },
                   {
                     onSuccess: () => {
                       void utils.factoryOrder.getDraft.invalidate({ orderMonth });

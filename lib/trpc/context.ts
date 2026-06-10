@@ -1,13 +1,23 @@
-// tRPC context. Auth is enforced at the HTTP layer by middleware.ts —
-// any request reaching a procedure has already cleared the session
-// gate. We additionally extract the signed-in email from the session
-// cookie so mutating procedures can attribute writes (e.g.
-// updated_by on sku_family_overrides).
+// tRPC context. The middleware (middleware.ts) guarantees a valid
+// session exists before any /api/trpc request reaches a procedure, but
+// AUTHORIZATION happens here + in lib/trpc/server.ts: the context
+// carries the session email, its access tier, and the cashflow
+// allowlist flag, and every procedure is built from a tier-scoped
+// builder that rejects under-privileged sessions. Never trust a
+// client-supplied identity field — attribute writes to ctx.email.
 
-import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
+import {
+  SESSION_COOKIE,
+  verifySessionToken,
+  getAccessTier,
+  isCashflowAllowed,
+  type AccessTier,
+} from "@/lib/auth";
 
 export type TrpcContext = {
   email: string | null;
+  tier: AccessTier;
+  cashflowAllowed: boolean;
 };
 
 function parseCookie(header: string | null, name: string): string | null {
@@ -25,7 +35,12 @@ export async function createContext(opts?: {
   const secret = process.env.SESSION_SECRET;
   const cookieHeader = opts?.req?.headers.get("cookie") ?? null;
   const token = parseCookie(cookieHeader, SESSION_COOKIE);
-  if (!secret || !token) return { email: null };
-  const payload = await verifySessionToken(secret, token);
-  return { email: payload?.email ?? null };
+  const payload =
+    secret && token ? await verifySessionToken(secret, token) : null;
+  const email = payload?.email ?? null;
+  return {
+    email,
+    tier: getAccessTier(email),
+    cashflowAllowed: isCashflowAllowed(email),
+  };
 }

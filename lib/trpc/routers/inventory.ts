@@ -47,7 +47,7 @@ import {
 import { getSkuDetail } from "@/lib/queries/sku-detail";
 import { getSustainabilityTimeline } from "@/lib/queries/sustainability-timeline";
 import { toEstDate } from "@/lib/tz";
-import { publicProcedure, router } from "@/lib/trpc/server";
+import { fbAdsProcedure, marketingProcedure, opsProcedure, router } from "@/lib/trpc/server";
 
 const locationSchema = z.enum(["US", "CN"]);
 const velocityWindowSchema = z
@@ -58,7 +58,7 @@ const velocityWindowSchema = z
 export const inventoryRouter = router({
   // One-shot view for the inventory page — returns rows with stock, velocity,
   // DOS, weeks of stock, flag, incoming units, and stock value per SKU.
-  getInventoryRows: publicProcedure
+  getInventoryRows: opsProcedure
     .input(z.object({ location: locationSchema }))
     .query(({ input }) => getInventoryRows(input.location)),
 
@@ -67,7 +67,7 @@ export const inventoryRouter = router({
   // velocity against an external spreadsheet over a chosen window.
   // The default 7-day velocity still comes from the pre-computed
   // sales_velocity table via getInventoryRows.
-  getVelocityForRange: publicProcedure
+  getVelocityForRange: opsProcedure
     .input(
       z.object({
         location: locationSchema,
@@ -81,25 +81,25 @@ export const inventoryRouter = router({
     )
     .query(({ input }) => getVelocityForRange(input)),
 
-  getStockLevels: publicProcedure
+  getStockLevels: opsProcedure
     .input(z.object({ sku: z.string().optional(), location: locationSchema.optional() }).optional())
     .query(({ input }) => getStockLevels(input ?? {})),
 
-  getStockValue: publicProcedure
+  getStockValue: opsProcedure
     .input(z.object({ location: locationSchema.optional(), productLine: z.string().optional() }).optional())
     .query(({ input }) => getStockValue(input ?? {})),
 
   // Per-product-line $ rollup for the inventory page (SPEC §5.7 q2).
   // Honours the warehouse toggle so the breakdown matches the rest
   // of the page rather than fighting it with combined totals.
-  getStockValueByProductLine: publicProcedure
+  getStockValueByProductLine: opsProcedure
     .input(z.object({ location: locationSchema.optional() }).optional())
     .query(({ input }) => getStockValueByProductLine(input ?? {})),
 
   // Per-product (garment-name) $ rollup for the dedicated /stock-value
   // page. Resolves Scott's #10 ask 2026-04-28 ("split it up by product
   // not main/sec").
-  getStockValueByProduct: publicProcedure
+  getStockValueByProduct: opsProcedure
     .input(z.object({ location: locationSchema.optional() }).optional())
     .query(({ input }) => getStockValueByProduct(input ?? {})),
 
@@ -108,7 +108,7 @@ export const inventoryRouter = router({
   // (2026-04-28 punch-list #8). For each SKU at the location: sales
   // over a configurable window, prorated 30-day equivalent, current
   // stock, and a projection row per upcoming shipment.
-  getSustainabilityTimeline: publicProcedure
+  getSustainabilityTimeline: opsProcedure
     .input(
       z.object({
         location: locationSchema,
@@ -123,11 +123,11 @@ export const inventoryRouter = router({
       }),
     ),
 
-  getIncomingStock: publicProcedure
+  getIncomingStock: opsProcedure
     .input(z.object({ sku: z.string().optional(), location: locationSchema.optional() }).optional())
     .query(({ input }) => getIncomingStock(input ?? {})),
 
-  getSalesVelocity: publicProcedure
+  getSalesVelocity: opsProcedure
     .input(z.object({ sku: z.string(), windowDays: velocityWindowSchema }))
     .query(async ({ input }) => {
       const [row] = await db
@@ -145,7 +145,7 @@ export const inventoryRouter = router({
       return row ?? null;
     }),
 
-  getDaysOfStock: publicProcedure
+  getDaysOfStock: opsProcedure
     .input(
       z.object({
         sku: z.string(),
@@ -169,7 +169,7 @@ export const inventoryRouter = router({
       return row ?? null;
     }),
 
-  getSustainabilityStatus: publicProcedure
+  getSustainabilityStatus: opsProcedure
     .input(z.object({ sku: z.string() }))
     .query(async ({ input }) => {
       return db
@@ -181,7 +181,7 @@ export const inventoryRouter = router({
     }),
 
   // Scott's signature output: every latest sustainability flag per (SKU, location).
-  listLatestSustainabilityFlags: publicProcedure
+  listLatestSustainabilityFlags: opsProcedure
     .input(z.object({ location: locationSchema.optional() }).optional())
     .query(async ({ input }) => {
       const rows = await db
@@ -201,7 +201,7 @@ export const inventoryRouter = router({
     }),
 
   // Convenience: "overstocked" SKUs — pulls from latest sustainability flags only.
-  getOverstockedSKUs: publicProcedure
+  getOverstockedSKUs: opsProcedure
     .input(z.object({ location: locationSchema.optional() }).optional())
     .query(async ({ input }) => {
       const rows = await db
@@ -226,7 +226,7 @@ export const inventoryRouter = router({
   // + flag + DOS + incoming POs, plus a velocity matrix at 3/7/30d
   // across `all` / `shopify_us` / `shopify_intl` channels. Returns
   // null when the SKU isn't in the catalog (404 at the page level).
-  getSkuDetail: publicProcedure
+  getSkuDetail: opsProcedure
     .input(z.object({ sku: z.string().min(1) }))
     .query(({ input }) => getSkuDetail(input.sku)),
 
@@ -235,7 +235,7 @@ export const inventoryRouter = router({
   // stock value, full trace) filtered to flag === "overstocked", sorted
   // by stock-value descending — biggest-leverage marketing candidates
   // first. Plus a summary block for the KPI strip at the top of the page.
-  getOverstockView: publicProcedure.query(() => getOverstockRows()),
+  getOverstockView: opsProcedure.query(() => getOverstockRows()),
 
   // Page-feeding endpoint for /incoming (SPEC §5.7 q3). Forward-looking
   // arrivals view: returns the joined SKU + shipment rows sorted by
@@ -244,7 +244,7 @@ export const inventoryRouter = router({
   // shows pending + overdue rows (anything without a receipt confirmation);
   // `includeReceived: true` adds historical received rows for the page-level
   // "Show past shipments" toggle.
-  getIncomingShipmentsView: publicProcedure
+  getIncomingShipmentsView: opsProcedure
     .input(
       z
         .object({
@@ -258,7 +258,7 @@ export const inventoryRouter = router({
   // Mark a PO received. Idempotent — re-clicking is a no-op (ON CONFLICT DO
   // NOTHING on the natural-key unique index). Keyed by the same triple the
   // sheet ingest produces, so receipts survive truncate-replace cron runs.
-  markIncomingReceived: publicProcedure
+  markIncomingReceived: opsProcedure
     .input(
       z.object({
         shipmentName: z.string().min(1),
@@ -289,7 +289,7 @@ export const inventoryRouter = router({
   // Undo "mark received" — Scott clicked the button by mistake or the PO
   // turned out not to have actually arrived. Idempotent; deleting a missing
   // row is a no-op.
-  unmarkIncomingReceived: publicProcedure
+  unmarkIncomingReceived: opsProcedure
     .input(
       z.object({
         shipmentName: z.string().min(1),
@@ -316,7 +316,7 @@ export const inventoryRouter = router({
   // `productName` is optional; null/omitted = brand-level (applies to
   // every SKU at the location). Set to a productName for product-scoped
   // overrides — those take precedence over brand-level for the same day.
-  addVelocityOverride: publicProcedure
+  addVelocityOverride: opsProcedure
     .input(
       z
         .object({
@@ -346,7 +346,7 @@ export const inventoryRouter = router({
       return { id: row.id };
     }),
 
-  removeVelocityOverride: publicProcedure
+  removeVelocityOverride: opsProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ input }) => {
       await db.delete(velocityOverrides).where(eq(velocityOverrides.id, input.id));
@@ -356,7 +356,7 @@ export const inventoryRouter = router({
   // /performance page rollup. Returns per-canonical-product revenue +
   // spend + ROAS for the trailing rangeDays ending on endDate (or
   // yesterday EST if endDate omitted). rangeDays=1 is a single day.
-  getPerformance: publicProcedure
+  getPerformance: marketingProcedure
     .input(
       z.object({
         rangeStart: z
@@ -388,15 +388,15 @@ export const inventoryRouter = router({
   // yet ingested for this date" warning banner. Surfaced 2026-05-14
   // when the page silently showed $X revenue + $0 spend on a day
   // before Supermetrics had ingested.
-  getPerformanceDataFreshness: publicProcedure.query(() =>
+  getPerformanceDataFreshness: marketingProcedure.query(() =>
     getPerformanceDataFreshness(),
   ),
 
   // /launches page — returns all launch rows with derived ETA Ant/PD.
-  getLaunches: publicProcedure.query(() => getLaunches()),
+  getLaunches: marketingProcedure.query(() => getLaunches()),
 
   // Dropdowns powering the "Add launch" form.
-  getLaunchFormOptions: publicProcedure.query(async () => {
+  getLaunchFormOptions: marketingProcedure.query(async () => {
     const [productNames, shipmentNames] = await Promise.all([
       getDistinctProductNames(),
       getDistinctShipmentNames(),
@@ -404,7 +404,7 @@ export const inventoryRouter = router({
     return { productNames, shipmentNames };
   }),
 
-  addLaunch: publicProcedure
+  addLaunch: marketingProcedure
     .input(
       z.object({
         productName: z.string().min(1).max(120),
@@ -427,7 +427,7 @@ export const inventoryRouter = router({
 
   // Patch one or more of the four manual launch dates. Pass null to
   // clear a previously-set date.
-  updateLaunchDates: publicProcedure
+  updateLaunchDates: marketingProcedure
     .input(
       z.object({
         id: z.string().uuid(),
@@ -451,7 +451,7 @@ export const inventoryRouter = router({
       return { ok: true as const };
     }),
 
-  removeLaunch: publicProcedure
+  removeLaunch: marketingProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ input }) => {
       await db.delete(productLaunches).where(eq(productLaunches.id, input.id));
@@ -463,7 +463,7 @@ export const inventoryRouter = router({
   // Optional `marketers` filter narrows to ads attributed to any of
   // the selected names; passing "Unassigned" includes ads whose
   // ad_name_raw didn't match the 8-marketer roster at ingest.
-  getFbAdsRollup: publicProcedure
+  getFbAdsRollup: fbAdsProcedure
     .input(
       z.object({
         rangeStart: z
@@ -492,12 +492,12 @@ export const inventoryRouter = router({
   // bonus tiers are cumulative. Spec: §Bonus Tracker, Jasper 2026-05-11.
   // Returns each row with its (T1, T2) bonus_award status so the UI
   // colors by approval state (Phase B+, Jasper 2026-05-13).
-  getBonusTracker: publicProcedure.query(() => getBonusTracker()),
+  getBonusTracker: marketingProcedure.query(() => getBonusTracker()),
 
   // Pending bonuses awaiting Jasper's per-ad approval decision.
   // Optional marketer filter — used by per-marketer tab views (Jasper
   // 2026-05-20: each marketer's tab shows only their pending queue).
-  getPendingBonusApprovals: publicProcedure
+  getPendingBonusApprovals: marketingProcedure
     .input(
       z
         .object({ marketer: z.enum(BONUS_MARKETERS).optional() })
@@ -506,7 +506,7 @@ export const inventoryRouter = router({
     .query(({ input }) => getPendingApprovals({ marketer: input?.marketer })),
 
   // Approve a single pending award at full or half rate.
-  approveBonus: publicProcedure
+  approveBonus: marketingProcedure
     .input(
       z.object({
         awardId: z.string().uuid(),
@@ -520,7 +520,7 @@ export const inventoryRouter = router({
     }),
 
   // Reject a pending or approved award — won't ship in the notification.
-  rejectBonus: publicProcedure
+  rejectBonus: marketingProcedure
     .input(
       z.object({
         awardId: z.string().uuid(),
@@ -534,13 +534,13 @@ export const inventoryRouter = router({
 
   // One-click triage: flip every still-pending award to approved_full.
   // Use case = historical backlog on first deploy of the bonus workflow.
-  bulkApprovePending: publicProcedure.mutation(({ ctx }) =>
+  bulkApprovePending: marketingProcedure.mutation(({ ctx }) =>
     bulkApprovePending({ approvedBy: ctx.email ?? "unknown" }),
   ),
 
   // Render the WhatsApp message body + per-marketer totals from every
   // unsent approved award. Pure read — doesn't mutate anything.
-  previewBonusNotification: publicProcedure
+  previewBonusNotification: marketingProcedure
     .input(z.object({ periodLabel: z.string().max(60).optional() }).optional())
     .query(({ input }) => previewNotification(input ?? {})),
 
@@ -548,7 +548,7 @@ export const inventoryRouter = router({
   // WhatsApp send itself is wired up by the caller when we have a
   // configured MCP channel; until then the batch is recorded with
   // `whatsapp_status='failed:...'` so the operator can copy / re-send.
-  sendBonusNotification: publicProcedure
+  sendBonusNotification: marketingProcedure
     .input(z.object({ periodLabel: z.string().max(60).optional() }).optional())
     .mutation(({ input, ctx }) =>
       sendNotification({
@@ -557,17 +557,17 @@ export const inventoryRouter = router({
       }),
     ),
 
-  getBonusNotificationHistory: publicProcedure.query(() =>
+  getBonusNotificationHistory: marketingProcedure.query(() =>
     getNotificationHistory(),
   ),
 
   // Scoreboard: bonus paid per month per marketer (Jasper 2026-05-20).
   // Kept for compatibility — UI Summary tab moved to getBonusCountSummary
   // (Jasper 2026-05-28 redesign). Safe to remove after a quiet period.
-  getBonusSummary: publicProcedure.query(() => getBonusSummary()),
+  getBonusSummary: marketingProcedure.query(() => getBonusSummary()),
 
   // Count-only scoreboard mirroring Jasper's manual Ads Bonus Tracking 3
   // Summary tab — one row per (month × type), columns per marketer in
   // Jasper's column order. May 2026 onwards.
-  getBonusCountSummary: publicProcedure.query(() => getBonusCountSummary()),
+  getBonusCountSummary: marketingProcedure.query(() => getBonusCountSummary()),
 });

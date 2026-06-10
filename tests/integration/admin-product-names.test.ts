@@ -33,7 +33,9 @@ async function seedSkus(rows: Array<{ sku: string; productName?: string }>) {
 }
 
 const callerWith = (email: string | null) =>
-  appRouter.createCaller({ email });
+  // Integration tests exercise the admin router as an ops session;
+  // tier gating itself is covered by tests/unit/trpc-authz.test.ts.
+  appRouter.createCaller({ email, tier: "ops", cashflowAllowed: true });
 
 describe("admin.product-names tRPC procedures", () => {
   beforeAll(() => {

@@ -2,7 +2,6 @@
 import { useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc/client";
 
-const BY = "ui"; // recorded-by tag for UI-driven writes
 
 function fmtMoney(n: number): string {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -120,7 +119,7 @@ export default function CashflowPage() {
           </label>
           <button className={`${BTN_CLS} bg-black text-white`}
             disabled={enterCash.isPending || cashInput.trim() === ""}
-            onClick={() => { enterCash.mutate({ weekStart: wk0.weekStart, totalCashUsd: num(cashInput), by: BY }); setCashInput(""); }}>
+            onClick={() => { enterCash.mutate({ weekStart: wk0.weekStart, totalCashUsd: num(cashInput) }); setCashInput(""); }}>
             Save balance
           </button>
         </div>
@@ -131,7 +130,7 @@ export default function CashflowPage() {
             <div className="flex gap-2">
               {(["volume", "spending", "timing"] as const).map((r) => (
                 <button key={r} className={`${BTN_CLS} ${wk0.varianceReason === r ? "bg-black text-white" : ""}`}
-                  onClick={() => setReason.mutate({ weekStart: wk0.weekStart, reason: r, note: null, by: BY })}>{r}</button>
+                  onClick={() => setReason.mutate({ weekStart: wk0.weekStart, reason: r, note: null })}>{r}</button>
               ))}
             </div>
           </div>
@@ -145,11 +144,11 @@ export default function CashflowPage() {
           </label>
           <button className={BTN_CLS}
             disabled={setPayout.isPending || payoutInput.trim() === ""}
-            onClick={() => { setPayout.mutate({ weekStart: wk0.weekStart, overrideUsd: num(payoutInput), by: BY }); setPayoutInput(""); }}>
+            onClick={() => { setPayout.mutate({ weekStart: wk0.weekStart, overrideUsd: num(payoutInput) }); setPayoutInput(""); }}>
             Set payout
           </button>
-          <button className={BTN_CLS} onClick={() => setPayout.mutate({ weekStart: wk0.weekStart, skipped: true, by: BY })}>Skip payout</button>
-          <button className={BTN_CLS} onClick={() => setPayout.mutate({ weekStart: wk0.weekStart, skipped: false, overrideUsd: null, by: BY })}>Reset payout</button>
+          <button className={BTN_CLS} onClick={() => setPayout.mutate({ weekStart: wk0.weekStart, skipped: true })}>Skip payout</button>
+          <button className={BTN_CLS} onClick={() => setPayout.mutate({ weekStart: wk0.weekStart, skipped: false, overrideUsd: null })}>Reset payout</button>
         </div>
       </div>
 
@@ -163,7 +162,7 @@ export default function CashflowPage() {
             initial={assumptions.data}
             pending={saveAssumptions.isPending}
             saved={saveAssumptions.isSuccess}
-            onSave={(patch) => saveAssumptions.mutate({ patch, by: BY, firstWeekStart: firstWeek })}
+            onSave={(patch) => saveAssumptions.mutate({ patch, firstWeekStart: firstWeek })}
           />
         )}
       </div>
@@ -174,7 +173,7 @@ export default function CashflowPage() {
         <ManualEntryForm
           defaultDate={firstWeek}
           pending={addEntry.isPending}
-          onAdd={(e) => addEntry.mutate({ ...e, by: BY })}
+          onAdd={(e) => addEntry.mutate({ ...e })}
         />
         <ul className="text-sm divide-y">
           {(manual.data ?? []).map((m) => (
@@ -184,7 +183,7 @@ export default function CashflowPage() {
                 {m.recurring ? ` /mo (from ${m.firstDate})` : ` on ${m.firstDate}`}
                 {m.description ? ` · ${m.description}` : ""}
               </span>
-              <button className="text-red-600 hover:underline" onClick={() => delEntry.mutate({ ref: m.ref, by: BY })}>remove</button>
+              <button className="text-red-600 hover:underline" onClick={() => delEntry.mutate({ ref: m.ref })}>remove</button>
             </li>
           ))}
           {(manual.data ?? []).length === 0 && <li className="py-1 text-neutral-500">No manual entries yet.</li>}

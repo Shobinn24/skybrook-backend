@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
-import { router, publicProcedure } from "@/lib/trpc/server";
+import { router, opsProcedure } from "@/lib/trpc/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { factoryOrders } from "@/lib/db/schema";
@@ -54,14 +54,14 @@ export const factoryOrderRouter = router({
   // Resolve a draft order for the given month. Idempotent — creates
   // the row if it doesn't exist so the dashboard can navigate
   // straight into "May 2026" without a preceding click-to-create.
-  getDraft: publicProcedure
+  getDraft: opsProcedure
     .input(z.object({ orderMonth: z.string().min(7) })) // "YYYY-MM" or full date
     .query(({ input }) => getOrCreateDraft(input.orderMonth)),
 
   // Auto-save edits to the input panel. Errors with FORBIDDEN if the
   // order has already been approved — UI should disable inputs but
   // we double-check on the server.
-  saveInputs: publicProcedure
+  saveInputs: opsProcedure
     .input(
       z.object({
         orderId: z.string().uuid(),
@@ -98,7 +98,7 @@ export const factoryOrderRouter = router({
   // and skus. Pure computation on the server — does not mutate the
   // order. The dashboard hits this on every input change to refresh
   // the summary + detail tables.
-  calculate: publicProcedure
+  calculate: opsProcedure
     .input(z.object({ orderId: z.string().uuid() }))
     .query(({ input }) => calculateOrder({ orderId: input.orderId })),
 
@@ -107,27 +107,24 @@ export const factoryOrderRouter = router({
   // Idempotent — re-approving an approved order returns the existing
   // snapshot. Excel sheets are then downloadable from
   // /api/factory-orders/<id>/sheet/<US|INTL>.
-  approve: publicProcedure
-    .input(
-      z.object({
-        orderId: z.string().uuid(),
-        approvedBy: z.string().min(1).max(120),
-      }),
-    )
-    .mutation(({ input }) =>
+  approve: opsProcedure
+    .input(z.object({ orderId: z.string().uuid() }))
+    .mutation(({ input, ctx }) =>
       approveFactoryOrder({
         orderId: input.orderId,
-        approvedBy: input.approvedBy,
+        // Attributed to the session, never client input — a forged
+        // approvedBy on a money document is an integrity hole.
+        approvedBy: ctx.email,
       }),
     ),
 
   // List orders newest-first for the picker UI.
-  list: publicProcedure.query(() => listOrders()),
+  list: opsProcedure.query(() => listOrders()),
 
   // Convenience: normalize an "any day in month" string to the first
   // of the month. Useful for the month-picker on the client without
   // having to import date utilities.
-  monthKey: publicProcedure
+  monthKey: opsProcedure
     .input(z.object({ date: z.string().min(7) }))
     .query(({ input }) => monthKey(input.date)),
 });

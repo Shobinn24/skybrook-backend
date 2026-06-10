@@ -10,7 +10,7 @@ import { deriveProductName, snapshotKnownFamilies } from "@/lib/domain/sku-namin
 import { loadFamilyOverrides } from "@/lib/domain/sku-naming-overrides";
 import { runLaunchAutoPopulate } from "@/lib/jobs/launches";
 import { syncProductNames } from "@/lib/jobs/product-names";
-import { publicProcedure, router } from "@/lib/trpc/server";
+import { opsProcedure, router } from "@/lib/trpc/server";
 
 const upsertInput = z.object({
   family: z
@@ -33,10 +33,10 @@ export const adminRouter = router({
   // "All entries" panel that lets Scott edit existing labels by
   // upserting an override. Returned alongside listOverrides on the
   // page; an override row supersedes the constant.
-  listKnownFamilies: publicProcedure.query(() => snapshotKnownFamilies()),
+  listKnownFamilies: opsProcedure.query(() => snapshotKnownFamilies()),
 
   // DB-backed overrides.
-  listOverrides: publicProcedure.query(async () => {
+  listOverrides: opsProcedure.query(async () => {
     const rows = await db.select().from(skuFamilyOverrides);
     return rows.map((r) => ({
       family: r.family,
@@ -52,7 +52,7 @@ export const adminRouter = router({
   // productName via constants OR overrides — i.e. the candidates that
   // need a label entered. Grouped by single-segment family. Sample
   // SKUs help the admin decide what label to assign.
-  listUnmappedFamilies: publicProcedure.query(async () => {
+  listUnmappedFamilies: opsProcedure.query(async () => {
     const overrides = await loadFamilyOverrides();
     const all = await db.select({ sku: skus.sku }).from(skus);
     const unresolved = new Map<
@@ -85,7 +85,7 @@ export const adminRouter = router({
     );
   }),
 
-  upsertOverride: publicProcedure.input(upsertInput).mutation(async ({ ctx, input }) => {
+  upsertOverride: opsProcedure.input(upsertInput).mutation(async ({ ctx, input }) => {
     if (!ctx.email) {
       throw new TRPCError({
         code: "UNAUTHORIZED",
@@ -121,7 +121,7 @@ export const adminRouter = router({
     return { ok: true as const };
   }),
 
-  deleteOverride: publicProcedure
+  deleteOverride: opsProcedure
     .input(z.object({ family: z.string().min(1).max(64) }))
     .mutation(async ({ input }) => {
       await db
@@ -140,7 +140,7 @@ export const adminRouter = router({
   // Without (2), /launches keeps showing raw SKU codes after an
   // override is added — which is exactly what bit us on cottonhip
   // and flybrief on 2026-05-09.
-  runProductNamesSync: publicProcedure.mutation(async ({ ctx }) => {
+  runProductNamesSync: opsProcedure.mutation(async ({ ctx }) => {
     if (!ctx.email) {
       throw new TRPCError({
         code: "UNAUTHORIZED",
