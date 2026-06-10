@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { and, eq, gte, like, lte, or, sql } from "drizzle-orm";
+import { and, eq, gte, lte } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { dailySales } from "@/lib/db/schema";
 import type { SourceRunner } from "@/lib/jobs/ingest";
-import { decomposePackSku, PACK_SKU_DB_PATTERNS } from "@/lib/domain/sku-pack";
+import { decomposePackSku } from "@/lib/domain/sku-pack";
 import { getShopifyAccessToken } from "@/lib/sources/shopify-auth";
 import { postAlert } from "@/lib/notifications/slack";
 import { toEstDate } from "@/lib/tz";
@@ -457,30 +457,11 @@ function makeRunner(channel: Channel): SourceRunner {
             }
           }
         });
-        // Belt-and-suspenders purge of legacy rows OUTSIDE the cron's
-        // window (e.g. salesDate < since) that earlier ingests may have
-        // written under aggregation rules that no longer apply:
-        //   - mixed-case SKUs       (now lowercased at aggregation)
-        //   - non-`ev-` SKUs        (now skipped at aggregation — gift
-        //                            cards, ebooks, custom items)
-        //   - 10/15-pack rows       (now decomposed to 5x form)
-        //   - mens/cb 6/9/12-pack   (now decomposed to 3x form)
-        //   - hw bare-size 5x rows  (now collapsed to ev-hw-{size})
-        // Idempotent — subsequent runs match nothing.
-        await db.delete(dailySales).where(
-          and(
-            eq(dailySales.channel, channel),
-            or(
-              sql`${dailySales.sku} <> LOWER(${dailySales.sku})`,
-              sql`${dailySales.sku} NOT LIKE 'ev-%'`,
-              // Bare-size HW 5x rows: ev-hw-5x-{single-segment-size}.
-              // Excludes ev-hw-5x-black-l etc. (those keep their pack
-              // token because colored 5-packs are separate inventory).
-              sql`${dailySales.sku} ~ '^ev-hw-5x-[^-]+$'`,
-              ...PACK_SKU_DB_PATTERNS.map((p) => like(dailySales.sku, p))
-            )!
-          )
-        );
+        // The legacy out-of-window purge (mixed-case / non-ev / pack-form
+        // rows from old aggregation rules) used to run here every cron.
+        // It has matched nothing for weeks; it now lives in
+        // scripts/cleanup_legacy_sku_rows.ts for one-shot use after any
+        // canonicalization-rule change.
       },
     };
   };

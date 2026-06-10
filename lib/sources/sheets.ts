@@ -354,49 +354,11 @@ export const sheetsInventoryRunner: SourceRunner = async (_batchId) => {
     },
     schemaFingerprint: fingerprint,
     async normalize(rawId) {
-      // One-time idempotent legacy cleanup: prior runs persisted mixed-case
-      // SKUs (`EV-mixed-xxs` alongside `ev-hw-xxs`) because the inventory
-      // sheet itself mixes cases. After Shopify lowercased its side at parse
-      // (`b89fbd6`), Postgres `=` left those legacy uppercase rows orphaned
-      // from `daily_sales`. Now that this runner also lowercases at parse,
-      // the only uppercase rows are stale — drop them. Derived tables
-      // (sales_velocity / days_of_stock / sustainability_flags) are
-      // upsert-only so their stale uppercase rows linger unless purged here;
-      // Phase 2 rewrites the canonical lowercase rows after this runs.
-      // After the first successful run, all queries match nothing → no-op.
-      await db.execute(sql`DELETE FROM stock_snapshots WHERE sku ~ '[A-Z]'`);
-      await db.execute(sql`DELETE FROM sales_velocity WHERE sku ~ '[A-Z]'`);
-      await db.execute(sql`DELETE FROM days_of_stock WHERE sku ~ '[A-Z]'`);
-      await db.execute(sql`DELETE FROM sustainability_flags WHERE sku ~ '[A-Z]'`);
-      await db.execute(sql`DELETE FROM skus WHERE sku ~ '[A-Z]'`);
-
-      // Same shape of idempotent legacy cleanup for dash-form pack tokens
-      // and the `-2xl` size alias (canonicalized to `-xxl`).
-      // The inventory sheet historically wrote `ev-9055-hf-5-3xl` (no `x`);
-      // after `9641126` lowered the daily_sales side to canonical
-      // `ev-9055-hf-5x-3xl`, the dash-form `skus`/`stock_snapshots` rows
-      // mirror the orphaning pattern that the casing fix just resolved.
-      // Now that this runner canonicalizes at parse, dash-form rows are
-      // stale. Drop them only for 1- and 5-pack tokens — 10/15-pack tokens
-      // are intentionally NOT decomposed at the inventory parser, so
-      // deleting them would create a re-insert/delete loop. Same idempotent
-      // behavior: after one successful run, queries match nothing.
-      // Size-alias patterns are similarly narrowed to 1/5-pack rows: 10/15
-      // packs aren't decomposed here, so wide `-2xl` cleanup would loop.
-      const LEGACY_INVENTORY_PATTERNS = [
-        "ev-%-1-%", "ev-%-5-%",        // dash-form pack tokens (1/5)
-        "ev-mens-3-%", "ev-cb-3-%",    // dash-form 3-pack mens/cb
-        "ev-hw-hf-3-%", "ev-og-hf-3-%", // dash-form 3-pack hw-hf/og-hf
-        "ev-%-1x-2xl", "ev-%-5x-2xl",  // 2xl size alias on 1/5-pack SKUs
-      ];
-      for (const p of LEGACY_INVENTORY_PATTERNS) {
-        await db.execute(sql`DELETE FROM stock_snapshots WHERE sku LIKE ${p}`);
-        await db.execute(sql`DELETE FROM sales_velocity WHERE sku LIKE ${p}`);
-        await db.execute(sql`DELETE FROM days_of_stock WHERE sku LIKE ${p}`);
-        await db.execute(sql`DELETE FROM sustainability_flags WHERE sku LIKE ${p}`);
-        await db.execute(sql`DELETE FROM skus WHERE sku LIKE ${p}`);
-      }
-
+      // Legacy mixed-case / dash-form / 2xl-alias SKU cleanup used to run
+      // here on every cron (55 DELETE statements). Those rows have been
+      // gone for weeks — the sweep now lives in
+      // scripts/cleanup_legacy_sku_rows.ts, to be run once after any
+      // canonicalization-rule change instead of on the hot path.
       for (const snap of snapshots) {
         for (const r of snap.rows) {
           await db

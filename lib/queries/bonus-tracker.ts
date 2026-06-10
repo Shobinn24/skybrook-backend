@@ -461,15 +461,19 @@ function renderNotificationMessage(
   return lines.join("\n").trimEnd();
 }
 
-/** Default period label = the month that just ended (so Jasper's
- *  Apr-bonus message goes out in early May). */
+/** Default period label = the month that just ended (so the April
+ *  bonus message goes out in early May). Anchored on the EST calendar
+ *  date — server-local time on a UTC host flips to the next month at
+ *  7-8pm ET on month-end, which would stamp the WRONG month on a money
+ *  document sent in that window. */
 function defaultPeriodLabel(): string {
-  const now = new Date();
-  // Last day of previous month
-  const lastDayPrevMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+  const [y, m] = toEstDate(new Date()).split("-").map(Number);
+  // Day 0 of month m (1-based) = last day of the previous month.
+  const lastDayPrevMonth = new Date(Date.UTC(y, m - 1, 0));
   return lastDayPrevMonth.toLocaleString("en-US", {
     month: "long",
     year: "numeric",
+    timeZone: "UTC",
   });
 }
 
