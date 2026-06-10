@@ -5,6 +5,7 @@ import { dailySales } from "@/lib/db/schema";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { decomposePackSku, PACK_SKU_DB_PATTERNS } from "@/lib/domain/sku-pack";
 import { getShopifyAccessToken } from "@/lib/sources/shopify-auth";
+import { postAlert } from "@/lib/notifications/slack";
 import { toEstDate } from "@/lib/tz";
 import { routeOrder, type Location } from "@/lib/domain/warehouse-routing";
 
@@ -14,10 +15,21 @@ const API_VERSION = "2025-01";
 // Orders pulled per page. Shopify caps `orders(first:)` at 250.
 const ORDERS_PAGE_SIZE = 250;
 // Line items pulled per order. Most Everdries orders have 1-5 lines;
-// 50 is generous headroom. Orders with >50 line items are vanishingly
-// rare in this catalog; if one shows up it'll truncate silently, which
-// is acceptable for the velocity signal we're computing.
+// 50 is generous headroom. Orders with >50 line items are detected via
+// lineItems.pageInfo.hasNextPage and fire a P2 — daily_sales feeds
+// /performance revenue and cashflow actuals now, not just velocity, so
+// silent truncation would undercount real dollars.
 const LINE_ITEMS_PER_ORDER = 50;
+// Rolling pull window. Must stay comfortably inside the 60-day
+// `read_orders` access window: a `since` older than 60 days silently
+// returns nothing for the excess days, and the delete-and-replace in
+// normalize() would erase them. That exact failure burned us — the
+// original fixed since=2026-03-01 fell out of the 60-day window around
+// 2026-05-01 and the cron silently deleted Mar 1 - Apr 10 history
+// (discovered 2026-06-10). 35 days covers the 30-day velocity window
+// plus retro-edit headroom; anything older is FROZEN history that the
+// cron never touches.
+const ROLLING_WINDOW_DAYS = 35;
 // Throttle backoff: if Shopify says <2000 points remain after a page,
 // sleep until the bucket recovers enough for the next page (at 1000/s
 // restore on Plus, ~3s for another 3000 points headroom).
@@ -41,7 +53,13 @@ type MoneySet = { shopMoney: { amount: string } } | null;
 
 type OrderNode = {
   createdAt: string;
-  lineItems: { nodes: LineItemNode[] };
+  lineItems: {
+    nodes: LineItemNode[];
+    // Present on live pulls; optional so minimal test fixtures typecheck.
+    // hasNextPage=true means the order had >LINE_ITEMS_PER_ORDER lines
+    // and we undercounted it — surfaced as a P2 by the runner.
+    pageInfo?: { hasNextPage: boolean };
+  };
   // Order-level ancillary amounts pro-rated to SKUs (Scott 2026-05-07).
   // Optional in the type so existing test fixtures and any minimal
   // OrderNode constructions still typecheck — null/missing → $0 ancillary,
@@ -116,6 +134,7 @@ async function* iterateOrderPages(
             nodes {
               createdAt
               lineItems(first: ${LINE_ITEMS_PER_ORDER}) {
+                pageInfo { hasNextPage }
                 nodes {
                   sku
                   quantity
@@ -315,12 +334,13 @@ function makeRunner(channel: Channel): SourceRunner {
     // SHOPIFY_API_KEY + SHOPIFY_API_SECRET are read inside getShopifyAccessToken.
     const token = await getShopifyAccessToken(store);
 
-    // Backfill from 2026-03-01 per SPEC §13. Until = today (UTC).
-    // read_orders default window is 60 days, which as of 2026-04-24 still
-    // covers 2026-03-01 comfortably. If the backfill start ever needs to
-    // go earlier than 60 days back, we'd need read_all_orders granted.
+    // Rolling window: [today - ROLLING_WINDOW_DAYS, today]. Stays inside
+    // the 60-day read_orders cap; everything older than `since` is frozen
+    // history in daily_sales that normalize() never deletes.
     const today = new Date().toISOString().slice(0, 10);
-    const since = "2026-03-01";
+    const sinceDate = new Date();
+    sinceDate.setUTCDate(sinceDate.getUTCDate() - ROLLING_WINDOW_DAYS);
+    const since = sinceDate.toISOString().slice(0, 10);
 
     // Stream pagination → single flat order list → aggregate.
     const allOrders: OrderNode[] = [];
@@ -330,6 +350,21 @@ function makeRunner(channel: Channel): SourceRunner {
       pageCount++;
     }
     const sales = aggregateToDailySales(allOrders, channel);
+
+    // Orders whose line items were truncated at LINE_ITEMS_PER_ORDER —
+    // each one undercounts units AND dollars for its day. P2 (digest)
+    // because the numbers are wrong but the pipeline is healthy.
+    const truncatedOrders = allOrders.filter(
+      (o) => o.lineItems.pageInfo?.hasNextPage === true,
+    ).length;
+    if (truncatedOrders > 0) {
+      await postAlert({
+        severity: "p2",
+        title: `Shopify ${channel}: ${truncatedOrders} order(s) exceeded ${LINE_ITEMS_PER_ORDER} line items — units/revenue undercounted`,
+        dedupKey: `shopify.line_items_truncated:${channel}`,
+        fields: { truncatedOrders, window: `${since}..${today}` },
+      });
+    }
 
     // Stable fingerprint reflects the QUERY SHAPE — channel + API
     // version + entity. The since/today window is intentionally NOT
@@ -362,13 +397,27 @@ function makeRunner(channel: Channel): SourceRunner {
       rawPayload,
       schemaFingerprint: fingerprint,
       async normalize(rawId) {
+        // Refuse-to-wipe guard: a zero-row aggregation over a 35-day
+        // window on a store doing daily sales means the PULL is broken
+        // (auth, filter, API change), not that sales stopped. Deleting
+        // the window and inserting nothing would erase 35 days of
+        // history — same failure class as the FB collapse guard in
+        // sheets.ts. Keep existing data, page P1, and bail.
+        if (sales.length === 0) {
+          await postAlert({
+            severity: "p1",
+            title: `Shopify ${channel}: pull aggregated 0 rows for ${since}..${today} — refusing to wipe daily_sales window`,
+            dedupKey: `shopify.empty_pull:${channel}`,
+            fields: { orderCount: allOrders.length, pagesFetched: pageCount },
+          });
+          return;
+        }
         // Delete-and-replace inside a transaction over the cron's date
-        // window. Replaces the previous upsert pattern, which left rows
-        // from prior aggregation logic untouched whenever a SKU's
-        // canonical key changed (the upsert key never matched, so old
-        // rows persisted forever). Concrete bug it fixes: the EST-vs-UTC
-        // bucketing migration would otherwise leave UTC-bucketed rows
-        // alongside the new EST-bucketed rows for the same orders.
+        // window ONLY — [since, today]. Rows older than `since` are
+        // frozen history and never touched (the pull can't see them, so
+        // deleting them would be pure data loss). Replaces the previous
+        // upsert pattern, which left rows from prior aggregation logic
+        // untouched whenever a SKU's canonical key changed.
         //
         // Atomic: if the insert fails, the existing data stays. Idempotent
         // on re-runs — subsequent runs delete the rows they just wrote and
@@ -383,7 +432,7 @@ function makeRunner(channel: Channel): SourceRunner {
                 lte(dailySales.salesDate, today),
               ),
             );
-          if (sales.length > 0) {
+          {
             // Chunk inserts to stay under Postgres' MAX_PARAMETERS limit
             // (65,534 per parameterized statement). daily_sales has 6
             // columns per row, so the single-shot insert blew up at
