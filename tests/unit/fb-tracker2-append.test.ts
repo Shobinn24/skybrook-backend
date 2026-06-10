@@ -204,7 +204,133 @@ describe("computeAppendOperations", () => {
     expect(ops).toEqual({
       columns: [],
       newRows: [],
-      summary: { missingDates: [], newAdsCount: 0, updatedCellsCount: 0 },
+      summary: {
+        missingDates: [],
+        restampedDates: [],
+        newAdsCount: 0,
+        updatedCellsCount: 0,
+      },
+    });
+  });
+
+  describe("restampDays", () => {
+    it("refreshes changed values on shared dates from 30D Check", () => {
+      // FB restated 5/26 upward after the day-one stamp.
+      const check30 = makeGrid(
+        ["2026-05-25", "2026-05-26"],
+        [{ name: "Ad 100", link: "fb/100", spend: [40, 55] }],
+      );
+      const tab2026 = makeGrid(
+        ["2026-05-25", "2026-05-26"],
+        [{ name: "Ad 100", link: "fb/100", spend: [40, 50] }],
+      );
+      const ops = computeAppendOperations(check30, tab2026, { restampDays: 3 });
+      expect(ops.summary.missingDates).toEqual([]);
+      expect(ops.summary.restampedDates).toEqual(["2026-05-26"]);
+      expect(ops.columns).toHaveLength(1);
+      expect(ops.columns[0].isNew).toBe(false);
+      // Row 1 = Ad 100 gets the restated 55.
+      expect(ops.columns[0].values[1]).toBe(55);
+    });
+
+    it("preserves archived cells for ads missing from 30D Check (deleted ads)", () => {
+      const check30 = makeGrid(
+        ["2026-05-26"],
+        [{ name: "Ad 100", link: "fb/100", spend: [55] }],
+      );
+      const tab2026 = makeGrid(
+        ["2026-05-26"],
+        [
+          { name: "Ad 100", link: "fb/100", spend: [50] },
+          { name: "Ad 200 (deleted in FB)", link: "fb/200", spend: [123] },
+        ],
+      );
+      const ops = computeAppendOperations(check30, tab2026, { restampDays: 3 });
+      expect(ops.summary.restampedDates).toEqual(["2026-05-26"]);
+      const col = ops.columns[0];
+      expect(col.values[1]).toBe(55); // restated
+      expect(col.values[2]).toBe(123); // deleted ad's history preserved
+    });
+
+    it("emits nothing when shared values already match (idempotent)", () => {
+      const check30 = makeGrid(
+        ["2026-05-26"],
+        [{ name: "Ad 100", link: "fb/100", spend: [50] }],
+      );
+      const tab2026 = makeGrid(
+        ["2026-05-26"],
+        [{ name: "Ad 100", link: "fb/100", spend: [50] }],
+      );
+      const ops = computeAppendOperations(check30, tab2026, { restampDays: 3 });
+      expect(ops.columns).toEqual([]);
+      expect(ops.newRows).toEqual([]);
+    });
+
+    it("restampDays: 0 keeps pure append semantics", () => {
+      const check30 = makeGrid(
+        ["2026-05-26"],
+        [{ name: "Ad 100", link: "fb/100", spend: [55] }],
+      );
+      const tab2026 = makeGrid(
+        ["2026-05-26"],
+        [{ name: "Ad 100", link: "fb/100", spend: [50] }],
+      );
+      const ops = computeAppendOperations(check30, tab2026, { restampDays: 0 });
+      expect(ops.columns).toEqual([]);
+    });
+
+    it("pairs duplicate-name twin rows positionally and preserves column totals", () => {
+      // Two source rows share a name (relaunched twin); target has the
+      // same two rows. Each pairs to its own row.
+      const check30 = makeGrid(
+        ["2026-05-26"],
+        [
+          { name: "Ad 300 - twin", link: "fb/300a", spend: [100] },
+          { name: "Ad 300 - twin", link: "fb/300b", spend: [7] },
+        ],
+      );
+      const tab2026 = makeGrid(
+        ["2026-05-26"],
+        [
+          { name: "Ad 300 - twin", link: "fb/300a", spend: [90] },
+          { name: "Ad 300 - twin", link: "fb/300b", spend: [5] },
+        ],
+      );
+      const ops = computeAppendOperations(check30, tab2026, { restampDays: 3 });
+      const col = ops.columns[0];
+      expect(col.values[1]).toBe(100);
+      expect(col.values[2]).toBe(7);
+    });
+
+    it("rolls surplus source twins into the last target row (total preserved)", () => {
+      // Source has two rows for the name, target only one — the old
+      // map-based matcher dropped one twin's spend entirely.
+      const check30 = makeGrid(
+        ["2026-05-26"],
+        [
+          { name: "Ad 301 - twin", link: "fb/301a", spend: [100] },
+          { name: "Ad 301 - twin", link: "fb/301b", spend: [7] },
+        ],
+      );
+      const tab2026 = makeGrid(
+        ["2026-05-26"],
+        [{ name: "Ad 301 - twin", link: "fb/301a", spend: [90] }],
+      );
+      const ops = computeAppendOperations(check30, tab2026, { restampDays: 3 });
+      expect(ops.columns[0].values[1]).toBe(107);
+    });
+
+    it("only restamps the N most recent shared dates", () => {
+      const check30 = makeGrid(
+        ["2026-05-24", "2026-05-25", "2026-05-26"],
+        [{ name: "Ad 100", link: "fb/100", spend: [99, 99, 99] }],
+      );
+      const tab2026 = makeGrid(
+        ["2026-05-24", "2026-05-25", "2026-05-26"],
+        [{ name: "Ad 100", link: "fb/100", spend: [1, 1, 1] }],
+      );
+      const ops = computeAppendOperations(check30, tab2026, { restampDays: 2 });
+      expect(ops.summary.restampedDates).toEqual(["2026-05-25", "2026-05-26"]);
     });
   });
 

@@ -61,14 +61,55 @@ function dateColumnMap(headerRow: ReadonlyArray<GridCell>): Map<string, number> 
   return m;
 }
 
-/** Map ad name (trimmed) → 0-based row index. Skips empty-name rows. */
-function adNameRowMap(grid: Grid): Map<string, number> {
-  const m = new Map<string, number>();
+/** Map ad name (trimmed) → ALL 0-based row indices carrying that name,
+ * in sheet order. Skips empty-name rows.
+ *
+ * Duplicate names are real on both tabs (relaunched twins of the same
+ * creative arrive from Supermetrics as separate rows; measured
+ * 2026-06-10: 160 dup names / 323 rows on 30D Check, 250 / 510 on the
+ * 2026 tab). The previous single-index map silently dropped every twin
+ * but the last — ~$2.5-3k/day of spend never reached the 2026 tab. */
+function adNameRowsMap(grid: Grid): Map<string, number[]> {
+  const m = new Map<string, number[]>();
   for (let r = 1; r < grid.length; r++) {
     const name = String(grid[r]?.[0] ?? "").trim();
-    if (name) m.set(name, r);
+    if (!name) continue;
+    const arr = m.get(name) ?? [];
+    arr.push(r);
+    m.set(name, arr);
   }
   return m;
+}
+
+/** Numeric spend at (row, col), or null when the cell is empty /
+ * non-numeric. UNFORMATTED_VALUE reads give plain numbers. */
+function spendAt(grid: Grid, row: number, col: number): number | null {
+  const v = grid[row]?.[col];
+  if (v === "" || v === null || v === undefined) return null;
+  const n = Number(String(v).replace(/[$,]/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Per-name spend assignment for one date column: pairs duplicate-name
+ * rows positionally (source row i → target row i); when the source has
+ * MORE rows than the target, the surplus rows' spend is added onto the
+ * last target row so the column TOTAL is preserved; when the target has
+ * more rows, the unpaired target rows are left untouched. Returns the
+ * per-target-row values to write (null = leave as-is). */
+function assignSpendForName(
+  sourceRows: number[],
+  targetCount: number,
+  grid: Grid,
+  col: number,
+): Array<number | null> {
+  const out: Array<number | null> = new Array(targetCount).fill(null);
+  for (let i = 0; i < sourceRows.length; i++) {
+    const spend = spendAt(grid, sourceRows[i], col);
+    if (spend === null) continue;
+    const target = Math.min(i, targetCount - 1);
+    out[target] = (out[target] ?? 0) + spend;
+  }
+  return out;
 }
 
 export type ColumnUpdate = {
@@ -97,23 +138,40 @@ export type NewRow = {
 };
 
 export type AppendOperations = {
-  /** Date columns to write (one per missing date, in chronological order). */
+  /** Date columns to write: one per missing date (appended at the right
+   * edge) plus any restamped existing columns whose values changed. */
   columns: ColumnUpdate[];
   /** Brand-new ad rows to append. */
   newRows: NewRow[];
   /** Summary stats for logging/alerts. */
   summary: {
     missingDates: string[];
+    restampedDates: string[];
     newAdsCount: number;
     updatedCellsCount: number;
   };
 };
 
-/** Build the operation set. Pure — no I/O. */
+/** Build the operation set. Pure — no I/O.
+ *
+ * `restampDays` additionally refreshes the N most recent dates that
+ * exist on BOTH tabs from the 30D Check values. Why: the append stamps
+ * each day once, T+1, but FB keeps restating numbers for ~72h — the
+ * frozen day-one values left the 2026 tab ~9% ($2.5-3k/day) below the
+ * 30D Check for the same dates (measured 2026-06-10). Restamping the
+ * trailing days on every run lets the restatements flow through.
+ *
+ * Deleted-ad protection: a restamp only overwrites cells for ads still
+ * PRESENT on 30D Check. Ads that have been deleted in FB drop off the
+ * 30D Check pull entirely — blanking their archived cells would erase
+ * real historical spend, so existing values are preserved when the ad
+ * is missing from the source. */
 export function computeAppendOperations(
   check30Grid: Grid,
   tab2026Grid: Grid,
+  opts: { restampDays?: number } = {},
 ): AppendOperations {
+  const restampDays = opts.restampDays ?? 0;
   const check30Header = check30Grid[0] ?? [];
   const tab2026Header = tab2026Grid[0] ?? [];
 
@@ -126,16 +184,30 @@ export function computeAppendOperations(
     .filter((d) => !tab2026Dates.has(d))
     .sort();
 
-  if (missingDates.length === 0) {
+  // Restamp candidates = the N most recent dates present on BOTH tabs.
+  const restampCandidates =
+    restampDays > 0
+      ? [...check30Dates.keys()]
+          .filter((d) => tab2026Dates.has(d))
+          .sort()
+          .slice(-restampDays)
+      : [];
+
+  if (missingDates.length === 0 && restampCandidates.length === 0) {
     return {
       columns: [],
       newRows: [],
-      summary: { missingDates: [], newAdsCount: 0, updatedCellsCount: 0 },
+      summary: {
+        missingDates: [],
+        restampedDates: [],
+        newAdsCount: 0,
+        updatedCellsCount: 0,
+      },
     };
   }
 
-  const tab2026Names = adNameRowMap(tab2026Grid);
-  const check30Names = adNameRowMap(check30Grid);
+  const tab2026Names = adNameRowsMap(tab2026Grid);
+  const check30Names = adNameRowsMap(check30Grid);
 
   // Pre-compute which check30 ads are new to 2026 (need row append).
   const newAdNames: string[] = [];
@@ -163,29 +235,85 @@ export function computeAppendOperations(
     const values: Array<string | number> = new Array(finalRowCount).fill("");
     values[0] = date; // header
 
-    // Existing 2026 ads: look up spend on 30D Check.
-    for (const [name, row2026] of tab2026Names) {
-      const check30Row = check30Names.get(name);
-      if (check30Row === undefined) continue;
-      const spend = check30Grid[check30Row]?.[check30Col];
-      if (spend === "" || spend === null || spend === undefined) continue;
-      values[row2026] = spend as string | number;
-      updatedCellsCount++;
+    // Existing 2026 ads: positional twin pairing against 30D Check.
+    for (const [name, rows2026] of tab2026Names) {
+      const srcRows = check30Names.get(name);
+      if (srcRows === undefined) continue;
+      const assigned = assignSpendForName(srcRows, rows2026.length, check30Grid, check30Col);
+      for (let i = 0; i < rows2026.length; i++) {
+        const v = assigned[i];
+        if (v === null) continue;
+        values[rows2026[i]] = v;
+        updatedCellsCount++;
+      }
     }
 
-    // New ads (not yet on 2026): their values land in the appended
-    // rows. The row index for ad i (0-indexed in newAdNames) is
-    // baseRowCount + i.
+    // New ads (not yet on 2026): one appended row per name, carrying the
+    // SUM of that name's twin rows. The row index for ad j (0-indexed in
+    // newAdNames) is baseRowCount + j.
     for (let j = 0; j < newAdNames.length; j++) {
-      const name = newAdNames[j];
-      const check30Row = check30Names.get(name)!;
-      const spend = check30Grid[check30Row]?.[check30Col];
-      if (spend === "" || spend === null || spend === undefined) continue;
-      values[baseRowCount + j] = spend as string | number;
+      const srcRows = check30Names.get(newAdNames[j])!;
+      const [v] = assignSpendForName(srcRows, 1, check30Grid, check30Col);
+      if (v === null) continue;
+      values[baseRowCount + j] = v;
       updatedCellsCount++;
     }
 
     columns.push({ date, columnIndex, isNew: true, values });
+  }
+
+  // Restamp pass: refresh existing columns from 30D Check. Cells are
+  // seeded from the CURRENT 2026 values so anything we don't explicitly
+  // overwrite (deleted ads, rows below the data block) survives
+  // byte-for-byte; a column is emitted only when at least one cell
+  // actually changes.
+  const restampedDates: string[] = [];
+  for (const date of restampCandidates) {
+    const columnIndex = tab2026Dates.get(date)!;
+    const check30Col = check30Dates.get(date)!;
+
+    const values: Array<string | number> = new Array(finalRowCount).fill("");
+    // Preserve the existing header cell verbatim (it may be an Excel
+    // date serial; rewriting it as a string would change the cell type
+    // and the sheet's display format).
+    values[0] = (tab2026Header[columnIndex] as string | number) ?? date;
+    for (let r = 1; r < baseRowCount; r++) {
+      values[r] = (tab2026Grid[r]?.[columnIndex] as string | number) ?? "";
+    }
+
+    let changed = 0;
+    for (const [name, rows2026] of tab2026Names) {
+      const srcRows = check30Names.get(name);
+      // Name entirely absent from 30D Check = the ad was deleted in FB;
+      // keep its archived values. But when the name IS present, the
+      // source is authoritative for ALL of that name's rows — unpaired
+      // twin cells get cleared rather than preserved, because stale
+      // leftovers from the old single-row matcher otherwise double-count
+      // (measured +$1.1k/day over Ads Manager on 2026-06-10).
+      if (srcRows === undefined) continue;
+      const assigned = assignSpendForName(srcRows, rows2026.length, check30Grid, check30Col);
+      for (let i = 0; i < rows2026.length; i++) {
+        const v = assigned[i];
+        const next: string | number = v === null ? "" : v;
+        if (String(values[rows2026[i]]) !== String(next)) {
+          values[rows2026[i]] = next;
+          changed++;
+        }
+      }
+    }
+    for (let j = 0; j < newAdNames.length; j++) {
+      const srcRows = check30Names.get(newAdNames[j])!;
+      const [v] = assignSpendForName(srcRows, 1, check30Grid, check30Col);
+      if (v === null) continue;
+      values[baseRowCount + j] = v;
+      changed++;
+    }
+
+    if (changed > 0) {
+      updatedCellsCount += changed;
+      restampedDates.push(date);
+      columns.push({ date, columnIndex, isNew: false, values });
+    }
   }
 
   // Build the new rows. Each row has the ad name + link + empty cells
@@ -195,8 +323,8 @@ export function computeAppendOperations(
   // rows + columns separately. We expose the row shape for the glue
   // to use however it likes.)
   const newRows: NewRow[] = newAdNames.map((name, j) => {
-    const check30Row = check30Names.get(name)!;
-    const link = String(check30Grid[check30Row]?.[1] ?? "");
+    const srcRows = check30Names.get(name)!;
+    const link = String(check30Grid[srcRows[0]]?.[1] ?? "");
     const row: Array<string | number> = new Array(
       baseColCount + missingDates.length,
     ).fill("");
@@ -205,13 +333,22 @@ export function computeAppendOperations(
     // Fill in the new-column spend values inline so each new row is
     // self-contained when the glue layer appends it. The columns
     // array above already covers updates to the row indices, so this
-    // duplicates intentionally for the row-append path.
+    // duplicates intentionally for the row-append path. Twin rows of
+    // the same new name sum into the single appended row.
     for (let i = 0; i < missingDates.length; i++) {
-      const date = missingDates[i];
+      const check30Col = check30Dates.get(missingDates[i])!;
+      const [v] = assignSpendForName(srcRows, 1, check30Grid, check30Col);
+      if (v === null) continue;
+      row[baseColCount + i] = v;
+    }
+    // Same for restamped existing columns — their indices sit inside
+    // baseColCount, so the new row carries those values too.
+    for (const date of restampedDates) {
+      const columnIndex = tab2026Dates.get(date)!;
       const check30Col = check30Dates.get(date)!;
-      const spend = check30Grid[check30Row]?.[check30Col];
-      if (spend === "" || spend === null || spend === undefined) continue;
-      row[baseColCount + i] = spend as string | number;
+      const [v] = assignSpendForName(srcRows, 1, check30Grid, check30Col);
+      if (v === null) continue;
+      row[columnIndex] = v;
     }
     return { rowIndex: baseRowCount + j, values: row };
   });
@@ -221,6 +358,7 @@ export function computeAppendOperations(
     newRows,
     summary: {
       missingDates,
+      restampedDates,
       newAdsCount: newAdNames.length,
       updatedCellsCount,
     },

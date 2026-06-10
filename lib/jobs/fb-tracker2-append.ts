@@ -31,6 +31,10 @@ const SHEET_30D_CHECK = "30D Check";
 export type FbTracker2AppendResult = {
   /** Dates that were newly added to the 2026 tab. */
   appendedDates: string[];
+  /** Existing dates whose values were refreshed from 30D Check (FB
+   * restates numbers for ~72h after a day ends; without this the 2026
+   * tab froze each day at its day-one value, ~9% low). */
+  restampedDates: string[];
   /** Number of brand-new ad rows appended. */
   newAdsCount: number;
   /** Total cells written across all the appended columns. */
@@ -61,7 +65,11 @@ function colLetter(index: number): string {
   return s;
 }
 
-export async function runFbTracker2Append(): Promise<FbTracker2AppendResult> {
+export async function runFbTracker2Append(
+  opts: { restampDays?: number } = {},
+): Promise<FbTracker2AppendResult> {
+  // Default 3: covers FB's ~72h restatement window on every daily run.
+  const restampDays = opts.restampDays ?? 3;
   const sheets = buildSheetsClient();
 
   // Pull both tabs in parallel. Both are well under the 5MB cell-data
@@ -83,16 +91,17 @@ export async function runFbTracker2Append(): Promise<FbTracker2AppendResult> {
   const check30Grid: Grid = (check30Resp.data.values ?? []) as Grid;
   const tab2026Grid: Grid = (tab2026Resp.data.values ?? []) as Grid;
 
-  const ops = computeAppendOperations(check30Grid, tab2026Grid);
+  const ops = computeAppendOperations(check30Grid, tab2026Grid, { restampDays });
 
-  if (ops.summary.missingDates.length === 0) {
+  if (ops.columns.length === 0 && ops.newRows.length === 0) {
     logger.info("fb-tracker2-append.skipped", {
-      reason: "2026 has every date present on 30D Check",
+      reason: "2026 already matches 30D Check (dates + trailing values)",
       check30Cols: (check30Grid[0] ?? []).length,
       tab2026Cols: (tab2026Grid[0] ?? []).length,
     });
     return {
       appendedDates: [],
+      restampedDates: [],
       newAdsCount: 0,
       updatedCellsCount: 0,
       skipped: true,
@@ -182,12 +191,14 @@ export async function runFbTracker2Append(): Promise<FbTracker2AppendResult> {
 
   logger.info("fb-tracker2-append.applied", {
     appendedDates: ops.summary.missingDates,
+    restampedDates: ops.summary.restampedDates,
     newAdsCount: ops.summary.newAdsCount,
     updatedCellsCount: ops.summary.updatedCellsCount,
   });
 
   return {
     appendedDates: ops.summary.missingDates,
+    restampedDates: ops.summary.restampedDates,
     newAdsCount: ops.summary.newAdsCount,
     updatedCellsCount: ops.summary.updatedCellsCount,
     skipped: false,
