@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { dataPulls, rawPulls } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
@@ -43,12 +44,50 @@ export type RunIngestResult = {
   // alert_events directly (cost real diagnosis time on 2026-05-17 incident).
   alertsFired: number;
   alertsResolved: number;
+  // True when another ingest already held the advisory lock and this run
+  // bailed without touching anything.
+  skipped?: boolean;
 };
+
+// Single advisory-lock key shared by every ingest entry point (daily cron,
+// GH Actions fallback, sheet-poll trigger, refresh-ad-spend, manual GET).
+// Two delete-then-insert ingests overlapping under READ COMMITTED can both
+// insert (B's DELETE can't see rows A committed after B's statement
+// snapshot) — daily_sales/ad_spend_daily survive via composite PKs, but
+// incoming_shipments would silently double its PO quantities. The lock
+// makes overlap impossible; the unique index on incoming_shipments is the
+// belt-and-suspenders.
+const INGEST_ADVISORY_LOCK_KEY = 815_001;
 
 export async function runIngest(input: {
   sources: Partial<Record<SourceKey, SourceRunner>>;
 }): Promise<RunIngestResult> {
   const batchId = randomUUID();
+  // Transaction-scoped advisory lock (pg_try_advisory_xact_lock) instead of
+  // a session lock: with a pooled driver, lock and unlock could land on
+  // different connections, leaking the session lock until the pool recycles.
+  // The wrapper transaction does nothing but hold the lock — every write
+  // inside the sources still commits in its own transaction, so failure
+  // isolation between sources is unchanged.
+  return await db.transaction(async (lockTx) => {
+    const lockRows = await lockTx.execute(
+      sql`select pg_try_advisory_xact_lock(${INGEST_ADVISORY_LOCK_KEY}) as locked`,
+    );
+    const locked = Boolean(
+      (lockRows as unknown as Array<{ locked: boolean }>)[0]?.locked,
+    );
+    if (!locked) {
+      logger.warn("ingest.skipped_lock_held", { batchId });
+      return { batchId, alertsFired: 0, alertsResolved: 0, skipped: true };
+    }
+    return runIngestLocked(batchId, input);
+  });
+}
+
+async function runIngestLocked(
+  batchId: string,
+  input: { sources: Partial<Record<SourceKey, SourceRunner>> },
+): Promise<RunIngestResult> {
   logger.info("ingest.start", { batchId });
 
   // Track Slack alert side-effects so they show up in cron.ingest.done.

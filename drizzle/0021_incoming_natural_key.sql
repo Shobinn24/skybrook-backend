@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "incoming_shipments_natural_key" ON "incoming_shipments" USING btree ("sku","destination","shipment_name","expected_arrival");

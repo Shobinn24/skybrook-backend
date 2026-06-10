@@ -80,17 +80,35 @@ export const stockSnapshots = pgTable(
   (t) => ({ pk: primaryKey({ columns: [t.sku, t.location, t.snapshotDate] }) })
 );
 
-export const incomingShipments = pgTable("incoming_shipments", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  sku: text("sku").notNull(),
-  destination: locationEnum("destination").notNull(),
-  shipmentName: text("shipment_name").notNull(),
-  quantity: integer("quantity").notNull(),
-  expectedArrival: date("expected_arrival").notNull(),
-  status: incomingStatusEnum("status").notNull().default("po"),
-  sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
-  sourceRowRef: text("source_row_ref").notNull(),
-});
+export const incomingShipments = pgTable(
+  "incoming_shipments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sku: text("sku").notNull(),
+    destination: locationEnum("destination").notNull(),
+    shipmentName: text("shipment_name").notNull(),
+    quantity: integer("quantity").notNull(),
+    expectedArrival: date("expected_arrival").notNull(),
+    status: incomingStatusEnum("status").notNull().default("po"),
+    sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
+    sourceRowRef: text("source_row_ref").notNull(),
+  },
+  (t) => ({
+    // Natural-key uniqueness. The table is truncate-replaced per ingest,
+    // but with only a UUID PK two overlapping ingests could silently
+    // double every PO quantity (overlap-doubling is blocked first by the
+    // runIngest advisory lock; this index is the backstop). The ingest
+    // pre-aggregates intra-pull duplicates and inserts with
+    // onConflictDoNothing, so a conflict can only mean a concurrent
+    // writer — dropping the duplicate row is exactly right.
+    naturalKey: uniqueIndex("incoming_shipments_natural_key").on(
+      t.sku,
+      t.destination,
+      t.shipmentName,
+      t.expectedArrival,
+    ),
+  }),
+);
 
 // Manual receipt confirmations for incoming POs. Lives in its own table so
 // state survives the truncate-replace ingest of `incoming_shipments`. Keyed

@@ -814,7 +814,21 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
         await tx.delete(incomingShipments);
         const today = new Date().toISOString().slice(0, 10);
         const seenSkus = new Set<string>();
-        for (const row of rows) {
+        // Pre-aggregate intra-pull duplicates on the natural key — two PO
+        // columns sharing label + ETA + destination are legitimate sheet
+        // layouts (quantities sum). This lets the insert below run
+        // onConflictDoNothing against the natural-key unique index, so a
+        // conflict can only mean a concurrent ingest already wrote the
+        // row — dropping ours prevents the silent quantity-doubling that
+        // a UUID-only PK allowed.
+        const byNaturalKey = new Map<string, IncomingShipment>();
+        for (const r of rows) {
+          const k = `${r.sku}|${r.destination}|${r.shipmentName}|${r.expectedArrival}`;
+          const prev = byNaturalKey.get(k);
+          if (prev) prev.quantity += r.quantity;
+          else byNaturalKey.set(k, { ...r });
+        }
+        for (const row of byNaturalKey.values()) {
           if (!seenSkus.has(row.sku)) {
             seenSkus.add(row.sku);
             // onConflictDoUpdate (not DoNothing) so a SKU that was
@@ -838,16 +852,26 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
                 set: { active: sql`true` },
               });
           }
-          await tx.insert(incomingShipments).values({
-            sku: row.sku,
-            destination: row.destination,
-            shipmentName: row.shipmentName,
-            quantity: row.quantity,
-            expectedArrival: row.expectedArrival,
-            status: row.status,
-            sourcePullId: rawId,
-            sourceRowRef: row.sourceRowRef,
-          });
+          await tx
+            .insert(incomingShipments)
+            .values({
+              sku: row.sku,
+              destination: row.destination,
+              shipmentName: row.shipmentName,
+              quantity: row.quantity,
+              expectedArrival: row.expectedArrival,
+              status: row.status,
+              sourcePullId: rawId,
+              sourceRowRef: row.sourceRowRef,
+            })
+            .onConflictDoNothing({
+              target: [
+                incomingShipments.sku,
+                incomingShipments.destination,
+                incomingShipments.shipmentName,
+                incomingShipments.expectedArrival,
+              ],
+            });
         }
         // Receipt confirmations from Grace's row right under Total. Idempotent
         // via the natural key — the manual UI mutation (markIncomingReceived)
