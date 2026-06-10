@@ -1,9 +1,14 @@
 import { db } from "@/lib/db";
 import { cashflowEvents, dailySales } from "@/lib/db/schema";
 import { weekStartEst } from "@/lib/domain/cashflow-weeks";
-import { sql, gte, lte, and, eq } from "drizzle-orm";
+import { sql, gte, lte, and, eq, notInArray } from "drizzle-orm";
 import { logger } from "@/lib/logger";
+import { postAlert } from "@/lib/notifications/slack";
 import { buildSheetsClient, parseBulkOrderForecast } from "@/lib/sources/sheets";
+
+// Executor type so generated-event writes can run inside a caller's
+// transaction (prune + upsert must be atomic) or standalone.
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
  * Cash in (net profit + COGS) is computed live in getCashflowGrid from the
@@ -27,9 +32,10 @@ export async function generateRevenueForecast(_firstWeekStart: string): Promise<
  * re-running is a no-op / refresh, never a duplicate. */
 export async function upsertGeneratedEvents(
   rows: (typeof cashflowEvents.$inferInsert)[],
+  executor: DbExecutor = db,
 ): Promise<void> {
   if (rows.length === 0) return;
-  await db.insert(cashflowEvents).values(rows).onConflictDoUpdate({
+  await executor.insert(cashflowEvents).values(rows).onConflictDoUpdate({
     target: [cashflowEvents.source, cashflowEvents.sourceRef],
     targetWhere: sql`${cashflowEvents.source} <> 'manual' AND ${cashflowEvents.sourceRef} IS NOT NULL`,
     set: {
@@ -77,19 +83,45 @@ export async function generateEvActuals(from: string, to: string): Promise<void>
   logger.info("cashflow-forecast.ev-actuals.done", { from, to, rows: rows.length });
 }
 
-const BULK_ORDER_SHEET_ID = "1xcKzn6D6etJwcj5vjmR-6qqO16j7bnoXHcHa1caWYmU";
 const BULK_ORDER_TAB = "Bulk Order Payment Forecast";
 
-/** Pull the bulk-order schedule and write `bulk_order` forecast events
+/** Pull the bulk-order schedule and sync `bulk_order` forecast events
  * (out), bucketed to the Monday of each payment's week. Reuses the shared
- * read-only sheets client (GOOGLE_SERVICE_ACCOUNT_JSON / _CREDENTIALS). */
+ * read-only sheets client (GOOGLE_SERVICE_ACCOUNT_JSON / _CREDENTIALS).
+ *
+ * Sync = prune + upsert in one transaction. The old upsert-only version
+ * keyed events on `bulk:<weekDate>`, so moving a payment to a different
+ * week in the sheet created a NEW ref and left the stale event behind —
+ * the payment counted in BOTH weeks of the 13-week grid, and deleted
+ * rows lingered forever. Now any sheet_pull/bulk_order event whose ref
+ * is no longer in the current parse is removed in the same transaction
+ * as the upsert. Manual entries (source='manual') are never touched. */
 export async function generateBulkOrderForecast(): Promise<void> {
+  const sheetId = process.env.BULK_ORDER_SHEET_ID;
+  if (!sheetId) throw new Error("cashflow-forecast: missing BULK_ORDER_SHEET_ID");
   const sheets = buildSheetsClient();
   const resp = await sheets.spreadsheets.values.get({
-    spreadsheetId: BULK_ORDER_SHEET_ID,
+    spreadsheetId: sheetId,
     range: `'${BULK_ORDER_TAB}'!A1:L400`,
   });
   const { rows: parsed, skipped } = parseBulkOrderForecast(resp.data.values ?? []);
+
+  // Refuse-to-prune guard: an empty parse means the read/layout broke
+  // (renamed tab, moved columns), not that every scheduled payment was
+  // cancelled. Pruning on it would delete the whole bulk-order Out lane
+  // from the cash grid. Keep existing events, page P1, bail.
+  if (parsed.length === 0) {
+    await postAlert({
+      severity: "p1",
+      channel: "alerts",
+      dedupKey: "cashflow.bulk_order.empty_parse",
+      title:
+        "Bulk-order forecast blocked: sheet parse produced no rows — refusing to prune cashflow events",
+      fields: { tab: BULK_ORDER_TAB, skipped },
+    });
+    return;
+  }
+
   const rows: (typeof cashflowEvents.$inferInsert)[] = parsed.map((p) => {
     const week = weekStartEst(p.weekDate);
     return {
@@ -99,8 +131,23 @@ export async function generateBulkOrderForecast(): Promise<void> {
       description: "Bulk order payment (sheet)",
     };
   });
-  await upsertGeneratedEvents(rows);
-  logger.info("cashflow-forecast.bulk-order.done", { rows: rows.length, skipped });
+  const currentRefs = rows.map((r) => r.sourceRef!);
+  let pruned = 0;
+  await db.transaction(async (tx) => {
+    const deleted = await tx
+      .delete(cashflowEvents)
+      .where(
+        and(
+          eq(cashflowEvents.source, "sheet_pull"),
+          eq(cashflowEvents.category, "bulk_order"),
+          notInArray(cashflowEvents.sourceRef, currentRefs),
+        ),
+      )
+      .returning({ id: cashflowEvents.id });
+    pruned = deleted.length;
+    await upsertGeneratedEvents(rows, tx);
+  });
+  logger.info("cashflow-forecast.bulk-order.done", { rows: rows.length, pruned, skipped });
 }
 
 /**
