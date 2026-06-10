@@ -86,12 +86,45 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
     routedLocation: s.routedLocation ?? channelToLocation(s.channel),
   }));
 
-  // Pull every incoming shipment (filtered per SKU × location below).
-  // Also pull the set of POs Scott has manually marked received — those
-  // units are already counted in stock_snapshots, so excluding them from
-  // the forward-looking incoming projection prevents double-counting.
+  // Pull every incoming shipment, grouped once by (sku, destination).
+  // Also pull the set of POs manually marked received — those units are
+  // already counted in stock_snapshots, so excluding them from the
+  // forward-looking incoming projection prevents double-counting.
   const allIncoming = await db.select().from(incomingShipments);
   const receivedKeys = await getReceivedShipmentKeys();
+  const incomingBySkuLoc = new Map<string, IncomingPO[]>();
+  for (const i of allIncoming) {
+    const receiptKey = shipmentReceiptKey({
+      shipmentName: i.shipmentName,
+      destination: i.destination,
+      expectedArrival: i.expectedArrival,
+    });
+    if (receivedKeys.has(receiptKey)) continue;
+    const k = `${i.sku}|${i.destination}`;
+    const bucket = incomingBySkuLoc.get(k) ?? [];
+    bucket.push({ arrivalDate: i.expectedArrival, quantity: i.quantity });
+    incomingBySkuLoc.set(k, bucket);
+  }
+
+  // Latest snapshot per (sku, location) at or before asOfDate, in ONE
+  // DISTINCT ON query. The old per-SKU-per-location SELECT issued
+  // ~2 queries per SKU (thousands of sequential round trips per cron) —
+  // the single biggest consumer of the route's 300s budget, and the
+  // reason a slow Shopify retry could push the cron into a timeout that
+  // left a PARTIALLY-derived day (some SKUs at today's velocity, the
+  // rest at yesterday's, nothing flagging the mix).
+  const latestSnapshots = await db
+    .selectDistinctOn([stockSnapshots.sku, stockSnapshots.location])
+    .from(stockSnapshots)
+    .where(lte(stockSnapshots.snapshotDate, input.asOfDate))
+    .orderBy(
+      stockSnapshots.sku,
+      stockSnapshots.location,
+      desc(stockSnapshots.snapshotDate),
+    );
+  const snapshotBySkuLoc = new Map(
+    latestSnapshots.map((r) => [`${r.sku}|${r.location}`, r]),
+  );
 
   let processed = 0;
   let skipped = 0;
@@ -108,6 +141,15 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
   // rate," and the rate is the trailing complete window.
   const velocityWindowEnd = addDaysYmd(input.asOfDate, -1);
 
+  // Compute everything in memory first, then bulk-upsert per table inside
+  // one transaction. Two wins over the old per-row await pattern:
+  // ~13-15 sequential round trips per SKU collapse into a handful of
+  // chunked statements, and a mid-run crash now leaves a consistent
+  // whole-day-old derived state instead of a torn day.
+  const velocityRows: (typeof salesVelocity.$inferInsert)[] = [];
+  const dosRows: (typeof daysOfStock.$inferInsert)[] = [];
+  const flagRows: (typeof sustainabilityFlags.$inferInsert)[] = [];
+
   for (const s of allSkus) {
     // Sales velocity — combined + per-channel at each window.
     for (const windowDays of VELOCITY_WINDOWS) {
@@ -119,37 +161,18 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
           sku: s.sku,
           routedLocation: agg.routedLocation,
         });
-        await db
-          .insert(salesVelocity)
-          .values({
-            sku: s.sku,
-            channel: agg.channel,
-            windowDays,
-            asOfDate: input.asOfDate,
-            unitsPerDay: String(perDay),
-          })
-          .onConflictDoUpdate({
-            target: [salesVelocity.sku, salesVelocity.channel, salesVelocity.windowDays, salesVelocity.asOfDate],
-            set: { unitsPerDay: sql`excluded.units_per_day` },
-          });
+        velocityRows.push({
+          sku: s.sku,
+          channel: agg.channel,
+          windowDays,
+          asOfDate: input.asOfDate,
+          unitsPerDay: String(perDay),
+        });
       }
     }
 
     for (const location of LOCATIONS) {
-      // Latest stock snapshot at or before asOfDate.
-      const [curr] = await db
-        .select()
-        .from(stockSnapshots)
-        .where(
-          and(
-            eq(stockSnapshots.sku, s.sku),
-            eq(stockSnapshots.location, location),
-            lte(stockSnapshots.snapshotDate, input.asOfDate)
-          )
-        )
-        .orderBy(desc(stockSnapshots.snapshotDate))
-        .limit(1);
-
+      const curr = snapshotBySkuLoc.get(`${s.sku}|${location}`);
       if (!curr) {
         skipped++;
         continue;
@@ -164,41 +187,22 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
       });
 
       const dos = computeDaysOfStock({ onHand: curr.onHand, velocityPerDay: locVelocity });
-      await db
-        .insert(daysOfStock)
-        .values({
-          sku: s.sku,
-          location,
-          asOfDate: input.asOfDate,
-          velocityWindowDays: DOS_WINDOW,
-          // Sentinel for "no demand" — column is numeric(12,2), max ~10^10.
-          daysOfStock: String(dos === Infinity ? 99999999.99 : dos),
-          sourceRefs: { snapshotDate: curr.snapshotDate, velocityWindowDays: DOS_WINDOW },
-        })
-        .onConflictDoUpdate({
-          target: [daysOfStock.sku, daysOfStock.location, daysOfStock.asOfDate, daysOfStock.velocityWindowDays],
-          set: {
-            daysOfStock: sql`excluded.days_of_stock`,
-            sourceRefs: sql`excluded.source_refs`,
-          },
-        });
+      dosRows.push({
+        sku: s.sku,
+        location,
+        asOfDate: input.asOfDate,
+        velocityWindowDays: DOS_WINDOW,
+        // Sentinel for "no demand" — column is numeric(12,2), max ~10^10.
+        daysOfStock: String(dos === Infinity ? 99999999.99 : dos),
+        sourceRefs: { snapshotDate: curr.snapshotDate, velocityWindowDays: DOS_WINDOW },
+      });
 
       // Incoming POs for this SKU × location, excluding any that have been
       // manually marked received (those units are already in stock_snapshots).
       // Pre-2026-05-05 we filtered by status !== 'arrived'; that field used
       // to auto-flip on `today >= ETA` regardless of actual receipt, which
       // double-excluded delayed-but-not-yet-counted shipments.
-      const incoming: IncomingPO[] = allIncoming
-        .filter((i) => {
-          if (i.sku !== s.sku || i.destination !== location) return false;
-          const key = shipmentReceiptKey({
-            shipmentName: i.shipmentName,
-            destination: i.destination,
-            expectedArrival: i.expectedArrival,
-          });
-          return !receivedKeys.has(key);
-        })
-        .map((i) => ({ arrivalDate: i.expectedArrival, quantity: i.quantity }));
+      const incoming = incomingBySkuLoc.get(`${s.sku}|${location}`) ?? [];
 
       const flag = computeSustainabilityFlag({
         onHand: curr.onHand,
@@ -207,22 +211,54 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
         today: input.asOfDate,
       });
 
-      await db
-        .insert(sustainabilityFlags)
-        .values({
-          sku: s.sku,
-          location,
-          asOfDate: input.asOfDate,
-          flag: flag.flag,
-          reasoning: flag.reasoning,
-          runOutDate: flag.runOutDate,
-          afterNextPoDate: incoming[0]?.arrivalDate ?? null,
-          sourceRefs: {
-            snapshotDate: curr.snapshotDate,
-            incomingPoCount: incoming.length,
-            velocityWindowDays: DOS_WINDOW,
+      flagRows.push({
+        sku: s.sku,
+        location,
+        asOfDate: input.asOfDate,
+        flag: flag.flag,
+        reasoning: flag.reasoning,
+        runOutDate: flag.runOutDate,
+        afterNextPoDate: incoming[0]?.arrivalDate ?? null,
+        sourceRefs: {
+          snapshotDate: curr.snapshotDate,
+          incomingPoCount: incoming.length,
+          velocityWindowDays: DOS_WINDOW,
+        },
+      });
+
+      processed++;
+    }
+  }
+
+  // 1,000-row chunks keep each statement well under Postgres'
+  // 65,534-parameter cap (widest table here is 8 columns).
+  const CHUNK = 1000;
+  await db.transaction(async (tx) => {
+    for (let i = 0; i < velocityRows.length; i += CHUNK) {
+      await tx
+        .insert(salesVelocity)
+        .values(velocityRows.slice(i, i + CHUNK))
+        .onConflictDoUpdate({
+          target: [salesVelocity.sku, salesVelocity.channel, salesVelocity.windowDays, salesVelocity.asOfDate],
+          set: { unitsPerDay: sql`excluded.units_per_day` },
+        });
+    }
+    for (let i = 0; i < dosRows.length; i += CHUNK) {
+      await tx
+        .insert(daysOfStock)
+        .values(dosRows.slice(i, i + CHUNK))
+        .onConflictDoUpdate({
+          target: [daysOfStock.sku, daysOfStock.location, daysOfStock.asOfDate, daysOfStock.velocityWindowDays],
+          set: {
+            daysOfStock: sql`excluded.days_of_stock`,
+            sourceRefs: sql`excluded.source_refs`,
           },
-        })
+        });
+    }
+    for (let i = 0; i < flagRows.length; i += CHUNK) {
+      await tx
+        .insert(sustainabilityFlags)
+        .values(flagRows.slice(i, i + CHUNK))
         .onConflictDoUpdate({
           target: [sustainabilityFlags.sku, sustainabilityFlags.location, sustainabilityFlags.asOfDate],
           set: {
@@ -233,10 +269,8 @@ export async function runPhase2(input: { asOfDate: string; pullBatchId?: string 
             sourceRefs: sql`excluded.source_refs`,
           },
         });
-
-      processed++;
     }
-  }
+  });
 
   logger.info("phase2.done", {
     batch: input.pullBatchId,
