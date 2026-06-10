@@ -32,8 +32,13 @@ export function unitCostForLocation(row: {
 }
 
 export async function getStockLevels(filters: { sku?: string; location?: Location } = {}): Promise<StockLevel[]> {
+  // DISTINCT ON pushes latest-per-(sku, location) into Postgres. The old
+  // version selected EVERY snapshot row ever taken (the table grows by
+  // ~2x SKU count per day) and deduped in JS — fine at launch, but a
+  // guaranteed page-killer as history accumulates, and this query feeds
+  // /inventory, /stock-value, /overstock, and all three rollups.
   const rows = await db
-    .select({
+    .selectDistinctOn([stockSnapshots.sku, stockSnapshots.location], {
       sku: stockSnapshots.sku,
       location: stockSnapshots.location,
       snapshotDate: stockSnapshots.snapshotDate,
@@ -51,27 +56,22 @@ export async function getStockLevels(filters: { sku?: string; location?: Locatio
         filters.location ? eq(stockSnapshots.location, filters.location) : sql`true`
       )
     )
-    .orderBy(desc(stockSnapshots.snapshotDate));
+    .orderBy(
+      stockSnapshots.sku,
+      stockSnapshots.location,
+      desc(stockSnapshots.snapshotDate),
+    );
 
-  // Keep only the latest snapshot per (sku, location).
-  const seen = new Set<string>();
-  const latest: StockLevel[] = [];
-  for (const r of rows) {
-    const k = `${r.sku}:${r.location}`;
-    if (seen.has(k)) continue;
-    seen.add(k);
-    latest.push({
-      sku: r.sku,
-      location: r.location,
-      snapshotDate: r.snapshotDate,
-      onHand: r.onHand,
-      productName: r.productName ?? r.sku,
-      productLine: r.productLine,
-      unitCostUsd: r.unitCostUsd,
-      unitCostIntlUsd: r.unitCostIntlUsd,
-    });
-  }
-  return latest;
+  return rows.map((r) => ({
+    sku: r.sku,
+    location: r.location,
+    snapshotDate: r.snapshotDate,
+    onHand: r.onHand,
+    productName: r.productName ?? r.sku,
+    productLine: r.productLine,
+    unitCostUsd: r.unitCostUsd,
+    unitCostIntlUsd: r.unitCostIntlUsd,
+  }));
 }
 
 export async function getStockValue(filters: { location?: Location; productLine?: string } = {}) {

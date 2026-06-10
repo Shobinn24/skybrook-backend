@@ -284,6 +284,11 @@ export const dailySales = pgTable(
     pk: primaryKey({
       columns: [t.channel, t.routedLocation, t.sku, t.salesDate],
     }),
+    // The dominant query shapes filter by sku + date range (velocity,
+    // /performance, SKU detail) or bare date (freshness max(sales_date),
+    // cashflow actuals). sku is 3rd in the PK so neither could use it.
+    skuDateIdx: index("daily_sales_sku_date_idx").on(t.sku, t.salesDate),
+    dateIdx: index("daily_sales_date_idx").on(t.salesDate),
   }),
 );
 

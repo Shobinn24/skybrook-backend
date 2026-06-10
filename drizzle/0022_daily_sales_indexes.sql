@@ -1,0 +1,2 @@
+CREATE INDEX IF NOT EXISTS "daily_sales_sku_date_idx" ON "daily_sales" USING btree ("sku","sales_date");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "daily_sales_date_idx" ON "daily_sales" USING btree ("sales_date");
