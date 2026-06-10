@@ -5,6 +5,7 @@ import { FlagPill } from "@/components/inventory/FlagPill";
 import { KpiCard } from "@/components/inventory/KpiCard";
 import { DailySalesChart } from "@/components/sku/DailySalesChart";
 import { trpc } from "@/lib/trpc/client";
+import { resolveUnitCost } from "@/lib/domain/unit-cost";
 
 type SkuRouteParams = { sku: string };
 
@@ -71,6 +72,7 @@ export default function SkuDetailPage() {
 
   const us = data.byLocation.find((l) => l.location === "US")!;
   const cn = data.byLocation.find((l) => l.location === "CN")!;
+  const cnCost = resolveUnitCost("CN", data);
   const totalStock = us.onHand + cn.onHand;
   const totalValue = us.stockValueUsd + cn.stockValueUsd;
   // Headline status = the most-concerning flag across warehouses.
@@ -194,10 +196,11 @@ export default function SkuDetailPage() {
         <WarehouseCard
           loc="CN"
           loc_={cn}
-          // CN routes to INTL cost when available, falls back to US — matches
-          // unitCostForLocation semantics from lib/queries/stock.ts.
-          unitCost={data.unitCostIntlUsd ?? data.unitCostUsd}
-          unitCostLabel={data.unitCostIntlUsd != null ? "INTL cost" : "INTL cost (falls back to US)"}
+          // CN cost resolution shares lib/domain/unit-cost.ts semantics
+          // (INTL when priced, else US fallback) so this card can never
+          // disagree with /inventory and /stock-value.
+          unitCost={cnCost.source === "none" ? null : cnCost.value}
+          unitCostLabel={cnCost.source === "intl" ? "INTL cost" : "INTL cost (falls back to US)"}
         />
       </div>
     </div>

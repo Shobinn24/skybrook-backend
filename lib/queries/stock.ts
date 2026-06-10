@@ -15,21 +15,11 @@ export type StockLevel = {
   unitCostIntlUsd: string | null;
 };
 
-// Pick the per-warehouse cost. CN uses the INTL column; US uses the US
-// column. When the location-specific cost is null (Scott hasn't priced
-// that SKU internationally yet, or the migration just landed) we fall
-// back to US so the dashboard stays usable rather than zeroing out CN
-// stock value.
-export function unitCostForLocation(row: {
-  location: Location;
-  unitCostUsd: string | null;
-  unitCostIntlUsd: string | null;
-}): number {
-  if (row.location === "US") {
-    return Number(row.unitCostUsd ?? 0);
-  }
-  return Number(row.unitCostIntlUsd ?? row.unitCostUsd ?? 0);
-}
+// Unit-cost resolution lives in lib/domain/unit-cost.ts (one canonical
+// implementation; the re-export preserves the established import path
+// for the query layer).
+import { resolveUnitCost, unitCostForLocation } from "@/lib/domain/unit-cost";
+export { unitCostForLocation };
 
 export async function getStockLevels(filters: { sku?: string; location?: Location } = {}): Promise<StockLevel[]> {
   // DISTINCT ON pushes latest-per-(sku, location) into Postgres. The old
@@ -167,9 +157,10 @@ export async function getStockValueByProduct(
   const costBySku = new Map<string, { us: number; intl: number }>();
   for (const r of rows) {
     if (!costBySku.has(r.sku)) {
-      const us = Number(r.unitCostUsd ?? 0);
-      const intl = Number(r.unitCostIntlUsd ?? r.unitCostUsd ?? 0);
-      costBySku.set(r.sku, { us, intl });
+      costBySku.set(r.sku, {
+        us: resolveUnitCost("US", r).value,
+        intl: resolveUnitCost("CN", r).value,
+      });
     }
   }
   // productName lookup so future-stock SKUs not currently in stock

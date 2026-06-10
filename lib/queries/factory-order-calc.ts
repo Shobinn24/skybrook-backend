@@ -25,6 +25,7 @@ import {
   monthKey,
 } from "@/lib/queries/factory-order";
 import { getReceivedShipmentKeys, shipmentReceiptKey } from "@/lib/queries/incoming";
+import { resolveUnitCost } from "@/lib/domain/unit-cost";
 
 /**
  * Build the (sku → SkuFacts) map needed by the calc engine.
@@ -129,9 +130,11 @@ async function assembleSkuFacts(asOfDate: Date): Promise<{
       antStock: latestStock.get(`${r.sku}|CN`) ?? 0,
       incomingUs: incomingTotals.get(`${r.sku}|US`) ?? 0,
       incomingIntl: incomingTotals.get(`${r.sku}|CN`) ?? 0,
-      unitCostUs: r.unitCostUsd !== null ? Number(r.unitCostUsd) : 0,
-      unitCostIntl:
-        r.unitCostIntlUsd !== null ? Number(r.unitCostIntlUsd) : 0,
+      // STRICT mode on purpose: factory-order lines are real money, so
+      // CN never silently falls back to the US cost — see
+      // lib/domain/unit-cost.ts for the full rationale.
+      unitCostUs: resolveUnitCost("US", r, { mode: "strict" }).value,
+      unitCostIntl: resolveUnitCost("CN", r, { mode: "strict" }).value,
     });
   }
 

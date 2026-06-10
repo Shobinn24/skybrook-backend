@@ -6,7 +6,8 @@ import {
   salesVelocity,
   sustainabilityFlags,
 } from "@/lib/db/schema";
-import { getStockLevels, unitCostForLocation, type StockLevel } from "./stock";
+import { getStockLevels, type StockLevel } from "./stock";
+import { resolveUnitCost } from "@/lib/domain/unit-cost";
 import { getReceivedShipmentKeys, shipmentReceiptKey } from "./incoming";
 import type { Location } from "@/lib/domain/warehouse-routing";
 
@@ -144,19 +145,17 @@ export async function getInventoryRows(location: Location): Promise<InventoryRow
     const velRow = velBySku.get(s.sku);
     const dos = dosRow ? Number(dosRow.daysOfStock) : null;
     const velocityPerDay = velRow ? Number(velRow.unitsPerDay) : null;
-    const unitCost = unitCostForLocation(s);
+    const resolvedCost = resolveUnitCost(s.location, s);
+    const unitCost = resolvedCost.value;
     const stockValueUsd = s.onHand * unitCost;
-    // Track which DB column the cost actually came from so trace + UI
-    // can show the right source label. CN routes to INTL when present,
-    // falls back to US otherwise.
-    const intlCostNum = s.unitCostIntlUsd != null ? Number(s.unitCostIntlUsd) : null;
-    const usedIntlCost =
-      s.location === "CN" && intlCostNum !== null && intlCostNum > 0;
-    const costColumnRef = usedIntlCost
-      ? "skus.unit_cost_intl_usd"
-      : unitCost > 0
-        ? "skus.unit_cost_usd"
-        : "missing — defaults to $0";
+    // Source label comes straight from the resolver so trace + UI can
+    // never disagree with the value they describe.
+    const costColumnRef =
+      resolvedCost.source === "intl"
+        ? "skus.unit_cost_intl_usd"
+        : resolvedCost.source === "us"
+          ? "skus.unit_cost_usd"
+          : "missing — defaults to $0";
     const pendingPos = incomingBySku.get(s.sku) ?? [];
     const incomingUnits = pendingPos.reduce((acc, r) => acc + r.quantity, 0);
 
