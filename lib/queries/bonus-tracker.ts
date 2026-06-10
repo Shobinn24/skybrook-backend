@@ -47,7 +47,10 @@ export type BonusAdRow = {
   adLink: string | null;
   marketers: string[];
   lifetimeSpendUsd: number;
-  // Rolling 7-day window: spend in [today-6, today] EST inclusive.
+  // Rolling 7-day window anchored on the last POPULATED spend date:
+  // [lastPopulated-6, lastPopulated] EST inclusive. Anchoring on today
+  // made the window read low before the ~noon-ET sheet refresh — up to
+  // two of its seven days had no rows yet (Jasper 2026-06-10).
   past7dSpendUsd: number;
   // Per (ad × THIS section's marketer × tier) award. Null when no
   // crossing has been detected for that tier yet.
@@ -61,6 +64,9 @@ export type BonusTrackerSection = {
 
 export type BonusTrackerResult = {
   sections: BonusTrackerSection[];
+  // The exact dates the "Past 7D spend" column covers, so the UI can say
+  // "2 Jun - 8 Jun" instead of leaving the window implicit.
+  past7dWindow: { start: string; end: string };
 };
 
 /**
@@ -72,10 +78,18 @@ export type BonusTrackerResult = {
  * Sort within a section: lifetime spend descending.
  */
 export async function getBonusTracker(): Promise<BonusTrackerResult> {
-  // 7-day rolling window in EST: [today-6, today] inclusive. Same SQL
-  // FILTER trick keeps it to a single scan, so cost is unchanged.
+  // 7-day rolling window in EST, anchored on the last spend date that
+  // actually has rows (spend lands T+1 via the sheet refresh, so before
+  // ~12:30pm ET "today" and often "yesterday" are empty — anchoring on
+  // today read 5-6 days of spend as if it were 7). Same SQL FILTER
+  // trick keeps it to a single scan.
   const todayEst = toEstDate(new Date());
-  const sevenDaysAgoEst = addDays(todayEst, -6);
+  const [{ lastPopulated }] = await db
+    .select({ lastPopulated: sql<string | null>`max(${fbAdSpendDaily.spendDate})` })
+    .from(fbAdSpendDaily);
+  const windowEnd =
+    lastPopulated && lastPopulated < todayEst ? lastPopulated : todayEst;
+  const sevenDaysAgoEst = addDays(windowEnd, -6);
 
   // Per-ad lifetime spend + 7d spend + marketers array.
   const adRows = await db
@@ -86,7 +100,7 @@ export async function getBonusTracker(): Promise<BonusTrackerResult> {
       adLink: sql<string | null>`max(${fbAdSpendDaily.adLink})`,
       marketers: sql<string[]>`min(${fbAdSpendDaily.marketers})`,
       lifetimeSpendUsd: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}), 0)`,
-      past7dSpendUsd: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}) filter (where ${fbAdSpendDaily.spendDate} >= ${sevenDaysAgoEst}), 0)`,
+      past7dSpendUsd: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}) filter (where ${fbAdSpendDaily.spendDate} >= ${sevenDaysAgoEst} and ${fbAdSpendDaily.spendDate} <= ${windowEnd}), 0)`,
     })
     .from(fbAdSpendDaily)
     .groupBy(fbAdSpendDaily.adNumber)
@@ -138,7 +152,10 @@ export async function getBonusTracker(): Promise<BonusTrackerResult> {
     }
   }
 
-  return { sections };
+  return {
+    sections,
+    past7dWindow: { start: sevenDaysAgoEst, end: windowEnd },
+  };
 }
 
 export type PendingApproval = {

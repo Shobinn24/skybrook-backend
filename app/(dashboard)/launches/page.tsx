@@ -2,13 +2,16 @@
 import { useState } from "react";
 import { trpc } from "@/lib/trpc/client";
 
+// "18 Jul 2026" — DD MMM YYYY per Jasper 2026-06-10 ("easier on the
+// eyes"). en-GB gives day-first ordering regardless of the viewer's OS
+// locale.
 function fmtDate(ymd: string | null): string {
   if (!ymd) return "—";
   const [y, m, d] = ymd.split("-").map(Number);
   if (!y || !m || !d) return ymd;
-  return new Date(y, m - 1, d).toLocaleDateString([], {
-    month: "short",
+  return new Date(y, m - 1, d).toLocaleDateString("en-GB", {
     day: "numeric",
+    month: "short",
     year: "numeric",
   });
 }
@@ -235,20 +238,37 @@ function DateCell({
   value: string | null;
   onChange: (next: string) => void;
 }) {
+  // Display formatted "18 Jul 2026" text; switch to the native date
+  // picker only while editing. A bare input[type=date] renders in the
+  // browser's locale format (MM/DD/YYYY for most of the team), which is
+  // what Jasper asked to change (2026-06-10).
+  const [editing, setEditing] = useState(false);
   // Track local edit state so the input doesn't reset on every keystroke
   // when the parent re-renders from the mutation invalidation.
   const [draft, setDraft] = useState<string | null>(null);
-  const display = draft ?? value ?? "";
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-xs tabular-nums hover:border-neutral-400 focus:border-neutral-500 focus:outline-none"
+      >
+        {fmtDate(value)}
+      </button>
+    );
+  }
   return (
     <input
       type="date"
-      value={display}
+      autoFocus
+      value={draft ?? value ?? ""}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => {
         if (draft !== null && draft !== (value ?? "")) {
           onChange(draft);
         }
         setDraft(null);
+        setEditing(false);
       }}
       className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-xs tabular-nums hover:border-neutral-400 focus:border-neutral-500 focus:outline-none"
     />

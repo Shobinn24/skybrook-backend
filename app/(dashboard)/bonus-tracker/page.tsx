@@ -515,6 +515,12 @@ export default function BonusTrackerPage() {
                             </th>
                             <th className="w-28 px-3 py-2 text-right font-medium">
                               Past 7D spend
+                              {tracker.data?.past7dWindow && (
+                                <span className="block text-[10px] font-normal text-neutral-400">
+                                  {fmtDate(tracker.data.past7dWindow.start)} –{" "}
+                                  {fmtDate(tracker.data.past7dWindow.end)}
+                                </span>
+                              )}
                             </th>
                             <th className="w-56 px-3 py-2 font-medium">
                               Progress to tiers

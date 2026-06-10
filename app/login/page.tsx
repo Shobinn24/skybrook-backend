@@ -8,8 +8,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   bad_id_token: "Could not read Google sign-in response. Try again.",
   no_email: "Your Google account did not return an email address.",
   email_unverified: "Your Google account email is not verified.",
-  bad_domain: "This dashboard is restricted to the Everdries Google Workspace.",
-  not_allowed: "Your account is not on the Skybrook access list. Ask Scott.",
+  bad_domain:
+    "This Google account isn't on the dashboard access list. Sign in with your workspace account, or ask the team admin to add this email.",
+  not_allowed:
+    "Your account is not on the Skybrook access list. Ask the team admin to add this email.",
 };
 
 export default async function LoginPage({

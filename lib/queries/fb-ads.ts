@@ -18,6 +18,12 @@ export type FbAdsRollup = {
   rangeEnd: string;
   rows: FbAdRow[];
   totalSpendUsd: number;
+  // Latest spend_date with data, across the whole table. FB spend lands
+  // T+1 (Supermetrics sheet -> ~noon ET refresh), so until then the most
+  // recent calendar day has no rows. The UI uses this to clamp the
+  // 7d/14d/30d presets to fully-populated days instead of silently
+  // including an empty yesterday (Jasper 2026-06-10).
+  lastPopulatedDate: string | null;
 };
 
 /** Top-spending FB ads in [rangeStart, rangeEnd] inclusive, sorted by
@@ -77,10 +83,17 @@ export async function getFbAdsRollup(opts: {
   }));
   const totalSpendUsd = rows.reduce((s, r) => s + r.spendUsd, 0);
 
+  const [{ lastPopulatedDate }] = await db
+    .select({
+      lastPopulatedDate: sql<string | null>`max(${fbAdSpendDaily.spendDate})`,
+    })
+    .from(fbAdSpendDaily);
+
   return {
     rangeStart: opts.rangeStart,
     rangeEnd: opts.rangeEnd,
     rows,
     totalSpendUsd,
+    lastPopulatedDate,
   };
 }

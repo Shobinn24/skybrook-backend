@@ -97,9 +97,19 @@ export default function FbAdsPage() {
 
   const rows = data?.rows ?? [];
 
+  // Spend lands T+1 (sheet refresh ~noon ET), so before then "yesterday"
+  // has no rows yet. Presets anchor on the last day that actually has
+  // data: picking 7d at 10am gives the last 7 POPULATED days (e.g.
+  // Jun 2-8) instead of a window whose newest day reads $0
+  // (Jasper 2026-06-10).
+  const lastPopulated =
+    data?.lastPopulatedDate && data.lastPopulatedDate < yesterday
+      ? data.lastPopulatedDate
+      : yesterday;
+
   function applyPreset(days: number) {
-    setRangeEnd(yesterday);
-    setRangeStart(addDaysYmd(yesterday, -(days - 1)));
+    setRangeEnd(lastPopulated);
+    setRangeStart(addDaysYmd(lastPopulated, -(days - 1)));
   }
 
   function toggleMarketer(name: MarketerFilterOption) {
@@ -133,6 +143,12 @@ export default function FbAdsPage() {
             Top-spending Facebook ads pivoted by ad number ·{" "}
             {fmtDate(rangeStart)} – {fmtDate(rangeEnd)}
           </p>
+          {data?.lastPopulatedDate && rangeEnd > data.lastPopulatedDate && (
+            <p className="mt-1 text-xs font-medium text-amber-700">
+              Spend data is in through {fmtDate(data.lastPopulatedDate)} — days
+              after that show $0 until the next refresh (~12:30pm ET).
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 text-sm">

@@ -10,6 +10,7 @@ import {
   parseAllowedEmails,
   verifyOAuthStateToken,
 } from "@/lib/auth";
+import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
@@ -63,7 +64,19 @@ export async function GET(req: Request) {
   if (!claims) return errorRedirect(req, "bad_id_token");
 
   const result = checkAccess(claims, { workspaceDomain, allowedEmails, externalAllowedEmails });
-  if (!result.ok) return errorRedirect(req, result.reason);
+  if (!result.ok) {
+    // Log WHO bounced and why, so "some people can't log in" reports can
+    // be resolved by reading the logs instead of guessing which email
+    // each person tried (2026-06-10). Note: anyone rejected by Google's
+    // own consent screen (OAuth app in Testing mode + not a test user)
+    // never reaches this handler — that denial only shows in GCP.
+    logger.warn("auth.access_denied", {
+      email: claims.email ?? "(none)",
+      reason: result.reason,
+      hd: claims.hd ?? null,
+    });
+    return errorRedirect(req, result.reason);
+  }
 
   const token = await createSessionToken(sessionSecret, result.email);
   const dest = statePayload.next.startsWith("/") ? statePayload.next : "/inventory";
