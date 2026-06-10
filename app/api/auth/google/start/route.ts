@@ -39,9 +39,12 @@ export async function GET(req: Request) {
   authUrl.searchParams.set("state", state);
   authUrl.searchParams.set("access_type", "online");
   authUrl.searchParams.set("prompt", "select_account");
-  // `hd` hints Google to pre-filter the account picker to Workspace accounts on
-  // this domain. Not a security control — the callback re-validates `hd`.
-  authUrl.searchParams.set("hd", workspaceDomain);
+  // Deliberately NO `hd` hint: it made Google pre-fill
+  // "@<workspace-domain>" on the sign-in screen, which read as
+  // "workspace email required" to the external media buyers (owner
+  // report 2026-06-10). It was never a security control — the callback
+  // validates hd + the allowlists regardless — so dropping it only
+  // neutralizes the account picker.
 
   return NextResponse.redirect(authUrl.toString());
 }
