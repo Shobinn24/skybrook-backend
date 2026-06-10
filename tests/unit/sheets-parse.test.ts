@@ -131,6 +131,31 @@ describe("walkDateHeaders", () => {
   it("returns empty when no cells parse", () => {
     expect(walkDateHeaders(["sku's", "", "foo"], "2026-04-23")).toEqual([]);
   });
+  it("treats a pre-created tomorrow column as current year, not last year", () => {
+    // Today: Jun 10 2026. Tomorrow's column already created. The old
+    // anchor rule (any future day/month ⇒ last year) dated the WHOLE
+    // row 2025 and shifted every snapshot back 12 months.
+    const out = walkDateHeaders(["9/Jun", "10/Jun", "11/Jun"], "2026-06-10");
+    expect(out.map((p) => p.date)).toEqual([
+      "2026-06-09",
+      "2026-06-10",
+      "2026-06-11",
+    ]);
+  });
+  it("anchors a pre-created Jan 1 column to NEXT year on Dec 31", () => {
+    const out = walkDateHeaders(["30/Dec", "31/Dec", "1/Jan"], "2026-12-31");
+    expect(out.map((p) => p.date)).toEqual([
+      "2026-12-30",
+      "2026-12-31",
+      "2027-01-01",
+    ]);
+  });
+  it("still anchors a genuinely-stale rightmost column to last year", () => {
+    // Rightmost is >7 days in the future relative to today's calendar →
+    // it must be last year's column (sheet hasn't been updated).
+    const out = walkDateHeaders(["10/Dec", "11/Dec"], "2026-06-10");
+    expect(out.map((p) => p.date)).toEqual(["2025-12-10", "2025-12-11"]);
+  });
 });
 
 describe("pickLatestColumn", () => {

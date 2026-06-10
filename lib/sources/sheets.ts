@@ -153,10 +153,29 @@ export function walkDateHeaders(
   const todayDay = Number(todayYmd.slice(8, 10));
 
   const last = parsed[parsed.length - 1];
-  let year =
-    last.month > todayMonth || (last.month === todayMonth && last.day > todayDay)
-      ? todayYear - 1
-      : todayYear;
+  // Anchor-year selection. The rightmost header is "today" in the daily
+  // flow, but it can legitimately sit a little in the FUTURE (tomorrow's
+  // column pre-created at end of day). The old rule — any future
+  // day/month ⇒ last year — turned one pre-created column into a
+  // 12-month shift of the entire header row (anchor 2025, every column
+  // walked back from there, pickLatestColumn then grabbed a mis-dated
+  // column). Instead: pick the year in {today-1, today, today+1} whose
+  // resulting date is closest to today without being more than
+  // FORWARD_TOLERANCE_DAYS ahead. today+1 handles the Dec 31 / "1 Jan"
+  // boundary; today-1 keeps the genuine stale-sheet case working.
+  const FORWARD_TOLERANCE_DAYS = 7;
+  const todayUtcMs = Date.UTC(todayYear, todayMonth - 1, todayDay);
+  let year = todayYear;
+  let bestAbsDays = Infinity;
+  for (const y of [todayYear - 1, todayYear, todayYear + 1]) {
+    const diffDays =
+      (Date.UTC(y, last.month - 1, last.day) - todayUtcMs) / 86_400_000;
+    if (diffDays > FORWARD_TOLERANCE_DAYS) continue;
+    if (Math.abs(diffDays) < bestAbsDays) {
+      bestAbsDays = Math.abs(diffDays);
+      year = y;
+    }
+  }
 
   const fmt = (y: number, m: number, d: number) =>
     `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
