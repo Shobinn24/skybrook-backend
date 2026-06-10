@@ -775,6 +775,29 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
     },
     schemaFingerprint: fingerprint,
     async normalize(rawId) {
+      // Refuse-to-wipe guard: an empty or layout-broken parse means the
+      // SHEET READ failed (renamed col-C header, moved block — the
+      // schema-drift class), not that every PO vanished overnight.
+      // Truncating incoming_shipments on it would zero /incoming, the
+      // sustainability projections, and stock-value future units while
+      // still looking "healthy". Keep existing data, page P1, bail.
+      // Same failure class as the FB month-collapse guard.
+      const layoutBroken = skippedColumns.some((s) => s.label === "(layout)");
+      if (rows.length === 0 || layoutBroken) {
+        await postAlert({
+          severity: "p1",
+          channel: "alerts",
+          dedupKey: "sheets_incoming.empty_parse",
+          title:
+            "Incoming-PO ingest blocked: parse produced no rows — refusing to truncate incoming_shipments",
+          fields: {
+            layoutBroken: String(layoutBroken),
+            skippedColumns: skippedColumns.length,
+            firstSkipReason: skippedColumns[0]?.reason ?? null,
+          },
+        });
+        return;
+      }
       // Sheet is the canonical (and only) source of incoming POs in MVP.
       // Truncate-replace per pull keeps state in sync without needing a unique
       // constraint on (sku, shipmentName, expectedArrival, destination). When
@@ -789,7 +812,6 @@ export const sheetsIncomingRunner: SourceRunner = async (_batchId) => {
       // (the SKU itself) into a friendly label via deriveProductName.
       await db.transaction(async (tx) => {
         await tx.delete(incomingShipments);
-        if (rows.length === 0) return;
         const today = new Date().toISOString().slice(0, 10);
         const seenSkus = new Set<string>();
         for (const row of rows) {
@@ -1167,12 +1189,31 @@ export const sheetsAdSpendRunner: SourceRunner = async (_batchId) => {
       sample: e.sample,
     })),
     async normalize(rawId) {
+      // Refuse-to-wipe guard: zero parsed rows across every tab means
+      // the read/parse failed (header drift, API error), not that all
+      // ad spend history disappeared. Truncating ad_spend_daily on it
+      // would show $0 spend / null ROAS on /performance while looking
+      // healthy. Keep existing data, page P1, bail.
+      if (dedupedRows.length === 0) {
+        await postAlert({
+          severity: "p1",
+          channel: "alerts",
+          dedupKey: "sheets_ad_spend.empty_parse",
+          title:
+            "Ad-spend ingest blocked: parse produced no rows — refusing to truncate ad_spend_daily",
+          fields: {
+            tabs: AD_SPEND_TABS.join(", "),
+            skipped: allSkipped.length,
+            firstSkipReason: allSkipped[0]?.reason ?? null,
+          },
+        });
+        return;
+      }
       // Truncate-replace per pull. Supermetrics history is ~30-90 days
-      // depending on Scott's query config; refreshing the whole table
-      // keeps us aligned without needing change-detection.
+      // depending on the owner-side query config; refreshing the whole
+      // table keeps us aligned without needing change-detection.
       await db.transaction(async (tx) => {
         await tx.delete(adSpendDaily);
-        if (dedupedRows.length === 0) return;
         for (const r of dedupedRows) {
           await tx.insert(adSpendDaily).values({
             product: r.product,
