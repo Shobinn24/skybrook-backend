@@ -8,6 +8,10 @@ import {
 import { previewNotification } from "@/lib/queries/bonus-tracker";
 import { logger } from "@/lib/logger";
 
+/** Thrown inside the claim transaction when another send already
+ * stamped one of the previewed awards — rolls the whole claim back. */
+class ConcurrentSendError extends Error {}
+
 export type ApproveBonusOpts = {
   awardId: string;
   approval: "approved_full" | "approved_half";
@@ -178,40 +182,76 @@ export async function sendNotification(opts: {
     return { skipped: true, reason: "no unsent approved bonuses" };
   }
 
+  // CLAIM-FIRST. The old order (send WhatsApp, then stamp in a tx) had
+  // two failure modes: a double-click sent the payout announcement to
+  // the team twice (both clicks computed the same preview and both
+  // fired before either stamped), and the losing click still inserted
+  // a batch row carrying full totalsJson — double-counting the month in
+  // the notification-history grand totals. Now the batch + stamps are
+  // committed FIRST (whatsapp_status='sending'); the claim aborts unless
+  // it stamps every previewed award, so exactly one concurrent caller
+  // can win. The message goes out only after the claim commits, and the
+  // outcome is recorded on the batch afterwards. A crash between commit
+  // and send leaves a visible 'sending' batch to resend from — strictly
+  // better than money announced with no record.
+  let batchId: string;
+  try {
+    batchId = await db.transaction(async (tx) => {
+      const [batch] = await tx
+        .insert(bonusNotificationBatches)
+        .values({
+          periodLabel: preview.periodLabel,
+          messageBody: preview.messageBody,
+          totalsJson: preview.totals,
+          sentBy: opts.sentBy,
+          whatsappStatus: "sending",
+        })
+        .returning({ id: bonusNotificationBatches.id });
+
+      const stamped = await tx
+        .update(bonusAwards)
+        .set({ notificationBatchId: batch.id, updatedAt: new Date() })
+        .where(
+          and(
+            inArray(bonusAwards.id, preview.awardIds),
+            // Unsent recheck inside the tx — a concurrent send that
+            // already claimed any of these awards makes the count
+            // mismatch below roll the whole claim back.
+            sql`${bonusAwards.notificationBatchId} IS NULL`,
+          ),
+        )
+        .returning({ id: bonusAwards.id });
+
+      if (stamped.length !== preview.awardIds.length) {
+        throw new ConcurrentSendError(
+          `claimed ${stamped.length}/${preview.awardIds.length} awards — another send is in flight`,
+        );
+      }
+      return batch.id;
+    });
+  } catch (e) {
+    if (e instanceof ConcurrentSendError) {
+      logger.warn("bonus.notification.concurrent_send_blocked", { reason: e.message });
+      return { skipped: true, reason: e.message };
+    }
+    throw e;
+  }
+
   const send = opts.sendWhatsApp ?? (async () => ({ ok: false, reason: "no whatsapp sender configured" }));
-  const whatsappResult = await send(preview.messageBody);
-  const whatsappStatus = whatsappResult.ok
-    ? "sent"
-    : `failed:${whatsappResult.reason ?? "unknown"}`;
+  let whatsappStatus: string;
+  try {
+    const whatsappResult = await send(preview.messageBody);
+    whatsappStatus = whatsappResult.ok
+      ? "sent"
+      : `failed:${whatsappResult.reason ?? "unknown"}`;
+  } catch (e) {
+    whatsappStatus = `failed:${e instanceof Error ? e.message : String(e)}`.slice(0, 200);
+  }
 
-  // Insert the batch and stamp the awards in a single transaction so
-  // an empty batch can't get created if the award update fails.
-  const batchId = await db.transaction(async (tx) => {
-    const [batch] = await tx
-      .insert(bonusNotificationBatches)
-      .values({
-        periodLabel: preview.periodLabel,
-        messageBody: preview.messageBody,
-        totalsJson: preview.totals,
-        sentBy: opts.sentBy,
-        whatsappStatus,
-      })
-      .returning({ id: bonusNotificationBatches.id });
-
-    await tx
-      .update(bonusAwards)
-      .set({ notificationBatchId: batch.id, updatedAt: new Date() })
-      .where(
-        and(
-          inArray(bonusAwards.id, preview.awardIds),
-          // Re-check the unsent condition inside the tx so racing
-          // concurrent sends don't double-stamp.
-          sql`${bonusAwards.notificationBatchId} IS NULL`,
-        ),
-      );
-
-    return batch.id;
-  });
+  await db
+    .update(bonusNotificationBatches)
+    .set({ whatsappStatus })
+    .where(eq(bonusNotificationBatches.id, batchId));
 
   logger.info("bonus.notification.sent", {
     batchId,
