@@ -52,6 +52,39 @@ export async function POST(req: Request) {
   const asOfDate = toEstDate(new Date());
   const ingest = await runIngest({ sources: SOURCES });
   const batchId = ingest.batchId;
+  // Another ingest holds the advisory lock (overlapping trigger). Bail
+  // before the derived stages — the in-flight run owns them, and running
+  // phase2 against tables it is mid-rewrite would derive from torn data.
+  if (ingest.skipped) {
+    logger.info("cron.ingest.skipped_concurrent", { batchId });
+    return NextResponse.json({ ok: true, skipped: true, batchId });
+  }
+
+  // Per-stage isolation: every derived stage below is independent enough
+  // that one failing must not abort the rest. Pre-fix, a syncUnitCosts
+  // throw meant phase2 never ran — sales/stock were already updated but
+  // velocity/DOS/sustainability stayed at yesterday's values, displayed
+  // against today's stock: the exact May-6 "combined view that never
+  // existed" failure class. Each stage fires a dedup'd P1 on failure and
+  // auto-resolves on the next success; the freshness sweep + dead-man
+  // ping at the bottom run regardless.
+  const stage = async <T>(name: string, fn: () => Promise<T>): Promise<T | null> => {
+    try {
+      const result = await fn();
+      await resolveAlert(`cron.stage.failed:${name}`);
+      return result;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      logger.error("cron.stage.failed", { stage: name, batchId, error: message });
+      await postAlert({
+        severity: "p1",
+        title: `Cron stage failed: ${name} — downstream numbers may be stale`,
+        dedupKey: `cron.stage.failed:${name}`,
+        fields: { stage: name, asOfDate, batchId, error: message.slice(0, 240) },
+      });
+      return null;
+    }
+  };
   // Surface any PO column the incoming sheet ingest had to skip (shipment name
   // present but an arrival date the parser can't read, e.g. typed without a
   // year). Without this the PO silently vanishes from /incoming — the same
@@ -83,12 +116,14 @@ export async function POST(req: Request) {
       error: e instanceof Error ? e.message : String(e),
     });
   }
-  const productNames = await syncProductNames();
-  const unitCosts = await syncUnitCosts();
+  const productNames = await stage("product_names", () => syncProductNames());
+  const unitCosts = await stage("unit_costs", () => syncUnitCosts());
   // Auto-receipt detection runs after ingest (today's stock snapshot
   // is fresh) and before phase2 (so derived metrics see the updated
   // receipt state, e.g. incoming projections drop the auto-marked POs).
-  const autoReceipts = await runAutoReceiptDetection({ asOfDate });
+  const autoReceipts = await stage("auto_receipts", () =>
+    runAutoReceiptDetection({ asOfDate }),
+  );
   // Safety net for the conservative auto-receipt detector: flag overdue
   // shipments whose stock actually jumped on/after their ETA (i.e. they
   // arrived but weren't confidently auto-matched — partial / spread /
@@ -127,15 +162,19 @@ export async function POST(req: Request) {
   // Auto-populate launches runs after syncProductNames (so productNames
   // are current) but is independent of phase2 — failures shouldn't
   // block downstream metrics.
-  const autoLaunches = await runLaunchAutoPopulate();
+  const autoLaunches = await stage("launch_auto_populate", () =>
+    runLaunchAutoPopulate(),
+  );
   // Orphan-SKU sweep runs after launches (so launch creation can't
   // accidentally pick up a SKU we're about to deactivate) and before
   // phase2 / freshness so missing-cost counts reflect post-sweep
   // state. Catches the failure mode that left 13 ev-pp-hw-* /
   // ev-pp-og-* rows masking the real missing-cost count on
   // 2026-05-28 (see lib/jobs/orphan-sku-sweep.ts header).
-  const orphanSweep = await runOrphanSkuSweep();
-  const phase2 = await runPhase2({ asOfDate, pullBatchId: batchId });
+  const orphanSweep = await stage("orphan_sku_sweep", () => runOrphanSkuSweep());
+  const phase2 = await stage("phase2", () =>
+    runPhase2({ asOfDate, pullBatchId: batchId }),
+  );
   // Bonus crossing detection runs after the FB ads sheet ingest has
   // landed today's spend rows. New (ad × marketer × tier) crossings
   // become `pending` rows in bonus_awards for Jasper to triage.
@@ -147,10 +186,12 @@ export async function POST(req: Request) {
   // was actually crossed during the last 14 days — pre-window spend
   // alone doesn't trigger a row. Tunable here if cron cadence ever
   // widens. See lib/jobs/bonus-crossings.ts header for the full rationale.
-  const bonusCrossings = await detectAndInsertBonusCrossings({
-    asOfDate,
-    lookbackDays: 14,
-  });
+  const bonusCrossings = await stage("bonus_crossings", () =>
+    detectAndInsertBonusCrossings({
+      asOfDate,
+      lookbackDays: 14,
+    }),
+  );
   // Shipping Performance snapshot (Spec: docs/shipping-checks-spec).
   // Pulls last 60d of US-store orders + computes 30d-trailing stats.
   // Best-effort for the cron response: a Shopify hiccup shouldn't block
@@ -192,8 +233,10 @@ export async function POST(req: Request) {
   // Freshness sweep runs LAST so its checks see the post-phase2 state of
   // every table. Catches silent emptiness that per-source ingest alerts
   // miss (e.g. May-6 cross-channel skew, partial sheet refreshes).
-  // Failures here never block the cron response — postAlert is internal.
-  const freshness = await runFreshnessCheck();
+  // Stage-guarded like everything above, so it ALWAYS executes even when
+  // an earlier stage failed — staleness detection is most valuable on
+  // exactly those runs.
+  const freshness = await stage("freshness_check", () => runFreshnessCheck());
 
   // Dead-man ping to healthchecks.io — confirms the cron itself ran, no
   // matter what the freshness sweep found. Substantive failures
@@ -219,15 +262,17 @@ export async function POST(req: Request) {
     likelyArrivedOverdueFlagged: arrivalEvidence.flagged.length,
     likelyArrivedOverdueAutoMarked: arrivalEvidence.autoMarked.length,
     autoLaunches,
-    orphanSkusDeactivated: orphanSweep.deactivated.length,
+    orphanSkusDeactivated: orphanSweep ? orphanSweep.deactivated.length : null,
     bonusCrossings,
     shippingSnapshot,
-    ...phase2,
+    ...(phase2 ?? { phase2: "stage_failed" }),
     ingestAlertsFired: ingest.alertsFired,
     ingestAlertsResolved: ingest.alertsResolved,
-    freshnessFails: freshness.checks.filter((c) => c.status === "fail").length,
-    freshnessAlertsFired: freshness.alertsFired,
-    freshnessAlertsResolved: freshness.alertsResolved,
+    freshnessFails: freshness
+      ? freshness.checks.filter((c) => c.status === "fail").length
+      : null,
+    freshnessAlertsFired: freshness?.alertsFired ?? null,
+    freshnessAlertsResolved: freshness?.alertsResolved ?? null,
   });
   return NextResponse.json({
     ok: true,

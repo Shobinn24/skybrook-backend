@@ -65,6 +65,13 @@ export async function POST(req: Request) {
   // overwrites today's rows for these two sources; other tables are
   // untouched.
   const ingest = await runIngest({ sources: AD_SPEND_SOURCES });
+  // Another ingest holds the advisory lock (e.g. a sheet-poll trigger
+  // mid-flight). Skip — the in-flight run lands the same sheets, and the
+  // stale-data alerting covers the gap if it doesn't.
+  if (ingest.skipped) {
+    logger.info("cron.refresh-ad-spend.skipped_concurrent", { batchId: ingest.batchId });
+    return NextResponse.json({ ok: true, skipped: true, batchId: ingest.batchId });
+  }
 
   // Re-run bonus crossing detection. The morning pass already ran with
   // lookbackDays=14; this picks up any ads that crossed thresholds in
