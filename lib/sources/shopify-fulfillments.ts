@@ -17,7 +17,10 @@
  * Spec: docs/shipping-checks-spec/ops-shipping-checks-spec.md
  */
 
-import { getShopifyAccessToken } from "@/lib/sources/shopify-auth";
+import {
+  getShopifyAccessToken,
+  invalidateShopifyToken,
+} from "@/lib/sources/shopify-auth";
 
 const API_VERSION = "2025-01";
 const ORDERS_PAGE_SIZE = 50;
@@ -155,12 +158,16 @@ export async function fetchOrdersSince(opts: {
   store: string;
   sinceIso: string;
 }): Promise<OrderRecord[]> {
-  const token = await getShopifyAccessToken(opts.store);
+  let token = await getShopifyAccessToken(opts.store);
   const url = `https://${opts.store}/admin/api/${API_VERSION}/graphql.json`;
   const filterQuery = `created_at:>='${opts.sinceIso}' status:any`;
 
   const out: OrderRecord[] = [];
   let cursor: string | null = null;
+  // One-shot guard: Shopify can invalidate a cached client_credentials token
+  // when a newer one is issued for the same store (another job/process). On a
+  // 401 we clear the cache and refetch once before giving up.
+  let refreshedOn401 = false;
 
   while (true) {
     let json: GraphQLResponse | null = null;
@@ -180,6 +187,12 @@ export async function fetchOrdersSince(opts: {
       if (res.status === 429) {
         // Exponential backoff: 2s, 4s, 8s, …
         await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt));
+        continue;
+      }
+      if (res.status === 401 && !refreshedOn401) {
+        refreshedOn401 = true;
+        invalidateShopifyToken(opts.store);
+        token = await getShopifyAccessToken(opts.store);
         continue;
       }
       if (!res.ok) {

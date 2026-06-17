@@ -90,6 +90,18 @@ export async function getShopifyAccessToken(store: string): Promise<string> {
   return fetched.access_token;
 }
 
+/**
+ * Drop a single store's cached token so the next call refetches a fresh one.
+ * Call this when the Admin API rejects a cached token with HTTP 401: Shopify
+ * can invalidate a previously-issued client_credentials token when a newer one
+ * is issued for the same store, so two jobs/processes fetching independently
+ * can invalidate each other's cached token. Clearing + refetching on 401 makes
+ * callers self-heal against that race.
+ */
+export function invalidateShopifyToken(store: string): void {
+  tokenCache.delete(store);
+}
+
 /** Test-only: clear the in-memory token cache. */
 export function _resetTokenCacheForTests(): void {
   tokenCache.clear();

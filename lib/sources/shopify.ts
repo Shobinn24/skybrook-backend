@@ -4,7 +4,10 @@ import { db } from "@/lib/db";
 import { dailySales } from "@/lib/db/schema";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { decomposePackSku } from "@/lib/domain/sku-pack";
-import { getShopifyAccessToken } from "@/lib/sources/shopify-auth";
+import {
+  getShopifyAccessToken,
+  invalidateShopifyToken,
+} from "@/lib/sources/shopify-auth";
 import { postAlert } from "@/lib/notifications/slack";
 import { toEstDate } from "@/lib/tz";
 import { routeOrder, type Location } from "@/lib/domain/warehouse-routing";
@@ -124,6 +127,11 @@ async function* iterateOrderPages(
   // both ends; UNTIL is whole-day so callers pass tomorrow to include
   // today, or just today to include up-to-midnight UTC.
   const filterQuery = `created_at:>=${since} created_at:<=${until}`;
+  // Refreshable token: Shopify can invalidate a cached client_credentials
+  // token when a newer one is issued for the same store (another job/process).
+  // On a 401 we clear the cache and refetch once before failing.
+  let tok = token;
+  let refreshedOn401 = false;
 
   while (true) {
     const body = {
@@ -155,11 +163,17 @@ async function* iterateOrderPages(
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        "X-Shopify-Access-Token": token,
+        "X-Shopify-Access-Token": tok,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
     });
+    if (res.status === 401 && !refreshedOn401) {
+      refreshedOn401 = true;
+      invalidateShopifyToken(store);
+      tok = await getShopifyAccessToken(store);
+      continue;
+    }
     if (!res.ok) {
       throw new Error(`shopify ${store}: HTTP ${res.status} ${await res.text()}`);
     }
