@@ -132,12 +132,13 @@ export function lineageForCheck(name: string): Lineage {
     }
   }
 
-  // Column-quality checks.
-  if (name.startsWith("column_quality.")) {
-    // marketer attribution is an fb_ad_spend_daily-derived column;
-    // product_line is a skus column.
-    const subject = name.includes("marketer") ? "fb_ad_spend_daily" : "skus";
-    return { subject, dashboards: dashboardsForTable(subject) };
+  // Column-quality checks. Today the only one is fb marketer attribution,
+  // an fb_ad_spend_daily-derived column.
+  if (name.startsWith("column_quality.") && name.includes("marketer")) {
+    return {
+      subject: "fb_ad_spend_daily",
+      dashboards: dashboardsForTable("fb_ad_spend_daily"),
+    };
   }
 
   // Factory-order integrity checks.
