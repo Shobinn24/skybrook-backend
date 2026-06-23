@@ -77,13 +77,18 @@ export type BonusTrackerResult = {
  *
  * Sort within a section: lifetime spend descending.
  */
-export async function getBonusTracker(): Promise<BonusTrackerResult> {
+export async function getBonusTracker(opts?: {
+  // Injectable clock so the 7-day window is deterministic in tests
+  // (mirrors lib/jobs/freshness-check.ts). Defaults to the real clock.
+  now?: () => Date;
+}): Promise<BonusTrackerResult> {
+  const now = opts?.now ?? (() => new Date());
   // 7-day rolling window in EST, anchored on the last spend date that
   // actually has rows (spend lands T+1 via the sheet refresh, so before
   // ~12:30pm ET "today" and often "yesterday" are empty — anchoring on
   // today read 5-6 days of spend as if it were 7). Same SQL FILTER
   // trick keeps it to a single scan.
-  const todayEst = toEstDate(new Date());
+  const todayEst = toEstDate(now());
   const [{ lastPopulated }] = await db
     .select({ lastPopulated: sql<string | null>`max(${fbAdSpendDaily.spendDate})` })
     .from(fbAdSpendDaily);

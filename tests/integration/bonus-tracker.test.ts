@@ -365,7 +365,14 @@ describe("getBonusTracker", () => {
         })
         .returning({ id: rawPulls.id });
 
-      // All spend is on a far-past date, well outside the 7d window.
+      // Pin "now" so the 7-day window is deterministic regardless of the
+      // machine clock (the window anchors on the latest populated spend
+      // date, so this test only ever passed when the real clock happened
+      // to sit before the seeded dates).
+      const now = () => new Date("2026-05-13T12:00:00Z");
+
+      // The dormant ad's only spend is on far-past dates (2026-04-01/02
+      // via seedAdSpend), well outside a window ending 2026-05-13.
       await seedAdSpend({
         adNumber: "901",
         adName: "Dormant Ad",
@@ -374,11 +381,28 @@ describe("getBonusTracker", () => {
         sourcePullId: raw.id,
       });
 
-      const result = await getBonusTracker();
+      // A fresh anchor row from an unrelated, unattributed ad pushes the
+      // latest-populated-date (and thus windowEnd) to 2026-05-13 — the
+      // realistic case where newer ads keep the feed current while this
+      // ad has gone quiet. Empty marketers → excluded from all sections,
+      // so it never appears in the assertions below.
+      await db.insert(fbAdSpendDaily).values({
+        adNumber: "999",
+        adName: "Fresh Anchor",
+        adNameRaw: "Fresh Anchor",
+        marketers: [],
+        spendDate: "2026-05-13",
+        costUsd: "1.0000",
+        sourcePullId: raw.id,
+      });
+
+      const result = await getBonusTracker({ now });
       const craig = result.sections.find((s) => s.marketer === "Craig")!;
       const row = craig.rows.find((r) => r.adNumber === "901")!;
       expect(row.lifetimeSpendUsd).toBeCloseTo(30_000, 2);
       expect(row.past7dSpendUsd).toBe(0);
+      // Sanity: the window really does end on the fresh anchor date.
+      expect(result.past7dWindow.end).toBe("2026-05-13");
     });
   });
 
