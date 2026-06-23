@@ -16,6 +16,7 @@ import { desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { alertEvents, dataPulls } from "@/lib/db/schema";
 import { evaluateFreshness } from "@/lib/jobs/freshness-check";
+import { affectedLabel } from "@/lib/jobs/lineage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -100,6 +101,10 @@ export async function GET() {
       maxDate: c.maxDate,
       threshold: c.threshold,
       detail: c.detail,
+      // Lineage: which dashboard pages render data derived from this
+      // check's subject, so an operator reading /health knows the blast
+      // radius without tracing the dependency by hand.
+      affectedDashboards: affectedLabel(c.name),
     })),
   };
 

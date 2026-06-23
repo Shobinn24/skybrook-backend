@@ -43,6 +43,7 @@ import {
   skus,
   stockSnapshots,
 } from "@/lib/db/schema";
+import { affectedLabel } from "@/lib/jobs/lineage";
 import { logger } from "@/lib/logger";
 import { postAlert, resolveAlert } from "@/lib/notifications/slack";
 import { getPullHistoryWithDriftForSource } from "@/lib/queries/pipeline";
@@ -421,6 +422,20 @@ export async function evaluateFreshness(opts?: {
     });
   }
 
+  // --- Volume pillar (row-count drop detection). DB-only, so it rides
+  // this same evaluateFreshness path that /api/health and both crons
+  // already call — no extra wiring. Catches the region-split trap where
+  // a pull succeeds with a current max(date) but lands a fraction of its
+  // usual rows. See lib/jobs/volume-check.ts for the baseline model.
+  const { evaluateVolume } = await import("./volume-check");
+  checks.push(...(await evaluateVolume()));
+
+  // --- Column-quality pillar (null/empty on the columns the schema
+  // doesn't constrain). DB-only, rides this same path. See
+  // lib/jobs/column-quality.ts for why it's deliberately narrow.
+  const { evaluateColumnQuality } = await import("./column-quality");
+  checks.push(...(await evaluateColumnQuality()));
+
   return { asOfDate: today, threshold, checks };
 }
 
@@ -456,11 +471,15 @@ export async function runFreshnessCheck(opts?: {
   for (const c of evaluated) {
     if (!c.dedupKey || !c.title) continue;
     if (c.status === "fail") {
+      // Lineage enrichment: name the downstream dashboards this break
+      // affects so a triager knows where to look (or what to warn Scott
+      // off) without tracing the dependency by hand.
+      const affected = affectedLabel(c.name);
       const r = await postAlert({
         severity: c.severity ?? "p1",
         title: c.title,
         dedupKey: c.dedupKey,
-        fields: c.fields,
+        fields: { ...c.fields, affectedDashboards: affected },
       });
       if (r.fired) alertsFired++;
     } else {
