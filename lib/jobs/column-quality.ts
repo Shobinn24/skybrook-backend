@@ -7,31 +7,36 @@
 // 2400 reissued-link double-count, which collapses on the stable
 // adNumber+date key) AND NOT NULL on every value column (cost_usd,
 // units_sold, net_sales_usd, on_hand). Generic null/uniqueness checks
-// there can never fire, so we don't add dead checks that read as
-// coverage without being any.
+// there can never fire, so we don't add dead checks that read as coverage
+// without being any.
 //
-// What the schema leaves UNCONSTRAINED — and therefore what degrades
-// silently — is:
+// Current check:
+//   fb_ad_spend_daily.marketers (NOT NULL but defaults to []). An empty
+//   array means the marketer-name parser matched none of the 8-marketer
+//   roster. bonus-crossings SKIPS empty-marketer rows
+//   (lib/jobs/bonus-crossings.ts), so a parser break — ad naming
+//   convention changes, or a new marketer not on the roster — silently
+//   drops that spend from bonus attribution and dumps it in the /fb-ads
+//   "Unassigned" bucket. We alert on a high empty-RATE over a recent
+//   window, never on a single untagged ad (a few are normal).
 //
-//   1. skus.product_line (nullable). An active SKU with no product line
-//      falls out of product-line-grouped views (e.g. /stock-value by
-//      line). Direct analogue of the existing active_skus_missing_cost
-//      unit_cost check.
-//   2. fb_ad_spend_daily.marketers (NOT NULL but defaults to []). An
-//      empty array means the marketer-name parser matched none of the
-//      8-marketer roster. bonus-crossings SKIPS empty-marketer rows
-//      (lib/jobs/bonus-crossings.ts), so a parser break — ad naming
-//      convention changes, or a new marketer not on the roster — silently
-//      drops that spend from bonus attribution and dumps it in the
-//      /fb-ads "Unassigned" bucket. We alert on a high empty-RATE over a
-//      recent window, never on a single untagged ad (a few are normal).
+// REJECTED after investigation (2026-06-23): skus.product_line null on
+// active SKUs. It looked like the unit_cost gap, but product_line is set
+// ONLY when physical stock lands (the inventory Main/HF/Sec tabs); a SKU
+// goes active with product_line=NULL the moment a PO hits the Incoming
+// sheet. So null product_line on an active SKU is the NORMAL "ordered,
+// not yet stocked" state (verified: all 49 such SKUs in prod had incoming
+// shipments and zero stock), and orphan-sku-sweep already deactivates the
+// genuinely-stuck ones. Flagging it would be permanent fluctuating digest
+// noise with no actionable signal. unit_cost is different — it should be
+// entered regardless of stock — so active_skus_missing_cost stays.
 //
-// All p2 → #skybrook-digest, auto-resolving on recovery — same posture as
-// the freshness data-integrity checks.
+// p2 → #skybrook-digest, auto-resolving on recovery — same posture as the
+// freshness data-integrity checks.
 
-import { and, eq, isNull, max, sql } from "drizzle-orm";
+import { max, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { fbAdSpendDaily, skus } from "@/lib/db/schema";
+import { fbAdSpendDaily } from "@/lib/db/schema";
 import type { EvaluatedCheck } from "@/lib/jobs/freshness-check";
 
 // Subtract `days` from a YYYY-MM-DD string, returning YYYY-MM-DD. UTC math
@@ -57,34 +62,10 @@ export async function evaluateColumnQuality(opts?: {
   const rateThreshold = opts?.emptyMarketerRateThreshold ?? 0.5;
   const checks: EvaluatedCheck[] = [];
 
-  // 1. Active SKUs missing product_line. Mirrors active_skus_missing_cost:
-  // a count-based P2 that auto-resolves when Scott fills the mapping.
-  const [plRow] = await db
-    .select({ count: sql<number>`COUNT(*)::int` })
-    .from(skus)
-    .where(and(eq(skus.active, true), isNull(skus.productLine)));
-  const missingProductLine = plRow?.count ?? 0;
-  checks.push({
-    name: "column_quality.skus_missing_product_line",
-    status: missingProductLine > 0 ? "fail" : "pass",
-    maxDate: null,
-    threshold: "product_line not null on active SKUs",
-    dedupKey: "column_quality:skus_missing_product_line",
-    title:
-      "Active SKUs without product_line (drop out of product-line-grouped views)",
-    severity: "p2",
-    detail: `count=${missingProductLine}`,
-    fields: {
-      count: missingProductLine,
-      table: "skus",
-      column: "product_line",
-    },
-  });
-
-  // 2. FB marketer-attribution empty-rate over the recent window. Anchor
-  // the window on the latest spend_date present (not "today") so a stale
-  // feed — already covered by freshness — doesn't empty the window and
-  // mask the rate.
+  // FB marketer-attribution empty-rate over the recent window. Anchor the
+  // window on the latest spend_date present (not "today") so a stale feed
+  // — already covered by freshness — doesn't empty the window and mask the
+  // rate.
   const [maxRow] = await db
     .select({ max: max(fbAdSpendDaily.spendDate) })
     .from(fbAdSpendDaily);

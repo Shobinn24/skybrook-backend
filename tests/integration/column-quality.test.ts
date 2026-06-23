@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
-import { fbAdSpendDaily, rawPulls, skus } from "@/lib/db/schema";
+import { fbAdSpendDaily, rawPulls } from "@/lib/db/schema";
 import { evaluateColumnQuality } from "@/lib/jobs/column-quality";
 import type { EvaluatedCheck } from "@/lib/jobs/freshness-check";
 import "dotenv/config";
@@ -10,7 +10,7 @@ import "dotenv/config";
 let seededRawPullId = "";
 
 async function truncate() {
-  await db.execute(sql`TRUNCATE TABLE fb_ad_spend_daily, skus, raw_pulls CASCADE`);
+  await db.execute(sql`TRUNCATE TABLE fb_ad_spend_daily, raw_pulls CASCADE`);
 }
 
 async function seedRawPull() {
@@ -25,20 +25,6 @@ async function seedRawPull() {
     })
     .returning({ id: rawPulls.id });
   seededRawPullId = row.id;
-}
-
-async function seedSku(
-  sku: string,
-  productLine: string | null,
-  active = true,
-) {
-  await db.insert(skus).values({
-    sku,
-    productName: `name-${sku}`,
-    productLine,
-    firstSeenAt: "2026-01-01",
-    active,
-  });
 }
 
 // PK is (adNumber, spendDate) — vary adNumber to make many rows on one day.
@@ -71,24 +57,7 @@ describe("evaluateColumnQuality", () => {
     await seedRawPull();
   });
 
-  const plCheck = finder("column_quality.skus_missing_product_line");
   const mkCheck = finder("column_quality.fb_marketer_attribution");
-
-  it("fails skus_missing_product_line when an ACTIVE sku has null product_line", async () => {
-    await seedSku("EV-1", null, true);
-    await seedSku("EV-2", "Shapewear", true);
-    const c = plCheck(await evaluateColumnQuality());
-    expect(c?.status).toBe("fail");
-    expect(c?.fields.count).toBe(1);
-  });
-
-  it("ignores INACTIVE skus missing product_line", async () => {
-    await seedSku("EV-1", null, false); // inactive — should not count
-    await seedSku("EV-2", "Shapewear", true);
-    const c = plCheck(await evaluateColumnQuality());
-    expect(c?.status).toBe("pass");
-    expect(c?.fields.count).toBe(0);
-  });
 
   it("passes the marketer check when most recent ads have a matched marketer", async () => {
     for (let i = 0; i < 30; i++) {
@@ -129,10 +98,7 @@ describe("evaluateColumnQuality", () => {
   });
 
   it("emits no marketer check when fb_ad_spend_daily is empty", async () => {
-    await seedSku("EV-1", "Shapewear", true);
     const checks = await evaluateColumnQuality();
     expect(mkCheck(checks)).toBeUndefined();
-    // product_line check still runs.
-    expect(plCheck(checks)?.status).toBe("pass");
   });
 });

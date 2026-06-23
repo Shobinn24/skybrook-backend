@@ -53,12 +53,6 @@ describe("lineageForCheck", () => {
     expect(l.dashboards).toEqual(["/factory-orders"]);
   });
 
-  it("routes the product_line column-quality check to the skus dollar views", () => {
-    const l = lineageForCheck("column_quality.skus_missing_product_line");
-    expect(l.subject).toBe("skus");
-    expect(l.dashboards).toContain("/stock-value");
-  });
-
   it("routes the marketer-attribution check to /fb-ads + /bonus-tracker", () => {
     const l = lineageForCheck("column_quality.fb_marketer_attribution");
     expect(l.subject).toBe("fb_ad_spend_daily");
