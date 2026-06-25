@@ -278,6 +278,15 @@ export const dailySales = pgTable(
     salesDate: date("sales_date").notNull(),
     unitsSold: integer("units_sold").notNull(),
     netSalesUsd: numeric("net_sales_usd", { precision: 14, scale: 4 }).notNull().default("0"),
+    // Exact product revenue (unit price x qty, post-discount) and the
+    // pro-rated order-level ancillary (shipping + tax + tips) that together
+    // sum to net_sales_usd. Split out so /performance can show product
+    // revenue that ties to Shopify's by-product number, with shipping/tax
+    // broken out (2026-06-25). net_sales_usd is unchanged (Scott-approved).
+    // Back-populates over the rolling 35-day Shopify window; frozen history
+    // stays 0 on these two columns until re-aggregated.
+    productSalesUsd: numeric("product_sales_usd", { precision: 14, scale: 4 }).notNull().default("0"),
+    ancillaryUsd: numeric("ancillary_usd", { precision: 14, scale: 4 }).notNull().default("0"),
     sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
   },
   (t) => ({

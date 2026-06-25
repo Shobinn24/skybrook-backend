@@ -1,0 +1,2 @@
+ALTER TABLE "daily_sales" ADD COLUMN "product_sales_usd" numeric(14, 4) DEFAULT '0' NOT NULL;--> statement-breakpoint
+ALTER TABLE "daily_sales" ADD COLUMN "ancillary_usd" numeric(14, 4) DEFAULT '0' NOT NULL;

@@ -162,6 +162,13 @@
       "when": 1781102764357,
       "tag": "0022_daily_sales_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1782396936989,
+      "tag": "0023_quiet_lady_bullseye",
+      "breakpoints": true
     }
   ]
 }
