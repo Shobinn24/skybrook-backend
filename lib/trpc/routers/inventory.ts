@@ -33,6 +33,7 @@ import {
 } from "@/lib/jobs/bonus-mutations";
 import {
   getPerformanceRollup,
+  getAllProductsRollup,
   getPerformanceDataFreshness,
 } from "@/lib/queries/performance";
 import { getInventoryRows } from "@/lib/queries/inventory";
@@ -381,6 +382,32 @@ export const inventoryRouter = router({
       const rangeDays =
         Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86_400_000) + 1;
       return getPerformanceRollup({ today, rangeDays });
+    }),
+
+  // /performance "All products" toggle. Same input + date math as
+  // getPerformance, but rolls up EVERY product (revenue from
+  // product_sales_usd + FB-attributed spend by ad-name prefix) instead of
+  // the 4 focus products. Spend is FB-only for now (AppLovin pending).
+  getAllProducts: marketingProcedure
+    .input(
+      z.object({
+        rangeStart: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "rangeStart must be YYYY-MM-DD"),
+        rangeEnd: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "rangeEnd must be YYYY-MM-DD"),
+      }),
+    )
+    .query(({ input }) => {
+      const start = input.rangeStart <= input.rangeEnd ? input.rangeStart : input.rangeEnd;
+      const end = input.rangeStart <= input.rangeEnd ? input.rangeEnd : input.rangeStart;
+      const [ey, em, ed] = end.split("-").map(Number);
+      const [sy, sm, sd] = start.split("-").map(Number);
+      const today = new Date(Date.UTC(ey, em - 1, ed + 1)).toISOString().slice(0, 10);
+      const rangeDays =
+        Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86_400_000) + 1;
+      return getAllProductsRollup({ today, rangeDays });
     }),
 
   // /performance page — used to default the end-date picker to a date
