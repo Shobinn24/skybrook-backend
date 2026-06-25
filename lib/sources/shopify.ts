@@ -103,7 +103,14 @@ export type ShopifyDailySale = {
   routedLocation: Location;
   salesDate: string; // YYYY-MM-DD in EST (matches Shopify's created_at filter)
   unitsSold: number;
+  /** product + ancillary; unchanged from the pre-split total. */
   netSalesUsd: number;
+  /** Exact product revenue: unit price x qty, post-discount. Ties to
+   * Shopify's by-product "Total sales" (excludes shipping/tax). */
+  productSalesUsd: number;
+  /** Pro-rated order-level shipping + tax + tips.
+   * productSalesUsd + ancillaryUsd === netSalesUsd. */
+  ancillaryUsd: number;
 };
 
 /**
@@ -230,7 +237,7 @@ export function aggregateToDailySales(
   orders: OrderNode[],
   channel: Channel,
 ): ShopifyDailySale[] {
-  const agg = new Map<string, { units: number; net: number }>();
+  const agg = new Map<string, { units: number; productNet: number; ancillary: number }>();
   for (const order of orders) {
     // Bucket by EST calendar date — matches Shopify's `created_at:>=YYYY-MM-DD`
     // filter (which Shopify interprets in shop timezone) and aligns with
@@ -302,23 +309,25 @@ export function aggregateToDailySales(
         // instead of dropping it.
         share = 1 / tracked.length;
       }
-      const itemTotal = t.lineNet + share * ancillary;
       const key = `${t.skuKey}|${day}|${routedLocation}`;
-      const prev = agg.get(key) ?? { units: 0, net: 0 };
+      const prev = agg.get(key) ?? { units: 0, productNet: 0, ancillary: 0 };
       prev.units += t.units;
-      prev.net += itemTotal;
+      prev.productNet += t.lineNet;
+      prev.ancillary += share * ancillary;
       agg.set(key, prev);
     }
   }
   const out: ShopifyDailySale[] = [];
-  for (const [key, { units, net }] of agg) {
+  for (const [key, { units, productNet, ancillary }] of agg) {
     const [sku, salesDate, routedLocation] = key.split("|");
     out.push({
       sku,
       routedLocation: routedLocation as Location,
       salesDate,
       unitsSold: units,
-      netSalesUsd: Number(net.toFixed(4)),
+      netSalesUsd: Number((productNet + ancillary).toFixed(4)),
+      productSalesUsd: Number(productNet.toFixed(4)),
+      ancillaryUsd: Number(ancillary.toFixed(4)),
     });
   }
   // Deterministic ordering for snapshot-friendliness and easier diffs.
@@ -464,6 +473,8 @@ function makeRunner(channel: Channel): SourceRunner {
               salesDate: s.salesDate,
               unitsSold: s.unitsSold,
               netSalesUsd: String(s.netSalesUsd),
+              productSalesUsd: String(s.productSalesUsd),
+              ancillaryUsd: String(s.ancillaryUsd),
               sourcePullId: rawId,
             }));
             for (let i = 0; i < rows.length; i += CHUNK) {

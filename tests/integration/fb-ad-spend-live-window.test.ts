@@ -28,6 +28,7 @@ const ad = (
   adNumber,
   adName,
   adNameRaw: `(HW) ${adName}`,
+  adPrefix: "HW",
   adLink: null,
   dailySpend: daily.map(([spendDate, costUsd]) => ({ spendDate, costUsd })),
 });

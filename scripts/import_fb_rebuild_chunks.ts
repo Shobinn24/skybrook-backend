@@ -39,6 +39,7 @@ import {
   type FbAdAggregated,
 } from "@/lib/sources/sheets/fb-ads";
 import { extractMarketers } from "@/lib/domain/fb-marketers";
+import { extractFbPrefix } from "@/lib/domain/fb-product-attribution";
 
 const CHUNK_DIR =
   process.env.FB_REBUILD_DIR ??
@@ -191,6 +192,10 @@ async function main() {
       adNumber,
       adName: c.name,
       adNameRaw: c.raw,
+      // Frozen history is collapsed by ad_number; derive the prefix from
+      // the canonical name (same as the 0024 migration backfill). Variant
+      // grain only applies to the live window going forward.
+      adPrefix: extractFbPrefix(c.raw),
       adLink: null, // backfilled from existing rows below
       dailySpend: [...byDate.entries()]
         .map(([spendDate, costUsd]) => ({ spendDate, costUsd }))
@@ -313,6 +318,7 @@ async function main() {
           adNumber: ad.adNumber,
           adName: ad.adName,
           adNameRaw: ad.adNameRaw,
+          adPrefix: ad.adPrefix,
           adLink: ad.adLink,
           marketers,
           spendDate: d.spendDate,

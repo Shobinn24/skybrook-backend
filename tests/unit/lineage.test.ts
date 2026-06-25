@@ -11,7 +11,7 @@ describe("lineageForCheck", () => {
   it("does NOT let ad_spend_daily capture fb_ad_spend_daily (dot-boundary)", () => {
     const l = lineageForCheck("fb_ad_spend_daily");
     expect(l.subject).toBe("fb_ad_spend_daily");
-    expect(l.dashboards).toEqual(["/fb-ads", "/bonus-tracker"]);
+    expect(l.dashboards).toEqual(["/performance", "/fb-ads", "/bonus-tracker"]);
   });
 
   it("maps a channel-suffixed daily_sales check to the daily_sales pages", () => {
@@ -22,10 +22,10 @@ describe("lineageForCheck", () => {
   });
 
   it("resolves a source-level volume check through source -> table -> pages", () => {
-    // volume.sheets_fb_ads -> fb_ad_spend_daily -> /fb-ads, /bonus-tracker
+    // volume.sheets_fb_ads -> fb_ad_spend_daily -> /performance, /fb-ads, /bonus-tracker
     const l = lineageForCheck("volume.sheets_fb_ads");
     expect(l.subject).toBe("sheets_fb_ads");
-    expect(l.dashboards).toEqual(["/fb-ads", "/bonus-tracker"]);
+    expect(l.dashboards).toEqual(["/performance", "/fb-ads", "/bonus-tracker"]);
   });
 
   it("resolves a schema_drift source check the same way", () => {
@@ -53,10 +53,21 @@ describe("lineageForCheck", () => {
     expect(l.dashboards).toEqual(["/factory-orders"]);
   });
 
-  it("routes the marketer-attribution check to /fb-ads + /bonus-tracker", () => {
+  it("routes the marketer-attribution check to /performance + /fb-ads + /bonus-tracker", () => {
     const l = lineageForCheck("column_quality.fb_marketer_attribution");
     expect(l.subject).toBe("fb_ad_spend_daily");
-    expect(l.dashboards).toEqual(["/fb-ads", "/bonus-tracker"]);
+    expect(l.dashboards).toEqual(["/performance", "/fb-ads", "/bonus-tracker"]);
+  });
+
+  it("routes fb_prefix + fb_sheet_shape checks to the fb_ad_spend_daily pages", () => {
+    expect(lineageForCheck("fb_prefix.botshort_cc").dashboards).toEqual([
+      "/performance",
+      "/fb-ads",
+      "/bonus-tracker",
+    ]);
+    const shape = lineageForCheck("fb_sheet_shape");
+    expect(shape.subject).toBe("fb_ad_spend_daily");
+    expect(shape.dashboards).toContain("/performance");
   });
 
   it("flags reference tabs as non-dashboard (Scott's direct view)", () => {
@@ -72,7 +83,9 @@ describe("lineageForCheck", () => {
 
   describe("affectedLabel", () => {
     it("joins dashboards into a readable string", () => {
-      expect(affectedLabel("fb_ad_spend_daily")).toBe("/fb-ads, /bonus-tracker");
+      expect(affectedLabel("fb_ad_spend_daily")).toBe(
+        "/performance, /fb-ads, /bonus-tracker",
+      );
     });
     it("falls back to the note for reference tabs", () => {
       expect(affectedLabel("reference_tab.fb_ads_tracker_2.2026")).toMatch(

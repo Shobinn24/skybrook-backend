@@ -79,6 +79,9 @@ export default function PerformancePage() {
   // to the chosen end date; the From/To inputs allow any explicit window.
   const [rangeStart, setRangeStart] = useState<string>("");
   const [rangeEnd, setRangeEnd] = useState<string>("");
+  // Focus areas (4 hand-configured products) vs All products (every product,
+  // revenue from product_sales_usd + FB spend attributed by ad-name prefix).
+  const [view, setView] = useState<"focus" | "all">("focus");
   const yesterday = yesterdayEstYmd();
 
   // Fetch the latest revenue + spend dates so we can default the
@@ -127,6 +130,15 @@ export default function PerformancePage() {
     { refetchOnWindowFocus: false, enabled: !!rangeStart && !!rangeEnd },
   );
 
+  // All-products rollup — only fetched when the toggle is on "All products".
+  const allQ = trpc.inventory.getAllProducts.useQuery(
+    { rangeStart, rangeEnd },
+    {
+      refetchOnWindowFocus: false,
+      enabled: view === "all" && !!rangeStart && !!rangeEnd,
+    },
+  );
+
   const rows = data?.rows ?? [];
 
   return (
@@ -141,6 +153,27 @@ export default function PerformancePage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <div className="inline-flex overflow-hidden rounded-md border border-neutral-300 bg-white">
+            {(
+              [
+                ["focus", "Focus areas"],
+                ["all", "All products"],
+              ] as const
+            ).map(([v, label]) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={
+                  "px-3 py-1.5 text-sm font-medium " +
+                  (view === v
+                    ? "bg-neutral-900 text-white"
+                    : "text-neutral-700 hover:bg-neutral-100")
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-2 text-sm">
             <label htmlFor="perf-start-date" className="text-neutral-600">
               From
@@ -201,169 +234,256 @@ export default function PerformancePage() {
         </div>
       </div>
 
-      {error ? (
+      {view === "focus" ? (
+        error ? (
+          <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+            Failed to load: {error.message}
+          </div>
+        ) : isLoading ? (
+          <div className="text-sm text-neutral-500">Loading…</div>
+        ) : (
+          <>
+            {spendStaleForEndDate && adSpendMaxDate && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <strong>
+                  Ad spend not yet ingested for {fmtDate(rangeEnd)}.
+                </strong>{" "}
+                Latest available is {fmtDate(adSpendMaxDate)}. Revenue is
+                accurate but spend / ROAS will show $0 / — for any day past
+                that. Supermetrics refreshes at 3am EDT; the Skybrook
+                ingest cron picks it up at 5am EDT.{" "}
+                <button
+                  onClick={() => {
+                    setRangeEnd(adSpendMaxDate);
+                    if (rangeStart && adSpendMaxDate < rangeStart)
+                      setRangeStart(adSpendMaxDate);
+                  }}
+                  className="underline hover:no-underline"
+                >
+                  Switch to {fmtDate(adSpendMaxDate)}
+                </button>
+                .
+              </div>
+            )}
+            {data?.warnEmpty && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                Most products have $0 spend or revenue in this range. Either the
+                ad spend sheet hasn&apos;t refreshed yet today (it runs at 3am
+                EDT) or the product mapping needs review. The 09:00 UTC ingest
+                cron picks up new spend daily.
+              </div>
+            )}
+            {data && data.sourceErrors.length > 0 && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+                <div className="flex items-start gap-2">
+                  <span aria-hidden="true">⚠</span>
+                  <div>
+                    <div className="font-semibold">
+                      Upstream ad-spend feed broken — ROAS values below may be
+                      understated for affected products.
+                    </div>
+                    <div className="mt-1 text-red-800">
+                      Latest Supermetrics pull returned an error for:{" "}
+                      {data.sourceErrors.map((e, i) => (
+                        <span key={e.tab}>
+                          {i > 0 && ", "}
+                          <code className="rounded bg-red-100 px-1">{e.tab}</code>
+                        </span>
+                      ))}
+                      . Reason:{" "}
+                      {data.sourceErrors[0].reason === "license"
+                        ? "Supermetrics license / trial issue — check hub.supermetrics.com → Data sources."
+                        : data.sourceErrors[0].reason === "quota"
+                        ? "Daily API quota exceeded — wait for reset or upgrade tier."
+                        : data.sourceErrors[0].reason === "auth"
+                        ? "Connector auth expired — re-authorize the data source."
+                        : "Unknown upstream error — see Slack alert details."}
+                    </div>
+                    <div className="mt-1 text-[11px] text-red-700">
+                      Full error: {data.sourceErrors[0].signature}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              {rows.map((r) => (
+                <div
+                  key={r.key}
+                  className="rounded-lg border border-neutral-200 bg-white p-5"
+                >
+                  <div className="text-xs uppercase tracking-wide text-neutral-500">
+                    {r.label}
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-neutral-400">
+                        Revenue
+                      </div>
+                      <div className="text-lg font-semibold text-neutral-900 tabular-nums">
+                        {fmtMoney(r.revenueUsd)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-neutral-400">
+                        Spend
+                      </div>
+                      <div className="text-lg font-semibold text-neutral-900 tabular-nums">
+                        {fmtMoney(r.spendUsd)}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-4 border-t border-neutral-100 pt-3">
+                    <div className="text-[10px] uppercase tracking-wide text-neutral-400">
+                      ROAS
+                    </div>
+                    <div className="text-2xl font-bold tabular-nums text-neutral-900">
+                      {fmtRoas(r.roas)}
+                    </div>
+                  </div>
+                  {r.spendByTab.length > 1 && (
+                    <div className="mt-4 border-t border-neutral-100 pt-2 space-y-0.5 text-[11px]">
+                      <div className="text-neutral-500">Spend breakdown:</div>
+                      {r.spendByTab.map((b) => {
+                        const rowColor = b.sourceError
+                          ? "text-red-700"
+                          : b.staleness
+                          ? "text-amber-700"
+                          : "text-neutral-600";
+                        return (
+                          <div key={b.tab} className={"flex justify-between " + rowColor}>
+                            <span className="inline-flex items-center gap-1">
+                              {shortTabLabel(b.tab)}
+                              {b.sourceError && (
+                                <span
+                                  aria-hidden="true"
+                                  title={b.sourceError.signature}
+                                  className="cursor-help"
+                                >
+                                  ⚠
+                                </span>
+                              )}
+                              {!b.sourceError && b.staleness && (
+                                <span
+                                  aria-hidden="true"
+                                  title={
+                                    b.staleness.latestDate
+                                      ? `Last data ${b.staleness.latestDate} (${b.staleness.daysBehind} days behind)`
+                                      : "Never received any data"
+                                  }
+                                  className="cursor-help"
+                                >
+                                  ⏰
+                                </span>
+                              )}
+                            </span>
+                            <span className="tabular-nums">{fmtMoney(b.spendUsd)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
+              <strong>Notes:</strong> Spend ingested daily from the
+              Supermetrics sheet (refreshes 4am Asuncion = 3am EDT, our
+              cron pulls at 09:00 UTC). Each product rolls Facebook +
+              AppLovin spend
+              into one combined ROAS. Revenue summed from{" "}
+              <code>daily_sales</code> across all Shopify channels.
+              Product mapping: <code>Mens%</code> → Men&apos;s,{" "}
+              <code>Shapewear%</code> → Shapewear,{" "}
+              <code>Super High-Waist%</code> → SupHW.
+            </div>
+          </>
+        )
+      ) : allQ.error ? (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-          Failed to load: {error.message}
+          Failed to load: {allQ.error.message}
         </div>
-      ) : isLoading ? (
+      ) : allQ.isLoading || !allQ.data ? (
         <div className="text-sm text-neutral-500">Loading…</div>
       ) : (
         <>
-          {spendStaleForEndDate && adSpendMaxDate && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              <strong>
-                Ad spend not yet ingested for {fmtDate(rangeEnd)}.
-              </strong>{" "}
-              Latest available is {fmtDate(adSpendMaxDate)}. Revenue is
-              accurate but spend / ROAS will show $0 / — for any day past
-              that. Supermetrics refreshes at 3am EDT; the Skybrook
-              ingest cron picks it up at 5am EDT.{" "}
-              <button
-                onClick={() => {
-                  setRangeEnd(adSpendMaxDate);
-                  if (rangeStart && adSpendMaxDate < rangeStart)
-                    setRangeStart(adSpendMaxDate);
-                }}
-                className="underline hover:no-underline"
-              >
-                Switch to {fmtDate(adSpendMaxDate)}
-              </button>
-              .
-            </div>
-          )}
-          {data?.warnEmpty && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              Most products have $0 spend or revenue in this range. Either the
-              ad spend sheet hasn&apos;t refreshed yet today (it runs at 3am
-              EDT) or the product mapping needs review. The 09:00 UTC ingest
-              cron picks up new spend daily.
-            </div>
-          )}
-          {data && data.sourceErrors.length > 0 && (
-            <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
-              <div className="flex items-start gap-2">
-                <span aria-hidden="true">⚠</span>
-                <div>
-                  <div className="font-semibold">
-                    Upstream ad-spend feed broken — ROAS values below may be
-                    understated for affected products.
-                  </div>
-                  <div className="mt-1 text-red-800">
-                    Latest Supermetrics pull returned an error for:{" "}
-                    {data.sourceErrors.map((e, i) => (
-                      <span key={e.tab}>
-                        {i > 0 && ", "}
-                        <code className="rounded bg-red-100 px-1">{e.tab}</code>
-                      </span>
-                    ))}
-                    . Reason:{" "}
-                    {data.sourceErrors[0].reason === "license"
-                      ? "Supermetrics license / trial issue — check hub.supermetrics.com → Data sources."
-                      : data.sourceErrors[0].reason === "quota"
-                      ? "Daily API quota exceeded — wait for reset or upgrade tier."
-                      : data.sourceErrors[0].reason === "auth"
-                      ? "Connector auth expired — re-authorize the data source."
-                      : "Unknown upstream error — see Slack alert details."}
-                  </div>
-                  <div className="mt-1 text-[11px] text-red-700">
-                    Full error: {data.sourceErrors[0].signature}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            {rows.map((r) => (
-              <div
-                key={r.key}
-                className="rounded-lg border border-neutral-200 bg-white p-5"
-              >
-                <div className="text-xs uppercase tracking-wide text-neutral-500">
-                  {r.label}
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wide text-neutral-400">
-                      Revenue
-                    </div>
-                    <div className="text-lg font-semibold text-neutral-900 tabular-nums">
-                      {fmtMoney(r.revenueUsd)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wide text-neutral-400">
-                      Spend
-                    </div>
-                    <div className="text-lg font-semibold text-neutral-900 tabular-nums">
-                      {fmtMoney(r.spendUsd)}
-                    </div>
-                  </div>
-                </div>
-                <div className="mt-4 border-t border-neutral-100 pt-3">
-                  <div className="text-[10px] uppercase tracking-wide text-neutral-400">
-                    ROAS
-                  </div>
-                  <div className="text-2xl font-bold tabular-nums text-neutral-900">
-                    {fmtRoas(r.roas)}
-                  </div>
-                </div>
-                {r.spendByTab.length > 1 && (
-                  <div className="mt-4 border-t border-neutral-100 pt-2 space-y-0.5 text-[11px]">
-                    <div className="text-neutral-500">Spend breakdown:</div>
-                    {r.spendByTab.map((b) => {
-                      const rowColor = b.sourceError
-                        ? "text-red-700"
-                        : b.staleness
-                        ? "text-amber-700"
-                        : "text-neutral-600";
-                      return (
-                        <div key={b.tab} className={"flex justify-between " + rowColor}>
-                          <span className="inline-flex items-center gap-1">
-                            {shortTabLabel(b.tab)}
-                            {b.sourceError && (
-                              <span
-                                aria-hidden="true"
-                                title={b.sourceError.signature}
-                                className="cursor-help"
-                              >
-                                ⚠
-                              </span>
-                            )}
-                            {!b.sourceError && b.staleness && (
-                              <span
-                                aria-hidden="true"
-                                title={
-                                  b.staleness.latestDate
-                                    ? `Last data ${b.staleness.latestDate} (${b.staleness.daysBehind} days behind)`
-                                    : "Never received any data"
-                                }
-                                className="cursor-help"
-                              >
-                                ⏰
-                              </span>
-                            )}
-                          </span>
-                          <span className="tabular-nums">{fmtMoney(b.spendUsd)}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            ))}
+          <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b border-neutral-200 text-left text-[11px] uppercase tracking-wide text-neutral-500">
+                  <th className="px-4 py-2 font-medium">Product</th>
+                  <th className="px-4 py-2 text-right font-medium">Revenue</th>
+                  <th className="px-4 py-2 text-right font-medium">Ad spend</th>
+                  <th className="px-4 py-2 text-right font-medium">ROAS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allQ.data.rows
+                  .filter((r) => r.kind === "product")
+                  .map((r) => (
+                    <tr key={r.product} className="border-b border-neutral-100">
+                      <td className="px-4 py-2 text-neutral-800">{r.product}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-neutral-900">
+                        {fmtMoney(r.revenueUsd)}
+                      </td>
+                      <td className="px-4 py-2 text-right tabular-nums text-neutral-900">
+                        {fmtMoney(r.spendUsd)}
+                      </td>
+                      <td className="px-4 py-2 text-right tabular-nums font-medium text-neutral-900">
+                        {fmtRoas(r.roas)}
+                      </td>
+                    </tr>
+                  ))}
+                {/* Shipping & tax — revenue not attributed to any product */}
+                <tr className="border-b border-neutral-100 bg-neutral-50 text-neutral-600">
+                  <td className="px-4 py-2 italic">Shipping &amp; tax</td>
+                  <td className="px-4 py-2 text-right tabular-nums">
+                    {fmtMoney(allQ.data.ancillaryUsd)}
+                  </td>
+                  <td className="px-4 py-2 text-right text-neutral-400">—</td>
+                  <td className="px-4 py-2 text-right text-neutral-400">—</td>
+                </tr>
+                {/* Non-product spend buckets (brand / clearance / unmapped) */}
+                {allQ.data.rows
+                  .filter((r) => r.kind !== "product")
+                  .map((r) => (
+                    <tr
+                      key={r.product}
+                      className="border-b border-neutral-100 bg-neutral-50 text-neutral-600"
+                    >
+                      <td className="px-4 py-2 italic">{r.product}</td>
+                      <td className="px-4 py-2 text-right text-neutral-400">—</td>
+                      <td className="px-4 py-2 text-right tabular-nums">
+                        {fmtMoney(r.spendUsd)}
+                      </td>
+                      <td className="px-4 py-2 text-right text-neutral-400">—</td>
+                    </tr>
+                  ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 border-neutral-300 font-semibold text-neutral-900">
+                  <td className="px-4 py-2">Total</td>
+                  <td className="px-4 py-2 text-right tabular-nums">
+                    {fmtMoney(allQ.data.totalRevenueUsd)}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums">
+                    {fmtMoney(allQ.data.totalSpendUsd)}
+                  </td>
+                  <td className="px-4 py-2 text-right text-neutral-400">—</td>
+                </tr>
+              </tfoot>
+            </table>
           </div>
-
           <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
-            <strong>Notes:</strong> Spend ingested daily from the
-            Supermetrics sheet (refreshes 4am Asuncion = 3am EDT, our
-            cron pulls at 09:00 UTC). Each product rolls Facebook +
-            AppLovin spend
-            into one combined ROAS. Revenue summed from{" "}
-            <code>daily_sales</code> across all Shopify channels.
-            Product mapping: <code>Mens%</code> → Men&apos;s,{" "}
-            <code>Shapewear%</code> → Shapewear,{" "}
-            <code>Super High-Waist%</code> → SupHW.
+            <strong>All products:</strong> revenue is exact product sales
+            (shipping &amp; tax broken out as its own line) summed from{" "}
+            <code>daily_sales</code>; spend is Facebook attributed by the
+            ad-name product tag, plus AppLovin. <em>Brand / Homepage</em> and{" "}
+            <em>Clearance / Mixed</em> are spend not tied to one product;{" "}
+            <em>Unmapped</em> = ads whose name has no recognized product tag
+            (rename the ad to clear it).
           </div>
         </>
       )}

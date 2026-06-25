@@ -436,6 +436,14 @@ export async function evaluateFreshness(opts?: {
   const { evaluateColumnQuality } = await import("./column-quality");
   checks.push(...(await evaluateColumnQuality()));
 
+  // --- FB ad-prefix coverage (self-maintaining attribution guard).
+  // DB-only, rides this same path. Surfaces unmapped (typo'd / new /
+  // unconfirmed) ad-name prefixes that accrue real spend so the
+  // All-products attribution stays correct without silent auto-correct.
+  // See lib/jobs/fb-prefix-check.ts.
+  const { evaluateFbPrefixCoverage } = await import("./fb-prefix-check");
+  checks.push(...(await evaluateFbPrefixCoverage()));
+
   return { asOfDate: today, threshold, checks };
 }
 
@@ -459,6 +467,18 @@ export async function runFreshnessCheck(opts?: {
       evaluatedRefTabs = await evaluateReferenceTabsFreshness({ now: opts?.now });
     } catch (err) {
       logger.warn("freshness.reference_tabs.skipped", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // FB Ads Live date-column integrity (Sheets API, so it rides this
+    // reference-tab gate — never the DB-only /api/health path). Best-effort
+    // internally; wrap anyway so a future change can't fail the sweep.
+    try {
+      const { evaluateFbSheetShape } = await import("./fb-sheet-shape-check");
+      evaluatedRefTabs = [...evaluatedRefTabs, ...(await evaluateFbSheetShape())];
+    } catch (err) {
+      logger.warn("freshness.fb_sheet_shape.skipped", {
         error: err instanceof Error ? err.message : String(err),
       });
     }
