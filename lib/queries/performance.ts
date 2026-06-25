@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { adSpendDaily, dailySales, rawPulls, skus } from "@/lib/db/schema";
+import { adSpendDaily, dailySales, fbAdSpendDaily, rawPulls, skus } from "@/lib/db/schema";
+import { attributeFbAd, type FbBucket } from "@/lib/domain/fb-product-attribution";
 import { AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA } from "@/lib/sources/sheets";
 import { toEstDate } from "@/lib/tz";
 
@@ -376,5 +377,172 @@ export async function getPerformanceDataFreshness(): Promise<PerformanceDataFres
   return {
     revenueMaxDate: revRow?.max ?? null,
     adSpendMaxDate: spRow?.max ?? null,
+  };
+}
+
+// ============================================================================
+// All-products rollup (the /performance "All products" toggle)
+// ============================================================================
+// Unlike the focus view (4 hand-configured products), this rolls up EVERY
+// product: revenue grouped by product family (from skus.product_name) using
+// the EXACT product revenue column, and ad spend attributed from the FB
+// ad-name (PREFIX). Spend that isn't a product (HOME / Clearance / Unmapped)
+// surfaces as its own buckets; shipping/tax/tips (ancillary) is reported as a
+// single separate line so product revenue ties to Shopify's by-product figure.
+//
+// WAVE 1 = FB spend only. AppLovin (~$152k/30d) lands in a follow-up once the
+// dedicated AppLovin feed exists; `appLovinPending` flags that for the UI.
+
+/** Map a skus.product_name to a canonical product family. MUST emit the same
+ * labels as `attributeFbAd` so the revenue and spend sides join. HF split. */
+export function revenueFamilyFromProductName(name: string): string {
+  const n = (name ?? "").toLowerCase();
+  const hf = /\bhf\b/.test(n);
+  if (n.includes("9055")) return hf ? "9055 HF" : "9055";
+  if (n.includes("boyshort")) return hf ? "Boyshort HF" : "Boyshort";
+  if (n.includes("mens")) return "Mens";
+  if (n.includes("super high-waist") || n.includes("suphw")) return "Super High-Waist";
+  if (n.includes("shapewear")) return hf ? "Shapewear HF" : "Shapewear";
+  if (n.startsWith("hw")) return hf ? "HW HF" : "HW";
+  if (n.includes("og ") || n.startsWith("og")) return hf ? "OG HF" : "OG";
+  if (n.includes("high rise short")) return "High Rise Short";
+  if (n.includes("hipster")) return hf ? "Hipster HF" : "Hipster";
+  if (n.includes("french")) return hf ? "French HF" : "French";
+  if (n.includes("bikini")) return "Bikini";
+  if (n.includes("seamless")) return "Seamless";
+  if (n.includes("jacquard")) return "Jacquard";
+  if (n.includes("cb ")) return "CB";
+  return "Other products";
+}
+
+export type AllProductsRow = {
+  product: string;
+  /** "product" rows have revenue; brand/clearance/unmapped are spend-only. */
+  kind: FbBucket;
+  revenueUsd: number;
+  spendUsd: number;
+  roas: number | null;
+};
+
+export type AllProductsResult = {
+  rangeDays: number;
+  rangeStart: string;
+  rangeEnd: string;
+  /** Product families (revenue desc) first, then spend-only buckets (spend desc). */
+  rows: AllProductsRow[];
+  /** Shipping + tax + tips total — its own line so product revenue stays exact. */
+  ancillaryUsd: number;
+  totalProductRevenueUsd: number;
+  /** product revenue + ancillary = full Shopify revenue. */
+  totalRevenueUsd: number;
+  totalSpendUsd: number;
+  /** True while spend is FB-only (AppLovin feed not yet wired). */
+  appLovinPending: boolean;
+};
+
+const round4 = (n: number): number => Number(n.toFixed(4));
+
+export async function getAllProductsRollup(opts: {
+  today: string;
+  rangeDays: number;
+  channel?: SalesChannel;
+}): Promise<AllProductsResult> {
+  const rangeEnd = addDays(opts.today, -1);
+  const rangeStart = addDays(opts.today, -opts.rangeDays);
+
+  // --- Revenue: exact product revenue + ancillary, grouped by product_name ---
+  const revConds = [
+    gte(dailySales.salesDate, rangeStart),
+    lte(dailySales.salesDate, rangeEnd),
+  ];
+  if (opts.channel) revConds.push(eq(dailySales.channel, opts.channel));
+  const revRows = await db
+    .select({
+      productName: skus.productName,
+      prod: sql<string>`coalesce(sum(${dailySales.productSalesUsd}), 0)`,
+      anc: sql<string>`coalesce(sum(${dailySales.ancillaryUsd}), 0)`,
+    })
+    .from(dailySales)
+    .leftJoin(skus, eq(skus.sku, dailySales.sku))
+    .where(and(...revConds))
+    .groupBy(skus.productName);
+
+  const revByFamily = new Map<string, number>();
+  let ancillaryUsd = 0;
+  for (const r of revRows) {
+    const fam = revenueFamilyFromProductName(r.productName ?? "");
+    revByFamily.set(fam, (revByFamily.get(fam) ?? 0) + Number(r.prod));
+    ancillaryUsd += Number(r.anc);
+  }
+
+  // --- Spend: FB, attributed by the ad-name (PREFIX) ---
+  const spendRows = await db
+    .select({
+      adNameRaw: fbAdSpendDaily.adNameRaw,
+      spend: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}), 0)`,
+    })
+    .from(fbAdSpendDaily)
+    .where(
+      and(
+        gte(fbAdSpendDaily.spendDate, rangeStart),
+        lte(fbAdSpendDaily.spendDate, rangeEnd),
+      ),
+    )
+    .groupBy(fbAdSpendDaily.adNameRaw);
+
+  const spendByFamily = new Map<string, number>();
+  const bucketByFamily = new Map<string, FbBucket>();
+  for (const r of spendRows) {
+    const a = attributeFbAd(r.adNameRaw ?? "");
+    spendByFamily.set(a.product, (spendByFamily.get(a.product) ?? 0) + Number(r.spend));
+    bucketByFamily.set(a.product, a.bucket);
+  }
+
+  // --- Merge on family label ---
+  const families = new Set<string>([...revByFamily.keys(), ...spendByFamily.keys()]);
+  const rows: AllProductsRow[] = [];
+  for (const fam of families) {
+    const revenueUsd = round4(revByFamily.get(fam) ?? 0);
+    const spendUsd = round4(spendByFamily.get(fam) ?? 0);
+    // A family with revenue is a product; otherwise it's the spend bucket's kind.
+    const kind: FbBucket = revByFamily.has(fam)
+      ? "product"
+      : bucketByFamily.get(fam) ?? "product";
+    rows.push({
+      product: fam,
+      kind,
+      revenueUsd,
+      spendUsd,
+      // ROAS only meaningful for product rows; spend-only buckets
+      // (brand/clearance/unmapped) have no attributed revenue by design.
+      roas: kind === "product" && spendUsd > 0 ? revenueUsd / spendUsd : null,
+    });
+  }
+  // Products (revenue desc) first, then spend-only buckets (spend desc).
+  rows.sort((a, b) => {
+    const aProd = a.kind === "product";
+    const bProd = b.kind === "product";
+    if (aProd !== bProd) return aProd ? -1 : 1;
+    return aProd ? b.revenueUsd - a.revenueUsd : b.spendUsd - a.spendUsd;
+  });
+
+  const totalProductRevenueUsd = round4(
+    [...revByFamily.values()].reduce((s, v) => s + v, 0),
+  );
+  ancillaryUsd = round4(ancillaryUsd);
+  const totalSpendUsd = round4(
+    [...spendByFamily.values()].reduce((s, v) => s + v, 0),
+  );
+
+  return {
+    rangeDays: opts.rangeDays,
+    rangeStart,
+    rangeEnd,
+    rows,
+    ancillaryUsd,
+    totalProductRevenueUsd,
+    totalRevenueUsd: round4(totalProductRevenueUsd + ancillaryUsd),
+    totalSpendUsd,
+    appLovinPending: true,
   };
 }
