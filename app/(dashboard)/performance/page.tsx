@@ -143,7 +143,7 @@ export default function PerformancePage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-neutral-900">Performance</h1>
           <p className="text-sm text-neutral-500">
@@ -152,7 +152,7 @@ export default function PerformancePage() {
               : "Revenue from Shopify · spend from Supermetrics FB"}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="inline-flex overflow-hidden rounded-md border border-neutral-300 bg-white">
             {(
               [
@@ -415,7 +415,7 @@ export default function PerformancePage() {
                 <tr className="border-b border-neutral-200 text-left text-[11px] uppercase tracking-wide text-neutral-500">
                   <th className="px-4 py-2 font-medium">Product</th>
                   <th className="px-4 py-2 text-right font-medium">Revenue</th>
-                  <th className="px-4 py-2 text-right font-medium">Ad spend</th>
+                  <th className="px-4 py-2 text-right font-medium">Ad spend (FB)</th>
                   <th className="px-4 py-2 text-right font-medium">ROAS</th>
                 </tr>
               </thead>
@@ -479,8 +479,8 @@ export default function PerformancePage() {
           <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
             <strong>All products:</strong> revenue is exact product sales
             (shipping &amp; tax broken out as its own line) summed from{" "}
-            <code>daily_sales</code>; spend is Facebook attributed by the
-            ad-name product tag, plus AppLovin. <em>Brand / Homepage</em> and{" "}
+            <code>daily_sales</code>; spend is Facebook only, attributed by the
+            ad-name product tag. <em>Brand / Homepage</em> and{" "}
             <em>Clearance / Mixed</em> are spend not tied to one product;{" "}
             <em>Unmapped</em> = ads whose name has no recognized product tag
             (rename the ad to clear it).

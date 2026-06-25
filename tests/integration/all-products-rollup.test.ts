@@ -102,7 +102,7 @@ describe("getAllProductsRollup", () => {
     expect(res.rows).toEqual([]);
   });
 
-  it("folds AppLovin AL-tab spend into the family and ignores FB tabs (no double-count)", async () => {
+  it("spend is FB-only — ignores ALL ad_spend_daily tabs incl AppLovin AL (2026-06-25)", async () => {
     const pull = await seedPull();
     const D = "2026-06-10";
     await db.insert(skus).values([
@@ -115,16 +115,16 @@ describe("getAllProductsRollup", () => {
       { adNumber: "1", adName: "m", adNameRaw: "(Mens) Ad 1 - x", adPrefix: "Mens", adLink: null, marketers: [], spendDate: D, costUsd: "400", sourcePullId: pull },
     ]);
     await db.insert(adSpendDaily).values([
-      // AppLovin AL tab → folded into the Mens family
+      // AppLovin AL tab → must be EXCLUDED (FB-only until client sign-off)
       { product: "Men AL", spendDate: D, costUsd: "150", sourcePullId: pull },
-      // FB tab → must be IGNORED (the all-FB feed above already has it)
+      // FB tab → also excluded (the all-FB fb_ad_spend_daily feed is the source)
       { product: "Men", spendDate: D, costUsd: "999", sourcePullId: pull },
     ]);
 
     const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
     const mens = find(res.rows, "Mens")!;
-    // FB $400 + AppLovin AL $150 = $550; the FB "Men" tab ($999) is excluded.
-    expect(mens.spendUsd).toBe(550);
-    expect(res.totalSpendUsd).toBe(550);
+    // FB only: $400. Neither the AppLovin AL tab ($150) nor the FB "Men" tab ($999) is added.
+    expect(mens.spendUsd).toBe(400);
+    expect(res.totalSpendUsd).toBe(400);
   });
 });
