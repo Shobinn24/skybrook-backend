@@ -3,6 +3,7 @@ import { gte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { fbAdSpendDaily } from "@/lib/db/schema";
 import { extractMarketers } from "@/lib/domain/fb-marketers";
+import { extractFbPrefix } from "@/lib/domain/fb-product-attribution";
 import { logger } from "@/lib/logger";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { postAlert, type AlertInput } from "@/lib/notifications/slack";
@@ -47,7 +48,13 @@ export type FbAdAggregated = {
   adName: string;
   adNameRaw: string;
   adLink: string | null;
-  /** Aggregated (already summed across variants). */
+  /** The product prefix THIS row represents (inner "(...)" text; "" if
+   * none). One emitted row per (ad_number, ad_prefix). The identity fields
+   * above are the ad_number's canonical (highest-spend) variant, repeated
+   * on every prefix row; only ad_prefix + dailySpend vary per prefix. */
+  adPrefix: string;
+  /** Aggregated for this (ad_number, ad_prefix) — summed across rows that
+   * share the prefix. */
   dailySpend: Array<{ spendDate: string; costUsd: number }>;
 };
 
@@ -97,8 +104,11 @@ export function parseFbAdsSheet(
     return { variants, aggregated: [], skipped };
   }
 
-  // Per-ad-number aggregation. Maps ad_number → date → summed cost.
-  const sumByAdAndDate = new Map<string, Map<string, number>>();
+  // Per-(ad_number, prefix) aggregation: ad_number → prefix → date → cost.
+  // One ad_number can run under several prefixes across launches; keeping
+  // them separate is what stops homepage/brand spend on a shared creative
+  // from being absorbed into the dominant product (HOME-undercount fix).
+  const sumByAdPrefixDate = new Map<string, Map<string, Map<string, number>>>();
   // Per-ad-number → array of {variant, totalSpend} so we can pick the
   // canonical (highest-total-spend) raw name + link after aggregation.
   const variantsByAd = new Map<
@@ -122,6 +132,7 @@ export function parseFbAdsSheet(
       continue;
     }
     const adNumber = m[1];
+    const adPrefix = extractFbPrefix(rawName);
     const displayName = trimFbAdDisplayName(rawName);
 
     const variantDaily: Array<{ spendDate: string; costUsd: number }> = [];
@@ -135,9 +146,12 @@ export function parseFbAdsSheet(
       variantDaily.push({ spendDate: date, costUsd: cost });
       variantTotal += cost;
 
-      const byDate = sumByAdAndDate.get(adNumber) ?? new Map<string, number>();
+      const byPrefix =
+        sumByAdPrefixDate.get(adNumber) ?? new Map<string, Map<string, number>>();
+      const byDate = byPrefix.get(adPrefix) ?? new Map<string, number>();
       byDate.set(date, (byDate.get(date) ?? 0) + cost);
-      sumByAdAndDate.set(adNumber, byDate);
+      byPrefix.set(adPrefix, byDate);
+      sumByAdPrefixDate.set(adNumber, byPrefix);
     }
 
     const variant: FbAdSheetVariant = {
@@ -153,24 +167,31 @@ export function parseFbAdsSheet(
   }
 
   const aggregated: FbAdAggregated[] = [];
-  for (const [adNumber, byDate] of sumByAdAndDate) {
-    // Canonical variant = highest total spend; ties broken by first
-    // occurrence (Map preserves insertion order).
+  for (const [adNumber, byPrefix] of sumByAdPrefixDate) {
+    // Canonical variant for the WHOLE ad_number = highest total spend;
+    // ties broken by first occurrence (Map preserves insertion order).
+    // Its identity (name/link) is repeated on every prefix row so the
+    // ad_number-grouped consumers (bonus tracker, /fb-ads) keep seeing one
+    // stable identity per ad — only ad_prefix + spend vary across rows.
     const arr = variantsByAd.get(adNumber) ?? [];
     let best = arr[0];
     for (const v of arr) {
       if (v.totalSpend > best.totalSpend) best = v;
     }
-    const daily = Array.from(byDate.entries())
-      .map(([spendDate, costUsd]) => ({ spendDate, costUsd }))
-      .sort((a, b) => a.spendDate.localeCompare(b.spendDate));
-    aggregated.push({
-      adNumber,
-      adName: best.variant.displayName,
-      adNameRaw: best.variant.rawName,
-      adLink: best.variant.link,
-      dailySpend: daily,
-    });
+    // One emitted row per prefix this ad_number ran under.
+    for (const [adPrefix, byDate] of byPrefix) {
+      const daily = Array.from(byDate.entries())
+        .map(([spendDate, costUsd]) => ({ spendDate, costUsd }))
+        .sort((a, b) => a.spendDate.localeCompare(b.spendDate));
+      aggregated.push({
+        adNumber,
+        adName: best.variant.displayName,
+        adNameRaw: best.variant.rawName,
+        adLink: best.variant.link,
+        adPrefix,
+        dailySpend: daily,
+      });
+    }
   }
 
   return { variants, aggregated, skipped };
@@ -393,7 +414,7 @@ export async function replaceFbAdSpendLiveWindow(
       .delete(fbAdSpendDaily)
       .where(gte(fbAdSpendDaily.spendDate, liveMinDate));
     // Insert in chunks to keep the parameterized query within Postgres'
-    // parameter limit. 7 cols × 1000 rows ≈ 7K params, well under 65k.
+    // parameter limit. 9 cols × 1000 rows ≈ 9K params, well under 65k.
     const flat: Array<typeof fbAdSpendDaily.$inferInsert> = [];
     for (const ad of aggregated) {
       const marketers = extractMarketers(ad.adNameRaw);
@@ -402,6 +423,7 @@ export async function replaceFbAdSpendLiveWindow(
           adNumber: ad.adNumber,
           adName: ad.adName,
           adNameRaw: ad.adNameRaw,
+          adPrefix: ad.adPrefix,
           adLink: ad.adLink,
           marketers,
           spendDate: d.spendDate,

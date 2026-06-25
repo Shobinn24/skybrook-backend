@@ -836,22 +836,37 @@ describe("parseFbAdsSheet", () => {
     ]);
   });
 
-  it("pivots same ad number across multiple campaign variants", () => {
+  it("keeps the same ad number SEPARATE per campaign prefix (variant grain)", () => {
     const grid = [
       header,
       ["(OG Lav CC) Ad 537 - OG Lavender images", "https://fb.com/cc", "10", "20", ""],
       ["(LAV ASC) DCA 537 - OG Lavender images", "https://fb.com/asc", "", "5", "100"],
     ];
     const { aggregated } = parseFbAdsSheet(grid);
-    expect(aggregated).toHaveLength(1);
-    expect(aggregated[0].adNumber).toBe("537");
-    expect(aggregated[0].dailySpend).toEqual([
+    // Two rows now — one per prefix — so brand/funnel spend on a shared
+    // creative isn't absorbed into the dominant product (HOME-undercount
+    // fix). Spend stays split by prefix; identity is the canonical
+    // (highest-spend) variant, repeated on both rows.
+    expect(aggregated).toHaveLength(2);
+    const cc = aggregated.find((a) => a.adPrefix === "OG Lav CC")!;
+    const asc = aggregated.find((a) => a.adPrefix === "LAV ASC")!;
+    expect(cc.adNumber).toBe("537");
+    expect(asc.adNumber).toBe("537");
+    expect(cc.dailySpend).toEqual([
       { spendDate: "2026-01-01", costUsd: 10 },
-      { spendDate: "2026-01-02", costUsd: 25 },
+      { spendDate: "2026-01-02", costUsd: 20 },
+    ]);
+    expect(asc.dailySpend).toEqual([
+      { spendDate: "2026-01-02", costUsd: 5 },
       { spendDate: "2026-01-03", costUsd: 100 },
     ]);
-    // Canonical link = highest-total-spend variant (ASC total 105 > CC 30)
-    expect(aggregated[0].adLink).toBe("https://fb.com/asc");
+    // Canonical identity = highest-total-spend variant (ASC 105 > CC 30),
+    // repeated on BOTH prefix rows so ad_number-grouped consumers see one
+    // stable identity.
+    expect(cc.adLink).toBe("https://fb.com/asc");
+    expect(asc.adLink).toBe("https://fb.com/asc");
+    expect(cc.adNameRaw).toBe("(LAV ASC) DCA 537 - OG Lavender images");
+    expect(asc.adNameRaw).toBe("(LAV ASC) DCA 537 - OG Lavender images");
   });
 
   it("skips lowercase 'ad' inside other tokens like 'AIad'", () => {

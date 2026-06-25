@@ -1,7 +1,10 @@
 import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { adSpendDaily, dailySales, fbAdSpendDaily, rawPulls, skus } from "@/lib/db/schema";
-import { attributeFbAd, type FbBucket } from "@/lib/domain/fb-product-attribution";
+import {
+  attributeFbPrefix,
+  type FbBucket,
+} from "@/lib/domain/fb-product-attribution";
 import { AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA } from "@/lib/sources/sheets";
 import { toEstDate } from "@/lib/tz";
 
@@ -475,10 +478,14 @@ export async function getAllProductsRollup(opts: {
     ancillaryUsd += Number(r.anc);
   }
 
-  // --- Spend: FB, attributed by the ad-name (PREFIX) ---
+  // --- Spend: FB, attributed by the variant product prefix ---
+  // Grouped by ad_prefix (the per-variant grain) so an ad run under both a
+  // product and (HOME US BAU) splits correctly instead of the dominant
+  // product absorbing the homepage spend. ad_prefix is the inner "(...)"
+  // text, so we attribute via attributeFbPrefix directly.
   const spendRows = await db
     .select({
-      adNameRaw: fbAdSpendDaily.adNameRaw,
+      adPrefix: fbAdSpendDaily.adPrefix,
       spend: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}), 0)`,
     })
     .from(fbAdSpendDaily)
@@ -488,12 +495,12 @@ export async function getAllProductsRollup(opts: {
         lte(fbAdSpendDaily.spendDate, rangeEnd),
       ),
     )
-    .groupBy(fbAdSpendDaily.adNameRaw);
+    .groupBy(fbAdSpendDaily.adPrefix);
 
   const spendByFamily = new Map<string, number>();
   const bucketByFamily = new Map<string, FbBucket>();
   for (const r of spendRows) {
-    const a = attributeFbAd(r.adNameRaw ?? "");
+    const a = attributeFbPrefix(r.adPrefix ?? "");
     spendByFamily.set(a.product, (spendByFamily.get(a.product) ?? 0) + Number(r.spend));
     bucketByFamily.set(a.product, a.bucket);
   }

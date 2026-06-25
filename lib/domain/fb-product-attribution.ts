@@ -13,10 +13,21 @@
 export type FbBucket = "product" | "brand" | "clearance" | "unmapped";
 export type FbAttribution = { product: string; bucket: FbBucket };
 
-export function attributeFbAd(adNameRaw: string): FbAttribution {
+// Pull the inner text of the leading "(...)" from an ad name; "" if none.
+// This is the variant prefix stored in fb_ad_spend_daily.ad_prefix (the
+// product signal that survives the ingest's per-(ad_number, prefix) grain).
+export function extractFbPrefix(adNameRaw: string): string {
   const m = adNameRaw.match(/^\(([^)]+)\)/);
-  if (!m) return { product: "Unmapped", bucket: "unmapped" };
-  const raw = m[1].trim();
+  return m ? m[1].trim() : "";
+}
+
+// Attribute from the inner prefix text alone (e.g. "9055 CC", "HOME US BAU").
+// This is the canonical mapping; `attributeFbAd` and the per-variant query
+// paths (getAllProductsRollup, fb-prefix-check) both funnel through it so
+// the rule lives in exactly one place.
+export function attributeFbPrefix(prefixInner: string): FbAttribution {
+  const raw = (prefixInner ?? "").trim();
+  if (!raw) return { product: "Unmapped", bucket: "unmapped" };
   const p = raw.split(/\s+/)[0]?.toLowerCase() ?? "";
   const hf = /(^|\s)hf(\s|$)/i.test(raw) || p === "oghf" || p === "hwhf";
   const v = (base: string): FbAttribution => ({
@@ -35,4 +46,8 @@ export function attributeFbAd(adNameRaw: string): FbAttribution {
   if (p === "hrs") return { product: "High Rise Short", bucket: "product" };
   if (p === "og" || p === "oghf") return v("OG");
   return { product: "Unmapped", bucket: "unmapped" };
+}
+
+export function attributeFbAd(adNameRaw: string): FbAttribution {
+  return attributeFbPrefix(extractFbPrefix(adNameRaw));
 }

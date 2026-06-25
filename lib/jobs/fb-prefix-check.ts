@@ -24,7 +24,7 @@
 import { max, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { fbAdSpendDaily } from "@/lib/db/schema";
-import { attributeFbAd } from "@/lib/domain/fb-product-attribution";
+import { attributeFbPrefix } from "@/lib/domain/fb-product-attribution";
 import type { EvaluatedCheck } from "@/lib/jobs/freshness-check";
 
 // Subtract `days` from a YYYY-MM-DD string. UTC math (plain calendar
@@ -33,12 +33,6 @@ function isoDaysBefore(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() - days);
   return d.toISOString().slice(0, 10);
-}
-
-// Extract the leading "(...)" inner text from an ad name; null if absent.
-function prefixOf(adNameRaw: string): string | null {
-  const m = adNameRaw.match(/^\(([^)]+)\)/);
-  return m ? m[1].trim() : null;
 }
 
 // Slack-safe, stable dedup slug for a prefix.
@@ -62,25 +56,30 @@ export async function evaluateFbPrefixCoverage(opts?: {
   if (!maxDate) return [];
 
   const windowStart = isoDaysBefore(maxDate, recentDays - 1);
+  // Grouped by ad_prefix (the per-variant grain) so an unmapped prefix is
+  // caught even when it's the non-dominant variant of an ad. Carry a
+  // sample ad name + link per (prefix, name, link) so the digest line is
+  // actionable.
   const rows = await db
     .select({
+      adPrefix: fbAdSpendDaily.adPrefix,
       adNameRaw: fbAdSpendDaily.adNameRaw,
       adLink: fbAdSpendDaily.adLink,
       cost: sql<string>`SUM(${fbAdSpendDaily.costUsd})::text`,
     })
     .from(fbAdSpendDaily)
     .where(sql`${fbAdSpendDaily.spendDate} >= ${windowStart}`)
-    .groupBy(fbAdSpendDaily.adNameRaw, fbAdSpendDaily.adLink);
+    .groupBy(fbAdSpendDaily.adPrefix, fbAdSpendDaily.adNameRaw, fbAdSpendDaily.adLink);
 
-  // Roll up by raw prefix; keep total spend + a representative sample ad.
+  // Roll up by prefix; keep total spend + a representative sample ad.
   type Agg = { prefix: string; spendUsd: number; sampleAd: string; sampleLink: string | null };
   const byPrefix = new Map<string, Agg>();
   for (const r of rows) {
-    if (attributeFbAd(r.adNameRaw).bucket !== "unmapped") continue;
-    const prefix = prefixOf(r.adNameRaw);
-    // No leading "(...)" at all → can't name it; skip (these are rare and
-    // not actionable as a "rename this prefix" instruction).
+    const prefix = (r.adPrefix ?? "").trim();
+    // Empty prefix (ad name had no leading "(...)") → can't name it as a
+    // "rename this prefix" instruction; skip.
     if (!prefix) continue;
+    if (attributeFbPrefix(prefix).bucket !== "unmapped") continue;
     const cost = Number(r.cost ?? 0);
     const prev = byPrefix.get(prefix);
     if (prev) {

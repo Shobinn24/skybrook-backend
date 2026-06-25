@@ -36,12 +36,12 @@ describe("evaluateFbPrefixCoverage", () => {
     const pull = await seedPull();
     await db.insert(fbAdSpendDaily).values([
       // unmapped typo prefix, two rows summing to $600 (>= $500 threshold)
-      { adNumber: "1", adName: "a", adNameRaw: "(Botshort CC) Ad 1 - typo", adLink: "https://fb/1", marketers: [], spendDate: D, costUsd: "350", sourcePullId: pull },
-      { adNumber: "2", adName: "b", adNameRaw: "(Botshort CC) Ad 2 - typo", adLink: null, marketers: [], spendDate: D, costUsd: "250", sourcePullId: pull },
+      { adNumber: "1", adName: "a", adNameRaw: "(Botshort CC) Ad 1 - typo", adPrefix: "Botshort CC", adLink: "https://fb/1", marketers: [], spendDate: D, costUsd: "350", sourcePullId: pull },
+      { adNumber: "2", adName: "b", adNameRaw: "(Botshort CC) Ad 2 - typo", adPrefix: "Botshort CC", adLink: null, marketers: [], spendDate: D, costUsd: "250", sourcePullId: pull },
       // mapped prefix with high spend -> never flagged
-      { adNumber: "3", adName: "c", adNameRaw: "(9055 CC) Ad 3 - x", adLink: null, marketers: [], spendDate: D, costUsd: "5000", sourcePullId: pull },
+      { adNumber: "3", adName: "c", adNameRaw: "(9055 CC) Ad 3 - x", adPrefix: "9055 CC", adLink: null, marketers: [], spendDate: D, costUsd: "5000", sourcePullId: pull },
       // unmapped but below threshold -> not flagged
-      { adNumber: "4", adName: "d", adNameRaw: "(LAV) Ad 4 - color only", adLink: null, marketers: [], spendDate: D, costUsd: "100", sourcePullId: pull },
+      { adNumber: "4", adName: "d", adNameRaw: "(LAV) Ad 4 - color only", adPrefix: "LAV", adLink: null, marketers: [], spendDate: D, costUsd: "100", sourcePullId: pull },
     ]);
 
     const checks = await evaluateFbPrefixCoverage();
@@ -60,9 +60,9 @@ describe("evaluateFbPrefixCoverage", () => {
   it("returns nothing when all spend maps to known products/buckets", async () => {
     const pull = await seedPull();
     await db.insert(fbAdSpendDaily).values([
-      { adNumber: "1", adName: "a", adNameRaw: "(9055 CC) Ad 1 - x", adLink: null, marketers: [], spendDate: D, costUsd: "5000", sourcePullId: pull },
-      { adNumber: "2", adName: "b", adNameRaw: "(HOME US BAU) Ad 2 - y", adLink: null, marketers: [], spendDate: D, costUsd: "3000", sourcePullId: pull },
-      { adNumber: "3", adName: "c", adNameRaw: "(Clearance US BAU) Ad 3 - z", adLink: null, marketers: [], spendDate: D, costUsd: "2000", sourcePullId: pull },
+      { adNumber: "1", adName: "a", adNameRaw: "(9055 CC) Ad 1 - x", adPrefix: "9055 CC", adLink: null, marketers: [], spendDate: D, costUsd: "5000", sourcePullId: pull },
+      { adNumber: "2", adName: "b", adNameRaw: "(HOME US BAU) Ad 2 - y", adPrefix: "HOME US BAU", adLink: null, marketers: [], spendDate: D, costUsd: "3000", sourcePullId: pull },
+      { adNumber: "3", adName: "c", adNameRaw: "(Clearance US BAU) Ad 3 - z", adPrefix: "Clearance US BAU", adLink: null, marketers: [], spendDate: D, costUsd: "2000", sourcePullId: pull },
     ]);
     const checks = await evaluateFbPrefixCoverage();
     expect(checks).toEqual([]);
@@ -72,9 +72,9 @@ describe("evaluateFbPrefixCoverage", () => {
     const pull = await seedPull();
     await db.insert(fbAdSpendDaily).values([
       // anchor (recent)
-      { adNumber: "1", adName: "a", adNameRaw: "(9055 CC) Ad 1 - x", adLink: null, marketers: [], spendDate: D, costUsd: "10", sourcePullId: pull },
+      { adNumber: "1", adName: "a", adNameRaw: "(9055 CC) Ad 1 - x", adPrefix: "9055 CC", adLink: null, marketers: [], spendDate: D, costUsd: "10", sourcePullId: pull },
       // old unmapped, well outside 14d window -> ignored
-      { adNumber: "2", adName: "b", adNameRaw: "(Botshort CC) Ad 2 - typo", adLink: null, marketers: [], spendDate: "2026-01-01", costUsd: "9999", sourcePullId: pull },
+      { adNumber: "2", adName: "b", adNameRaw: "(Botshort CC) Ad 2 - typo", adPrefix: "Botshort CC", adLink: null, marketers: [], spendDate: "2026-01-01", costUsd: "9999", sourcePullId: pull },
     ]);
     const checks = await evaluateFbPrefixCoverage();
     expect(checks).toEqual([]);

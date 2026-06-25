@@ -50,11 +50,11 @@ describe("getAllProductsRollup", () => {
     ]);
 
     await db.insert(fbAdSpendDaily).values([
-      { adNumber: "1", adName: "x", adNameRaw: "(9055 CC) Ad 1 - x", adLink: null, marketers: [], spendDate: D, costUsd: "300", sourcePullId: pull },
-      { adNumber: "2", adName: "y", adNameRaw: "(BShort CC) Ad 2 - y", adLink: null, marketers: [], spendDate: D, costUsd: "200", sourcePullId: pull },
-      { adNumber: "3", adName: "z", adNameRaw: "(HW CC) Ad 3 - z", adLink: null, marketers: [], spendDate: D, costUsd: "50", sourcePullId: pull },
-      { adNumber: "4", adName: "w", adNameRaw: "(HOME US BAU) Ad 4 - w", adLink: null, marketers: [], spendDate: D, costUsd: "80", sourcePullId: pull },
-      { adNumber: "5", adName: "t", adNameRaw: "(Botshort CC) Ad 5 - typo", adLink: null, marketers: [], spendDate: D, costUsd: "5", sourcePullId: pull },
+      { adNumber: "1", adName: "x", adNameRaw: "(9055 CC) Ad 1 - x", adPrefix: "9055 CC", adLink: null, marketers: [], spendDate: D, costUsd: "300", sourcePullId: pull },
+      { adNumber: "2", adName: "y", adNameRaw: "(BShort CC) Ad 2 - y", adPrefix: "BShort CC", adLink: null, marketers: [], spendDate: D, costUsd: "200", sourcePullId: pull },
+      { adNumber: "3", adName: "z", adNameRaw: "(HW CC) Ad 3 - z", adPrefix: "HW CC", adLink: null, marketers: [], spendDate: D, costUsd: "50", sourcePullId: pull },
+      { adNumber: "4", adName: "w", adNameRaw: "(HOME US BAU) Ad 4 - w", adPrefix: "HOME US BAU", adLink: null, marketers: [], spendDate: D, costUsd: "80", sourcePullId: pull },
+      { adNumber: "5", adName: "t", adNameRaw: "(Botshort CC) Ad 5 - typo", adPrefix: "Botshort CC", adLink: null, marketers: [], spendDate: D, costUsd: "5", sourcePullId: pull },
     ]);
 
     const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
@@ -95,7 +95,7 @@ describe("getAllProductsRollup", () => {
       { channel: "shopify_us", routedLocation: "US", sku: "ev-9055-5x-m", salesDate: "2026-05-01", unitsSold: 1, netSalesUsd: "111", productSalesUsd: "100", ancillaryUsd: "11", sourcePullId: pull },
     ]);
     await db.insert(fbAdSpendDaily).values([
-      { adNumber: "1", adName: "x", adNameRaw: "(9055) old", adLink: null, marketers: [], spendDate: "2026-05-01", costUsd: "999", sourcePullId: pull },
+      { adNumber: "1", adName: "x", adNameRaw: "(9055) old", adPrefix: "9055", adLink: null, marketers: [], spendDate: "2026-05-01", costUsd: "999", sourcePullId: pull },
     ]);
     const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
     expect(res.totalProductRevenueUsd).toBe(0);

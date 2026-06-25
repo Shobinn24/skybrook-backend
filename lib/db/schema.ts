@@ -160,29 +160,40 @@ export const adSpendDaily = pgTable(
 // The source sheet's column A has names like "(OG Lav CC) Ad 537 -
 // OG Lavender images" or "(LAV ASC) DCA 537 - …"; the trailing number
 // after "Ad " or "DCA " is the canonical ad identifier and the same
-// number can run inside multiple campaigns, so we aggregate to
-// (ad_number, spend_date) at ingest. The "canonical" ad_name + ad_link
-// shown to operators is taken from the highest-spending source row for
-// each ad_number. Truncate-replace per pull like the rest of the sheet
-// pipeline.
+// number can run inside multiple campaigns. We aggregate to
+// (ad_number, ad_prefix, spend_date) at ingest — one row per product
+// PREFIX an ad ran under — so homepage/brand spend on a shared creative
+// isn't absorbed into the dominant product bucket (HOME-undercount fix,
+// 2026-06-25). The "canonical" ad_name + ad_name_raw + ad_link +
+// marketers shown to operators are taken from the highest-spending source
+// row for the WHOLE ad_number and repeated on every prefix row, so the
+// bonus + /fb-ads consumers that group by ad_number (sum cost, min
+// marketers, max name) are byte-for-byte unaffected. ad_prefix + cost_usd
+// carry the per-variant truth; product attribution reads ad_prefix.
+// Truncate-replace per pull like the rest of the sheet pipeline.
 export const fbAdSpendDaily = pgTable(
   "fb_ad_spend_daily",
   {
     adNumber: text("ad_number").notNull(),
     adName: text("ad_name").notNull(),
     adNameRaw: text("ad_name_raw").notNull(),
+    // Variant product prefix — inner "(...)" text, e.g. "9055 CC" /
+    // "HOME US BAU"; "" when the ad name has no leading prefix. Part of
+    // the PK so an ad_number's distinct prefixes coexist on the same date.
+    adPrefix: text("ad_prefix").notNull().default(""),
     adLink: text("ad_link"),
     // Marketer names extracted from ad_name_raw via word-boundary
     // substring match against the 8-marketer roster (Craig, Nate, Raul,
     // Tyler, Scotty, Jacob, Dan, JW). Multi-marketer ads carry every
     // matched name and show up in each marketer's filtered view.
-    // Empty array → "Unassigned" bucket in the UI filter.
+    // Empty array → "Unassigned" bucket in the UI filter. Canonical
+    // (ad_number level) — identical on every prefix row of an ad.
     marketers: text("marketers").array().notNull().default([]),
     spendDate: date("spend_date").notNull(),
     costUsd: numeric("cost_usd", { precision: 14, scale: 4 }).notNull(),
     sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
   },
-  (t) => ({ pk: primaryKey({ columns: [t.adNumber, t.spendDate] }) }),
+  (t) => ({ pk: primaryKey({ columns: [t.adNumber, t.adPrefix, t.spendDate] }) }),
 );
 
 // Per-location scaling factors that adjust sales velocity inside a date
