@@ -318,6 +318,7 @@ async function main() {
           adNumber: ad.adNumber,
           adName: ad.adName,
           adNameRaw: ad.adNameRaw,
+          adPrefix: ad.adPrefix,
           adLink: ad.adLink,
           marketers,
           spendDate: d.spendDate,
