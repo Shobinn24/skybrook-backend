@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
-import { dailySales, fbAdSpendDaily, rawPulls, skus } from "@/lib/db/schema";
+import { adSpendDaily, dailySales, fbAdSpendDaily, rawPulls, skus } from "@/lib/db/schema";
 import { getAllProductsRollup, type AllProductsRow } from "@/lib/queries/performance";
 import "dotenv/config";
 
@@ -81,7 +81,6 @@ describe("getAllProductsRollup", () => {
     expect(res.totalProductRevenueUsd).toBe(1700);
     expect(res.totalRevenueUsd).toBe(1870);
     expect(res.totalSpendUsd).toBe(635);
-    expect(res.appLovinPending).toBe(true);
     expect(res.rangeStart).toBe("2026-05-26");
     expect(res.rangeEnd).toBe("2026-06-24");
   });
@@ -101,5 +100,31 @@ describe("getAllProductsRollup", () => {
     expect(res.totalProductRevenueUsd).toBe(0);
     expect(res.totalSpendUsd).toBe(0);
     expect(res.rows).toEqual([]);
+  });
+
+  it("folds AppLovin AL-tab spend into the family and ignores FB tabs (no double-count)", async () => {
+    const pull = await seedPull();
+    const D = "2026-06-10";
+    await db.insert(skus).values([
+      { sku: "ev-mens-3x-m", productName: "Mens 3-Pack", productLine: "Sec", firstSeenAt: D, active: true },
+    ]);
+    await db.insert(dailySales).values([
+      { channel: "shopify_us", routedLocation: "US", sku: "ev-mens-3x-m", salesDate: D, unitsSold: 10, netSalesUsd: "1100", productSalesUsd: "1000", ancillaryUsd: "100", sourcePullId: pull },
+    ]);
+    await db.insert(fbAdSpendDaily).values([
+      { adNumber: "1", adName: "m", adNameRaw: "(Mens) Ad 1 - x", adPrefix: "Mens", adLink: null, marketers: [], spendDate: D, costUsd: "400", sourcePullId: pull },
+    ]);
+    await db.insert(adSpendDaily).values([
+      // AppLovin AL tab → folded into the Mens family
+      { product: "Men AL", spendDate: D, costUsd: "150", sourcePullId: pull },
+      // FB tab → must be IGNORED (the all-FB feed above already has it)
+      { product: "Men", spendDate: D, costUsd: "999", sourcePullId: pull },
+    ]);
+
+    const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
+    const mens = find(res.rows, "Mens")!;
+    // FB $400 + AppLovin AL $150 = $550; the FB "Men" tab ($999) is excluded.
+    expect(mens.spendUsd).toBe(550);
+    expect(res.totalSpendUsd).toBe(550);
   });
 });

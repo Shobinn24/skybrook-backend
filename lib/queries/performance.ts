@@ -393,8 +393,21 @@ export async function getPerformanceDataFreshness(): Promise<PerformanceDataFres
 // surfaces as its own buckets; shipping/tax/tips (ancillary) is reported as a
 // single separate line so product revenue ties to Shopify's by-product figure.
 //
-// WAVE 1 = FB spend only. AppLovin (~$152k/30d) lands in a follow-up once the
-// dedicated AppLovin feed exists; `appLovinPending` flags that for the UI.
+// Spend = all FB (attributed by ad-name prefix) + the partial AppLovin
+// AL-tab feed, folded in per-family exactly as the Focus view shows it. The
+// dedicated full AppLovin feed (~$152k/30d, mostly untabbed products) is a
+// later decision with the client; until then AppLovin is reflected here the
+// same partial way it always has been across the tool.
+
+/** AppLovin per-product AL tabs (ad_spend_daily.product) → all-products
+ * family label. ONLY AppLovin tabs belong here — never the FB tabs, which
+ * would double-count the all-FB fb_ad_spend_daily feed. */
+const APPLOVIN_TAB_TO_FAMILY: Record<string, string> = {
+  "Men AL": "Mens",
+  "Shapewear AL": "Shapewear",
+  "Super HW AL": "Super High-Waist",
+  "HRS AL": "High Rise Short",
+};
 
 /** Map a skus.product_name to a canonical product family. MUST emit the same
  * labels as `attributeFbAd` so the revenue and spend sides join. HF split. */
@@ -439,8 +452,6 @@ export type AllProductsResult = {
   /** product revenue + ancillary = full Shopify revenue. */
   totalRevenueUsd: number;
   totalSpendUsd: number;
-  /** True while spend is FB-only (AppLovin feed not yet wired). */
-  appLovinPending: boolean;
 };
 
 const round4 = (n: number): number => Number(n.toFixed(4));
@@ -505,6 +516,33 @@ export async function getAllProductsRollup(opts: {
     bucketByFamily.set(a.product, a.bucket);
   }
 
+  // --- AppLovin spend: the per-product AL tabs of ad_spend_daily, folded
+  // into the matching family exactly as the Focus view does. ONLY the AL
+  // (AppLovin) tabs — never the FB tabs — so we don't double-count the
+  // all-FB fb_ad_spend_daily feed above. This is the same partial AL-tab
+  // capture the rest of the tool has always shown; the dedicated full
+  // AppLovin feed is deferred pending the client decision. ---
+  const alTabs = Object.keys(APPLOVIN_TAB_TO_FAMILY);
+  const alRows = await db
+    .select({
+      tab: adSpendDaily.product,
+      spend: sql<string>`coalesce(sum(${adSpendDaily.costUsd}), 0)`,
+    })
+    .from(adSpendDaily)
+    .where(
+      and(
+        inArray(adSpendDaily.product, alTabs),
+        gte(adSpendDaily.spendDate, rangeStart),
+        lte(adSpendDaily.spendDate, rangeEnd),
+      ),
+    )
+    .groupBy(adSpendDaily.product);
+  for (const r of alRows) {
+    const fam = APPLOVIN_TAB_TO_FAMILY[r.tab];
+    if (!fam) continue;
+    spendByFamily.set(fam, (spendByFamily.get(fam) ?? 0) + Number(r.spend));
+  }
+
   // --- Merge on family label ---
   const families = new Set<string>([...revByFamily.keys(), ...spendByFamily.keys()]);
   const rows: AllProductsRow[] = [];
@@ -550,6 +588,5 @@ export async function getAllProductsRollup(opts: {
     totalProductRevenueUsd,
     totalRevenueUsd: round4(totalProductRevenueUsd + ancillaryUsd),
     totalSpendUsd,
-    appLovinPending: true,
   };
 }

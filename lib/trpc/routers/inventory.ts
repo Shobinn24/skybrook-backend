@@ -386,8 +386,8 @@ export const inventoryRouter = router({
 
   // /performance "All products" toggle. Same input + date math as
   // getPerformance, but rolls up EVERY product (revenue from
-  // product_sales_usd + FB-attributed spend by ad-name prefix) instead of
-  // the 4 focus products. Spend is FB-only for now (AppLovin pending).
+  // product_sales_usd + FB-attributed spend by ad-name prefix, plus the
+  // partial AppLovin AL-tab feed) instead of the 4 focus products.
   getAllProducts: marketingProcedure
     .input(
       z.object({

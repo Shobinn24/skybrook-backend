@@ -123,10 +123,42 @@ function horizontalMerge(grids: unknown[][][]): unknown[][] {
   return merged;
 }
 
+// Keep only the identity columns (0,1) + date columns within [from,to].
+// Lets us read a WIDE existing tab (e.g. Sheet6 = 6 months) but process
+// only the target window — and, by parsing just the window, the canonical
+// variant per ad is chosen over that window, exactly like a scoped pull.
+function windowGridColumns(
+  grid: unknown[][],
+  from: string | null,
+  to: string | null,
+): unknown[][] {
+  if (!from && !to) return grid;
+  const header = (grid[0] ?? []).map((c) => String(c ?? "").trim());
+  const keep: number[] = [];
+  for (let c = 0; c < header.length; c++) {
+    if (c < 2) {
+      keep.push(c);
+      continue;
+    }
+    const h = header[c];
+    if (ISO.test(h) && (!from || h >= from) && (!to || h <= to)) keep.push(c);
+  }
+  return grid.map((row) => keep.map((c) => row[c]));
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const apply = argv.includes("--apply");
-  const positional = argv.filter((a) => a !== "--apply");
+  const valOf = (flag: string): string | null => {
+    const i = argv.indexOf(flag);
+    return i >= 0 && argv[i + 1] ? argv[i + 1] : null;
+  };
+  const from = valOf("--from");
+  const to = valOf("--to");
+  const flagVals = new Set([from, to].filter(Boolean) as string[]);
+  const positional = argv.filter(
+    (a) => a !== "--apply" && a !== "--from" && a !== "--to" && !flagVals.has(a),
+  );
 
   let sources: Array<{ sheetId: string; tab: string }>;
   if (positional[0]?.includes("!")) {
@@ -156,7 +188,9 @@ async function main() {
     grids.push(g);
     console.log(`read chunk "${s.tab}": ${g.length - 1} data rows`);
   }
-  const grid = grids.length === 1 ? grids[0] : horizontalMerge(grids);
+  const stitched = grids.length === 1 ? grids[0] : horizontalMerge(grids);
+  const grid = windowGridColumns(stitched, from, to);
+  if (from || to) console.log(`windowed to date range [${from ?? "*"} .. ${to ?? "*"}]`);
 
   const { aggregated, skipped } = parseFbAdsSheet(grid);
   if (aggregated.length === 0) {

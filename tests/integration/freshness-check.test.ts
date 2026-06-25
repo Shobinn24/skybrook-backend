@@ -83,7 +83,7 @@ describe("runFreshnessCheck", () => {
   const AL_CHECK_NAME = "ad_spend_daily.product.super_hw_al";
 
   it("fails ad_spend_daily and stock_snapshots when both are empty", async () => {
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     expect(result.asOfDate).toBe(TODAY_EST);
     const failedNames = result.checks.filter((c) => c.status === "fail").map((c) => c.name);
     // All 6 per-product ad_spend checks should fail when the table is empty.
@@ -100,7 +100,7 @@ describe("runFreshnessCheck", () => {
       costUsd: "10.0",
       sourcePullId: seededRawPullId,
     });
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const fbCheck = result.checks.find((c) => c.name === FB_CHECK_NAME);
     expect(fbCheck?.status).toBe("pass");
   });
@@ -112,7 +112,7 @@ describe("runFreshnessCheck", () => {
       costUsd: "10.0",
       sourcePullId: seededRawPullId,
     });
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const fbCheck = result.checks.find((c) => c.name === FB_CHECK_NAME);
     expect(fbCheck?.status).toBe("fail");
     expect(fbCheck?.maxDate).toBe(TWO_DAYS_AGO_EST);
@@ -143,7 +143,7 @@ describe("runFreshnessCheck", () => {
         sourcePullId: seededRawPullId,
       });
     }
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const byName = (n: string) => result.checks.find((c) => c.name === n)?.status;
     expect(byName("ad_spend_daily.product.men")).toBe("pass");
     expect(byName("ad_spend_daily.product.shapewear")).toBe("pass");
@@ -218,7 +218,7 @@ describe("runFreshnessCheck", () => {
         sourcePullId: seededRawPullId,
       },
     ]);
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const skew = result.checks.find((c) => c.name === "daily_sales.cross_channel_skew");
     expect(skew?.status).toBe("fail");
     expect(skew?.detail).toContain("skewDays=4");
@@ -245,14 +245,14 @@ describe("runFreshnessCheck", () => {
         sourcePullId: seededRawPullId,
       },
     ]);
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const skew = result.checks.find((c) => c.name === "daily_sales.cross_channel_skew");
     expect(skew?.status).toBe("pass");
   });
 
   it("auto-resolves a previously-fired per-product alert when the source recovers", async () => {
     // Fire it first by leaving the table empty.
-    await runFreshnessCheck({ now: fixedNow });
+    await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const openAfterFirst = await db
       .select()
       .from(alertEvents)
@@ -268,7 +268,7 @@ describe("runFreshnessCheck", () => {
       costUsd: "10.0",
       sourcePullId: seededRawPullId,
     });
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     expect(result.alertsResolved).toBeGreaterThan(0);
 
     const openAfterSecond = await db
@@ -281,9 +281,9 @@ describe("runFreshnessCheck", () => {
   });
 
   it("does not fire duplicate alerts for the same stale state across runs", async () => {
-    await runFreshnessCheck({ now: fixedNow });
+    await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const firstCount = (await db.select().from(alertEvents)).length;
-    await runFreshnessCheck({ now: fixedNow });
+    await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const secondCount = (await db.select().from(alertEvents)).length;
     expect(secondCount).toBe(firstCount);
   });
@@ -299,7 +299,7 @@ describe("runFreshnessCheck", () => {
       costUsd: "10.0",
       sourcePullId: seededRawPullId,
     });
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     expect(result.checks.find((c) => c.name === "fb_ad_spend_daily")?.status).toBe("pass");
     // Every per-product ad_spend_daily check should fail since we
     // didn't seed anything in that table.
@@ -315,7 +315,7 @@ describe("runFreshnessCheck", () => {
       onHand: 100,
       sourcePullId: seededRawPullId,
     });
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const stock = result.checks.find((c) => c.name === "stock_snapshots");
     expect(stock?.status).toBe("pass");
   });
@@ -324,7 +324,7 @@ describe("runFreshnessCheck", () => {
   // integrity + tRPC error auto-resolve.
 
   it("fails shipping_stats_daily when no snapshot row exists", async () => {
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const ship = result.checks.find((c) => c.name === "shipping_stats_daily");
     expect(ship?.status).toBe("fail");
   });
@@ -338,7 +338,7 @@ describe("runFreshnessCheck", () => {
       avgTotalDays: "3.7",
       transitHistogram: { "3": 50, "4": 50 },
     });
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const ship = result.checks.find((c) => c.name === "shipping_stats_daily");
     expect(ship?.status).toBe("pass");
   });
@@ -363,7 +363,7 @@ describe("runFreshnessCheck", () => {
       productGroup: "Test Group",
     });
 
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const integrity = result.checks.find(
       (c) => c.name === "factory_orders.approved_zero_lines",
     );
@@ -400,7 +400,7 @@ describe("runFreshnessCheck", () => {
       productGroup: "Test Group",
     });
 
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const integrity = result.checks.find(
       (c) => c.name === "factory_orders.approved_zero_lines",
     );
@@ -424,7 +424,7 @@ describe("runFreshnessCheck", () => {
       amount: "0.00",
       productGroup: "Test Group",
     });
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const integrity = result.checks.find(
       (c) => c.name === "factory_orders.approved_zero_lines",
     );
@@ -456,7 +456,7 @@ describe("runFreshnessCheck", () => {
       },
     ]);
 
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const integrity = result.checks.find(
       (c) => c.name === "factory_orders.active_skus_missing_cost",
     );
@@ -472,7 +472,7 @@ describe("runFreshnessCheck", () => {
       firstSeenAt: "2026-01-01",
       active: true,
     });
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const integrity = result.checks.find(
       (c) => c.name === "factory_orders.active_skus_missing_cost",
     );
@@ -491,7 +491,7 @@ describe("runFreshnessCheck", () => {
       firedAt: new Date(FAKE_NOW.getTime() - 2 * 60 * 60 * 1000),
     });
 
-    const result = await runFreshnessCheck({ now: fixedNow });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     expect(result.alertsResolved).toBeGreaterThanOrEqual(1);
 
     const stillOpen = await db

@@ -409,20 +409,13 @@ export default function PerformancePage() {
         <div className="text-sm text-neutral-500">Loading…</div>
       ) : (
         <>
-          {allQ.data.appLovinPending && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              <strong>Spend shown is Facebook only.</strong> AppLovin spend is
-              not wired into this view yet, so ROAS is understated for products
-              that also run AppLovin.
-            </div>
-          )}
           <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="border-b border-neutral-200 text-left text-[11px] uppercase tracking-wide text-neutral-500">
                   <th className="px-4 py-2 font-medium">Product</th>
                   <th className="px-4 py-2 text-right font-medium">Revenue</th>
-                  <th className="px-4 py-2 text-right font-medium">Ad spend (FB)</th>
+                  <th className="px-4 py-2 text-right font-medium">Ad spend</th>
                   <th className="px-4 py-2 text-right font-medium">ROAS</th>
                 </tr>
               </thead>
@@ -487,10 +480,10 @@ export default function PerformancePage() {
             <strong>All products:</strong> revenue is exact product sales
             (shipping &amp; tax broken out as its own line) summed from{" "}
             <code>daily_sales</code>; spend is Facebook attributed by the
-            ad-name product tag. <em>Brand / Homepage</em> and{" "}
+            ad-name product tag, plus AppLovin. <em>Brand / Homepage</em> and{" "}
             <em>Clearance / Mixed</em> are spend not tied to one product;{" "}
             <em>Unmapped</em> = ads whose name has no recognized product tag
-            (rename the ad to clear it). AppLovin spend is not included yet.
+            (rename the ad to clear it).
           </div>
         </>
       )}
