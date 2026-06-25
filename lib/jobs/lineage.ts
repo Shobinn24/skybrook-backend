@@ -45,7 +45,9 @@ const TABLE_DASHBOARDS: Record<string, DashboardRoute[]> = {
     "/factory-orders",
   ],
   ad_spend_daily: ["/performance"],
-  fb_ad_spend_daily: ["/fb-ads", "/bonus-tracker"],
+  // /performance added 2026-06-25: the All-products view attributes FB
+  // spend from fb_ad_spend_daily.ad_name_raw via getAllProductsRollup.
+  fb_ad_spend_daily: ["/performance", "/fb-ads", "/bonus-tracker"],
   // velocity-range (queries/velocity-range.ts) reads daily_sales and is
   // pulled into inventory.ts (→ /inventory, /overstock), plus direct
   // reads in performance / sku-detail / sustainability / factory-order-calc.
@@ -135,6 +137,16 @@ export function lineageForCheck(name: string): Lineage {
   // Column-quality checks. Today the only one is fb marketer attribution,
   // an fb_ad_spend_daily-derived column.
   if (name.startsWith("column_quality.") && name.includes("marketer")) {
+    return {
+      subject: "fb_ad_spend_daily",
+      dashboards: dashboardsForTable("fb_ad_spend_daily"),
+    };
+  }
+
+  // FB attribution-coverage + sheet-shape checks. Both are about the FB
+  // ad feed that the All-products /performance view (and /fb-ads,
+  // /bonus-tracker) attribute spend from.
+  if (name.startsWith("fb_prefix.") || name === "fb_sheet_shape") {
     return {
       subject: "fb_ad_spend_daily",
       dashboards: dashboardsForTable("fb_ad_spend_daily"),

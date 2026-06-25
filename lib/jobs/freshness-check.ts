@@ -470,6 +470,18 @@ export async function runFreshnessCheck(opts?: {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+
+    // FB Ads Live date-column integrity (Sheets API, so it rides this
+    // reference-tab gate — never the DB-only /api/health path). Best-effort
+    // internally; wrap anyway so a future change can't fail the sweep.
+    try {
+      const { evaluateFbSheetShape } = await import("./fb-sheet-shape-check");
+      evaluatedRefTabs = [...evaluatedRefTabs, ...(await evaluateFbSheetShape())];
+    } catch (err) {
+      logger.warn("freshness.fb_sheet_shape.skipped", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   const evaluated = [...evaluatedBase, ...evaluatedRefTabs];

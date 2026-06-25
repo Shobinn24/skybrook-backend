@@ -523,7 +523,10 @@ describe("runFreshnessCheck", () => {
       sourcePullId: seededRawPullId,
     });
 
-    await runFreshnessCheck({ now: fixedNow });
+    // includeReferenceTabs:false → this test asserts DB-side alert
+    // auto-resolve only; skip the Sheets-API reference-tab + FB-shape
+    // sweep (real network, irrelevant here, and slow on a double call).
+    await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
 
     // The freshness-recovery branch resolves stock_snapshots — that's
     // legitimate. What we're guarding here is that NON-freshness
@@ -536,7 +539,7 @@ describe("runFreshnessCheck", () => {
       channel: "alerts",
       firedAt: new Date(FAKE_NOW.getTime() - 2 * 60 * 60 * 1000),
     });
-    await runFreshnessCheck({ now: fixedNow });
+    await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
     const ingestStillOpen = await db
       .select()
       .from(alertEvents)
