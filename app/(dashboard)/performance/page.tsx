@@ -471,7 +471,11 @@ export default function PerformancePage() {
                   <td className="px-4 py-2 text-right tabular-nums">
                     {fmtMoney(allQ.data.totalSpendUsd)}
                   </td>
-                  <td className="px-4 py-2 text-right text-neutral-400">—</td>
+                  <td className="px-4 py-2 text-right tabular-nums font-medium">
+                    {allQ.data.totalSpendUsd > 0
+                      ? fmtRoas(allQ.data.totalRevenueUsd / allQ.data.totalSpendUsd)
+                      : "—"}
+                  </td>
                 </tr>
               </tfoot>
             </table>
