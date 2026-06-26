@@ -15,6 +15,7 @@ import { postAlert, resolveAlert } from "@/lib/notifications/slack";
 import {
   buildIncomingSkippedAlert,
   sheetsAdSpendRunner,
+  sheetsApplovinRunner,
   sheetsFbAdsRunner,
   sheetsIncomingRunner,
   sheetsInventoryRunner,
@@ -35,6 +36,7 @@ const SOURCES: Partial<Record<SourceKey, SourceRunner>> = {
   sheets_incoming: sheetsIncomingRunner,
   sheets_ad_spend: sheetsAdSpendRunner,
   sheets_fb_ads: sheetsFbAdsRunner,
+  sheets_applovin: sheetsApplovinRunner,
   shopify_us: shopifyUsRunner,
   shopify_intl: shopifyIntlRunner,
 };

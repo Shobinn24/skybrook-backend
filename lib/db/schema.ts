@@ -21,6 +21,7 @@ export const sourceEnum = pgEnum("source", [
   "sheets_incoming",
   "sheets_ad_spend",
   "sheets_fb_ads",
+  "sheets_applovin",
   "shopify_us",
   "shopify_intl",
 ]);
@@ -145,6 +146,26 @@ export const incomingReceipts = pgTable(
 // sheet just refreshes the table.
 export const adSpendDaily = pgTable(
   "ad_spend_daily",
+  {
+    product: text("product").notNull(),
+    spendDate: date("spend_date").notNull(),
+    costUsd: numeric("cost_usd", { precision: 14, scale: 4 }).notNull(),
+    sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.product, t.spendDate] }) })
+);
+
+// Daily AppLovin (Axon) ad spend per product family, sourced from the
+// dedicated "AppLovin Live" Supermetrics sheet (3-account profile, long
+// format: Ad name | Date | Spend). Unlike ad_spend_daily (one row per sheet
+// TAB), AppLovin carries the product inside the ad name's pipe segment, so
+// the ingest attributes each ad to a product family (attributeAppLovinAd)
+// and aggregates to (product, spend_date) here. `product` is a canonical
+// family label ("9055", "HW", "Clearance / Mixed", "Unmapped", ...) — the
+// same labels getAllProductsRollup uses, so the all-products view can add
+// AppLovin alongside FB. Windowed delete-replace per ingest.
+export const applovinAdSpendDaily = pgTable(
+  "applovin_ad_spend_daily",
   {
     product: text("product").notNull(),
     spendDate: date("spend_date").notNull(),

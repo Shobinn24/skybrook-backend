@@ -1,0 +1,1 @@
+ALTER TYPE "public"."source" ADD VALUE 'sheets_applovin' BEFORE 'shopify_us';

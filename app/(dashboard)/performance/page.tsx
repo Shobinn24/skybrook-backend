@@ -82,6 +82,9 @@ export default function PerformancePage() {
   // Focus areas (4 hand-configured products) vs All products (every product,
   // revenue from product_sales_usd + FB spend attributed by ad-name prefix).
   const [view, setView] = useState<"focus" | "all">("focus");
+  // All-products spend column: combined (FB + AppLovin) by default; toggle
+  // reveals the per-row FB / AppLovin split (Scott 2026-06-26).
+  const [showSpendSplit, setShowSpendSplit] = useState(false);
   const yesterday = yesterdayEstYmd();
 
   // Fetch the latest revenue + spend dates so we can default the
@@ -409,13 +412,21 @@ export default function PerformancePage() {
         <div className="text-sm text-neutral-500">Loading…</div>
       ) : (
         <>
+          <div className="flex justify-end">
+            <button
+              onClick={() => setShowSpendSplit((s) => !s)}
+              className="text-xs text-neutral-600 underline hover:text-neutral-900"
+            >
+              {showSpendSplit ? "Hide FB / AppLovin split" : "Show FB / AppLovin split"}
+            </button>
+          </div>
           <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="border-b border-neutral-200 text-left text-[11px] uppercase tracking-wide text-neutral-500">
                   <th className="px-4 py-2 font-medium">Product</th>
                   <th className="px-4 py-2 text-right font-medium">Revenue</th>
-                  <th className="px-4 py-2 text-right font-medium">Ad spend (FB)</th>
+                  <th className="px-4 py-2 text-right font-medium">Ad spend</th>
                   <th className="px-4 py-2 text-right font-medium">ROAS</th>
                 </tr>
               </thead>
@@ -430,6 +441,11 @@ export default function PerformancePage() {
                       </td>
                       <td className="px-4 py-2 text-right tabular-nums text-neutral-900">
                         {fmtMoney(r.spendUsd)}
+                        {showSpendSplit && (
+                          <div className="text-[10px] font-normal text-neutral-400">
+                            FB {fmtMoney(r.fbSpendUsd)} · AL {fmtMoney(r.appLovinSpendUsd)}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-2 text-right tabular-nums font-medium text-neutral-900">
                         {fmtRoas(r.roas)}
@@ -457,6 +473,11 @@ export default function PerformancePage() {
                       <td className="px-4 py-2 text-right text-neutral-400">—</td>
                       <td className="px-4 py-2 text-right tabular-nums">
                         {fmtMoney(r.spendUsd)}
+                        {showSpendSplit && (
+                          <div className="text-[10px] font-normal text-neutral-400">
+                            FB {fmtMoney(r.fbSpendUsd)} · AL {fmtMoney(r.appLovinSpendUsd)}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-2 text-right text-neutral-400">—</td>
                     </tr>
@@ -470,6 +491,12 @@ export default function PerformancePage() {
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums">
                     {fmtMoney(allQ.data.totalSpendUsd)}
+                    {showSpendSplit && (
+                      <div className="text-[10px] font-normal text-neutral-500">
+                        FB {fmtMoney(allQ.data.totalFbSpendUsd)} · AL{" "}
+                        {fmtMoney(allQ.data.totalAppLovinSpendUsd)}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums font-medium">
                     {allQ.data.totalSpendUsd > 0
@@ -483,8 +510,9 @@ export default function PerformancePage() {
           <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
             <strong>All products:</strong> revenue is exact product sales
             (shipping &amp; tax broken out as its own line) summed from{" "}
-            <code>daily_sales</code>; spend is Facebook only, attributed by the
-            ad-name product tag. <em>Brand / Homepage</em> and{" "}
+            <code>daily_sales</code>; ad spend is Facebook + AppLovin combined
+            (use &ldquo;Show FB / AppLovin split&rdquo; for the breakdown),
+            attributed by the ad-name product tag. <em>Brand / Homepage</em> and{" "}
             <em>Clearance / Mixed</em> are spend not tied to one product;{" "}
             <em>Unmapped</em> = ads whose name has no recognized product tag
             (rename the ad to clear it).

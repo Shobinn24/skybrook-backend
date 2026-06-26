@@ -48,6 +48,8 @@ const TABLE_DASHBOARDS: Record<string, DashboardRoute[]> = {
   // /performance added 2026-06-25: the All-products view attributes FB
   // spend from fb_ad_spend_daily.ad_name_raw via getAllProductsRollup.
   fb_ad_spend_daily: ["/performance", "/fb-ads", "/bonus-tracker"],
+  // AppLovin feed folded into the All-products view's combined spend.
+  applovin_ad_spend_daily: ["/performance"],
   // velocity-range (queries/velocity-range.ts) reads daily_sales and is
   // pulled into inventory.ts (→ /inventory, /overstock), plus direct
   // reads in performance / sku-detail / sustainability / factory-order-calc.
@@ -72,6 +74,7 @@ const SOURCE_TABLES: Record<string, string[]> = {
   sheets_incoming: ["incoming_shipments"],
   sheets_ad_spend: ["ad_spend_daily"],
   sheets_fb_ads: ["fb_ad_spend_daily"],
+  sheets_applovin: ["applovin_ad_spend_daily"],
   shopify_us: ["daily_sales"],
   shopify_intl: ["daily_sales"],
 };
@@ -103,6 +106,7 @@ export type Lineage = {
 const TABLE_PREFIXES = [
   "ad_spend_daily",
   "fb_ad_spend_daily",
+  "applovin_ad_spend_daily",
   "stock_snapshots",
   "daily_sales",
   "shipping_stats_daily",

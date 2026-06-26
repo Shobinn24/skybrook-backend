@@ -32,7 +32,11 @@ import { runFbTracker2Append } from "@/lib/jobs/fb-tracker2-append";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { postAlert, resolveAlert } from "@/lib/notifications/slack";
-import { sheetsAdSpendRunner, sheetsFbAdsRunner } from "@/lib/sources/sheets";
+import {
+  sheetsAdSpendRunner,
+  sheetsApplovinRunner,
+  sheetsFbAdsRunner,
+} from "@/lib/sources/sheets";
 import { toEstDate } from "@/lib/tz";
 import { logger } from "@/lib/logger";
 
@@ -43,6 +47,7 @@ export const dynamic = "force-dynamic";
 const AD_SPEND_SOURCES: Partial<Record<SourceKey, SourceRunner>> = {
   sheets_ad_spend: sheetsAdSpendRunner,
   sheets_fb_ads: sheetsFbAdsRunner,
+  sheets_applovin: sheetsApplovinRunner,
 };
 
 export async function POST(req: Request) {
