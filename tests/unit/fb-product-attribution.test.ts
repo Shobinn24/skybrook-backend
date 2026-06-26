@@ -12,7 +12,11 @@ describe("attributeFbAd", () => {
     ["(9055 HF CC) Ad 2151 - Raul", "9055 HF", "product"],
     ["(9055 Pas CC) Ad 1 - pastel", "9055", "product"], // Pas != HF
     ["(BShort CC) Ad 2027 - Jacob", "Boyshort", "product"],
-    ["(Boyshort HF ASC) Ad 1770 - JW", "Boyshort HF", "product"],
+    // Boyshort + Boyshort HF are lumped into one family (2026-06-26): the
+    // landing URL offers both regular and heavy-flow as purchase options, so
+    // splitting spend/revenue by ad name is meaningless. Boyshort is the only
+    // family with HF folded in; 9055/HW/etc still split.
+    ["(Boyshort HF ASC) Ad 1770 - JW", "Boyshort", "product"],
     ["(Mens) Ad 2077 - Craig", "Mens", "product"],
     ["(Mens BB) Ad 2402 - Craig", "Mens", "product"], // merged, no HF line
     ["(SupHW INTL) Ad 2914 - GA", "Super High-Waist", "product"],
@@ -45,6 +49,7 @@ describe("attributeAppLovinAd", () => {
     ["932 | HW Gifts | Craig Free Gifts Vid 3 | EC14.2 | V2 MULTI", "HW", "product"],
     ["x | 9055 HF | y", "9055 HF", "product"],
     ["x | Boyshort | y", "Boyshort", "product"],
+    ["x | Boyshort HF | y", "Boyshort", "product"], // HF lumped into Boyshort (2026-06-26)
     ["x | Mar DOM | y", "Unmapped", "unmapped"], // unrecognized segment
     ["3P_Ad1_EV_PadComparison60secs_Manticore_StaticConversion01", "Unmapped", "unmapped"], // no pipe
     ["", "Unmapped", "unmapped"],

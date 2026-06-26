@@ -393,11 +393,10 @@ export async function getPerformanceDataFreshness(): Promise<PerformanceDataFres
 // surfaces as its own buckets; shipping/tax/tips (ancillary) is reported as a
 // single separate line so product revenue ties to Shopify's by-product figure.
 //
-// Spend = all FB only (attributed by ad-name prefix). AppLovin is
-// deliberately excluded from this view by request (2026-06-25) until the
-// client decides how to handle it; the Focus view still shows its partial
-// AL-tab AppLovin. The dedicated full AppLovin feed (~$152k/30d, mostly
-// untabbed products) is the later decision.
+// Spend = combined FB + AppLovin per family (2026-06-26). FB is attributed at
+// read time from the ad-name prefix; AppLovin comes from its dedicated feed
+// (applovin_ad_spend_daily), already attributed at ingest. The row exposes the
+// FB/AppLovin split (fbSpendUsd/appLovinSpendUsd) for the expand-to-see UI.
 
 /** Map a skus.product_name to a canonical product family. MUST emit the same
  * labels as `attributeFbAd` so the revenue and spend sides join. HF split. */
@@ -405,7 +404,10 @@ export function revenueFamilyFromProductName(name: string): string {
   const n = (name ?? "").toLowerCase();
   const hf = /\bhf\b/.test(n);
   if (n.includes("9055")) return hf ? "9055 HF" : "9055";
-  if (n.includes("boyshort")) return hf ? "Boyshort HF" : "Boyshort";
+  // Boyshort lumps regular + HF into one family (2026-06-26): the landing URL
+  // offers both as purchase options, so spend/revenue can't be split by name.
+  // Mirror the spend-side rule in attributeFbPrefix (Boyshort ignores HF).
+  if (n.includes("boyshort")) return "Boyshort";
   if (n.includes("mens")) return "Mens";
   if (n.includes("super high-waist") || n.includes("suphw")) return "Super High-Waist";
   if (n.includes("shapewear")) return hf ? "Shapewear HF" : "Shapewear";
@@ -419,6 +421,14 @@ export function revenueFamilyFromProductName(name: string): string {
   if (n.includes("jacquard")) return "Jacquard";
   if (n.includes("cb ")) return "CB";
   return "Other products";
+}
+
+// Collapse a stored (already-attributed) family label onto its current
+// canonical family. Used for AppLovin spend, whose label is fixed at ingest;
+// keeps historical rows consistent with read-time attribution rule changes.
+// Currently the only lump is Boyshort HF -> Boyshort (2026-06-26).
+function normalizeStoredFamily(label: string): string {
+  return label === "Boyshort HF" ? "Boyshort" : label;
 }
 
 export type AllProductsRow = {
@@ -531,10 +541,12 @@ export async function getAllProductsRollup(opts: {
     .groupBy(applovinAdSpendDaily.product);
   const appLovinSpendByFamily = new Map<string, number>();
   for (const r of alRows) {
-    appLovinSpendByFamily.set(
-      r.product,
-      (appLovinSpendByFamily.get(r.product) ?? 0) + Number(r.spend),
-    );
+    // AppLovin spend is attributed to a family at INGEST (unlike FB, which is
+    // attributed at read time from ad_prefix). Rows ingested before a
+    // family-lump rule change keep the old label, so normalize the stored
+    // label here to match current attribution (Boyshort HF -> Boyshort).
+    const fam = normalizeStoredFamily(r.product);
+    appLovinSpendByFamily.set(fam, (appLovinSpendByFamily.get(fam) ?? 0) + Number(r.spend));
   }
 
   // --- Merge on family label (FB + AppLovin) ---

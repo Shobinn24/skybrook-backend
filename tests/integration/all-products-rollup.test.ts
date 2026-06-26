@@ -137,6 +137,38 @@ describe("getAllProductsRollup", () => {
     expect(res.totalSpendUsd).toBe(550);
   });
 
+  it("lumps Boyshort + Boyshort HF into a single Boyshort row (spend + revenue)", async () => {
+    const pull = await seedPull();
+    const D = "2026-06-10";
+    await db.insert(skus).values([
+      { sku: "ev-bshort-5x-m", productName: "Boyshort", productLine: "Sec", firstSeenAt: D, active: true },
+      { sku: "ev-bshort-hf-5x-m", productName: "Boyshort HF", productLine: "Sec", firstSeenAt: D, active: true },
+    ]);
+    await db.insert(dailySales).values([
+      { channel: "shopify_us", routedLocation: "US", sku: "ev-bshort-5x-m", salesDate: D, unitsSold: 5, netSalesUsd: "550", productSalesUsd: "500", ancillaryUsd: "50", sourcePullId: pull },
+      { channel: "shopify_us", routedLocation: "US", sku: "ev-bshort-hf-5x-m", salesDate: D, unitsSold: 3, netSalesUsd: "330", productSalesUsd: "300", ancillaryUsd: "30", sourcePullId: pull },
+    ]);
+    await db.insert(fbAdSpendDaily).values([
+      { adNumber: "1", adName: "a", adNameRaw: "(Boyshort CC) Ad 1 - x", adPrefix: "Boyshort CC", adLink: null, marketers: [], spendDate: D, costUsd: "200", sourcePullId: pull },
+      { adNumber: "2", adName: "b", adNameRaw: "(Boyshort HF ASC) Ad 2 - y", adPrefix: "Boyshort HF ASC", adLink: null, marketers: [], spendDate: D, costUsd: "120", sourcePullId: pull },
+    ]);
+    // AppLovin Boyshort HF spend also folds into the single Boyshort family.
+    await db.insert(applovinAdSpendDaily).values([
+      { product: "Boyshort HF", spendDate: D, costUsd: "30", sourcePullId: pull },
+    ]);
+
+    const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
+    // One Boyshort row, no separate "Boyshort HF" row.
+    expect(res.rows.filter((r) => r.product === "Boyshort HF")).toEqual([]);
+    const bs = find(res.rows, "Boyshort")!;
+    expect(bs.kind).toBe("product");
+    expect(bs.revenueUsd).toBe(800); // 500 + 300
+    expect(bs.fbSpendUsd).toBe(320); // 200 + 120
+    expect(bs.appLovinSpendUsd).toBe(30);
+    expect(bs.spendUsd).toBe(350); // 320 + 30
+    expect(bs.roas).toBeCloseTo(800 / 350, 4);
+  });
+
   it("surfaces an AppLovin-only family (no FB, no revenue) as a spend bucket", async () => {
     const pull = await seedPull();
     const D = "2026-06-10";
