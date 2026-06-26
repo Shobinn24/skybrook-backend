@@ -35,6 +35,7 @@ import { db } from "@/lib/db";
 import {
   adSpendDaily,
   alertEvents,
+  applovinAdSpendDaily,
   dailySales,
   factoryOrderLines,
   factoryOrders,
@@ -180,6 +181,28 @@ export async function evaluateFreshness(opts?: {
       { table: "fb_ad_spend_daily" },
     ),
   );
+
+  // AppLovin feed (dedicated "AppLovin Live" Supermetrics sheet). p2 →
+  // #skybrook-digest, not a page: the daily scheduled refresh is newly set
+  // up, so surface staleness without paging until it's proven steady. Raise
+  // to p1 once the refresh has run reliably for a week.
+  const [applovinRow] = await db
+    .select({ max: max(applovinAdSpendDaily.spendDate) })
+    .from(applovinAdSpendDaily);
+  {
+    const maxDate = applovinRow?.max ?? null;
+    const stale = maxDate === null || maxDate < threshold;
+    checks.push({
+      name: "applovin_ad_spend_daily",
+      status: stale ? "fail" : "pass",
+      maxDate,
+      threshold,
+      dedupKey: "freshness:applovin_ad_spend_daily",
+      title: "applovin_ad_spend_daily is stale",
+      severity: "p2",
+      fields: { table: "applovin_ad_spend_daily", maxDate: maxDate ?? "<null>", threshold },
+    });
+  }
 
   const [stockRow] = await db
     .select({ max: max(stockSnapshots.snapshotDate) })

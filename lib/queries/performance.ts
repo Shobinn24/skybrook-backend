@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { adSpendDaily, dailySales, fbAdSpendDaily, rawPulls, skus } from "@/lib/db/schema";
+import { adSpendDaily, applovinAdSpendDaily, dailySales, fbAdSpendDaily, rawPulls, skus } from "@/lib/db/schema";
 import {
   attributeFbPrefix,
   type FbBucket,
@@ -426,7 +426,12 @@ export type AllProductsRow = {
   /** "product" rows have revenue; brand/clearance/unmapped are spend-only. */
   kind: FbBucket;
   revenueUsd: number;
+  /** Combined ad spend = FB + AppLovin. */
   spendUsd: number;
+  /** The split behind `spendUsd`, for the expand-to-see-split UI. */
+  fbSpendUsd: number;
+  appLovinSpendUsd: number;
+  /** revenue / combined spend. */
   roas: number | null;
 };
 
@@ -441,7 +446,10 @@ export type AllProductsResult = {
   totalProductRevenueUsd: number;
   /** product revenue + ancillary = full Shopify revenue. */
   totalRevenueUsd: number;
+  /** Combined FB + AppLovin. */
   totalSpendUsd: number;
+  totalFbSpendUsd: number;
+  totalAppLovinSpendUsd: number;
 };
 
 const round4 = (n: number): number => Number(n.toFixed(4));
@@ -498,35 +506,60 @@ export async function getAllProductsRollup(opts: {
     )
     .groupBy(fbAdSpendDaily.adPrefix);
 
-  const spendByFamily = new Map<string, number>();
-  const bucketByFamily = new Map<string, FbBucket>();
+  const fbSpendByFamily = new Map<string, number>();
   for (const r of spendRows) {
     const a = attributeFbPrefix(r.adPrefix ?? "");
-    spendByFamily.set(a.product, (spendByFamily.get(a.product) ?? 0) + Number(r.spend));
-    bucketByFamily.set(a.product, a.bucket);
+    fbSpendByFamily.set(a.product, (fbSpendByFamily.get(a.product) ?? 0) + Number(r.spend));
   }
 
-  // NOTE: spend is FB-only by request (2026-06-25) until the client decides
-  // how to handle AppLovin. The partial AppLovin AL-tab feed is deliberately
-  // NOT folded in here (the Focus view still shows it via PRODUCT_CONFIG).
-  // When AppLovin is approved, add the AL tabs to spendByFamily (see git
-  // history: the APPLOVIN_TAB_TO_FAMILY fold-in) or wire the dedicated feed.
+  // --- Spend: AppLovin, from the dedicated feed (applovin_ad_spend_daily is
+  // already attributed to a product family at ingest, so just sum by
+  // product). Combined with FB per family below; the UI shows the combined
+  // number with an expand-to-see-the-split. ---
+  const alRows = await db
+    .select({
+      product: applovinAdSpendDaily.product,
+      spend: sql<string>`coalesce(sum(${applovinAdSpendDaily.costUsd}), 0)`,
+    })
+    .from(applovinAdSpendDaily)
+    .where(
+      and(
+        gte(applovinAdSpendDaily.spendDate, rangeStart),
+        lte(applovinAdSpendDaily.spendDate, rangeEnd),
+      ),
+    )
+    .groupBy(applovinAdSpendDaily.product);
+  const appLovinSpendByFamily = new Map<string, number>();
+  for (const r of alRows) {
+    appLovinSpendByFamily.set(
+      r.product,
+      (appLovinSpendByFamily.get(r.product) ?? 0) + Number(r.spend),
+    );
+  }
 
-  // --- Merge on family label ---
-  const families = new Set<string>([...revByFamily.keys(), ...spendByFamily.keys()]);
+  // --- Merge on family label (FB + AppLovin) ---
+  const families = new Set<string>([
+    ...revByFamily.keys(),
+    ...fbSpendByFamily.keys(),
+    ...appLovinSpendByFamily.keys(),
+  ]);
   const rows: AllProductsRow[] = [];
   for (const fam of families) {
     const revenueUsd = round4(revByFamily.get(fam) ?? 0);
-    const spendUsd = round4(spendByFamily.get(fam) ?? 0);
+    const fbSpendUsd = round4(fbSpendByFamily.get(fam) ?? 0);
+    const appLovinSpendUsd = round4(appLovinSpendByFamily.get(fam) ?? 0);
+    const spendUsd = round4(fbSpendUsd + appLovinSpendUsd);
     // A family with revenue is a product; otherwise it's the spend bucket's kind.
     const kind: FbBucket = revByFamily.has(fam)
       ? "product"
-      : bucketByFamily.get(fam) ?? "product";
+      : bucketForFamilyLabel(fam);
     rows.push({
       product: fam,
       kind,
       revenueUsd,
       spendUsd,
+      fbSpendUsd,
+      appLovinSpendUsd,
       // ROAS only meaningful for product rows; spend-only buckets
       // (brand/clearance/unmapped) have no attributed revenue by design.
       roas: kind === "product" && spendUsd > 0 ? revenueUsd / spendUsd : null,
@@ -544,9 +577,13 @@ export async function getAllProductsRollup(opts: {
     [...revByFamily.values()].reduce((s, v) => s + v, 0),
   );
   ancillaryUsd = round4(ancillaryUsd);
-  const totalSpendUsd = round4(
-    [...spendByFamily.values()].reduce((s, v) => s + v, 0),
+  const totalFbSpendUsd = round4(
+    [...fbSpendByFamily.values()].reduce((s, v) => s + v, 0),
   );
+  const totalAppLovinSpendUsd = round4(
+    [...appLovinSpendByFamily.values()].reduce((s, v) => s + v, 0),
+  );
+  const totalSpendUsd = round4(totalFbSpendUsd + totalAppLovinSpendUsd);
 
   return {
     rangeDays: opts.rangeDays,
@@ -557,5 +594,17 @@ export async function getAllProductsRollup(opts: {
     totalProductRevenueUsd,
     totalRevenueUsd: round4(totalProductRevenueUsd + ancillaryUsd),
     totalSpendUsd,
+    totalFbSpendUsd,
+    totalAppLovinSpendUsd,
   };
+}
+
+// A spend-only family's bucket, derived from its canonical label. (Product
+// families come from revenue presence; these are the non-product buckets
+// that can appear in spend with no revenue.)
+function bucketForFamilyLabel(fam: string): FbBucket {
+  if (fam === "Brand / Homepage") return "brand";
+  if (fam === "Clearance / Mixed") return "clearance";
+  if (fam === "Unmapped") return "unmapped";
+  return "product";
 }

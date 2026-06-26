@@ -163,6 +163,10 @@ describe("GET /api/health", () => {
       VALUES ('1', 'x', 'x', '{}', ${yesterday}, '1', ${rawPullId})
     `);
     await db.execute(sql`
+      INSERT INTO applovin_ad_spend_daily (product, spend_date, cost_usd, source_pull_id)
+      VALUES ('9055', ${yesterday}, '1', ${rawPullId})
+    `);
+    await db.execute(sql`
       INSERT INTO stock_snapshots (sku, location, snapshot_date, on_hand, source_pull_id)
       VALUES ('s', 'US', ${yesterday}, 1, ${rawPullId})
     `);

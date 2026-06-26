@@ -32,6 +32,7 @@ type Source =
   | "sheets_incoming"
   | "sheets_ad_spend"
   | "sheets_fb_ads"
+  | "sheets_applovin"
   | "shopify_us"
   | "shopify_intl";
 
@@ -61,6 +62,9 @@ export const VOLUME_MONITORS: ReadonlyArray<VolumeMonitor> = [
   { source: "sheets_incoming", floorFraction: 0.6, minHistory: 5 },
   { source: "sheets_ad_spend", floorFraction: 0.5, minHistory: 5 },
   { source: "sheets_fb_ads", floorFraction: 0.5, minHistory: 5 },
+  // AppLovin: row_count = (product × day) aggregated rows; swings with how
+  // many products run, so loose floor like the other ad feeds.
+  { source: "sheets_applovin", floorFraction: 0.5, minHistory: 5 },
 ];
 
 // How many prior successful pulls to fold into the baseline median.

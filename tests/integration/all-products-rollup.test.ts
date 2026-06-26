@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
-import { adSpendDaily, dailySales, fbAdSpendDaily, rawPulls, skus } from "@/lib/db/schema";
+import { adSpendDaily, applovinAdSpendDaily, dailySales, fbAdSpendDaily, rawPulls, skus } from "@/lib/db/schema";
 import { getAllProductsRollup, type AllProductsRow } from "@/lib/queries/performance";
 import "dotenv/config";
 
@@ -102,7 +102,7 @@ describe("getAllProductsRollup", () => {
     expect(res.rows).toEqual([]);
   });
 
-  it("spend is FB-only — ignores ALL ad_spend_daily tabs incl AppLovin AL (2026-06-25)", async () => {
+  it("folds AppLovin from applovin_ad_spend_daily into combined spend; ignores ad_spend_daily tabs", async () => {
     const pull = await seedPull();
     const D = "2026-06-10";
     await db.insert(skus).values([
@@ -114,17 +114,41 @@ describe("getAllProductsRollup", () => {
     await db.insert(fbAdSpendDaily).values([
       { adNumber: "1", adName: "m", adNameRaw: "(Mens) Ad 1 - x", adPrefix: "Mens", adLink: null, marketers: [], spendDate: D, costUsd: "400", sourcePullId: pull },
     ]);
+    // AppLovin comes from the dedicated feed, already attributed to a family.
+    await db.insert(applovinAdSpendDaily).values([
+      { product: "Mens", spendDate: D, costUsd: "150", sourcePullId: pull },
+    ]);
+    // ad_spend_daily tabs (FB "Men" + AppLovin AL "Men AL") are NOT read by
+    // the rollup — must be ignored so we don't double-count.
     await db.insert(adSpendDaily).values([
-      // AppLovin AL tab → must be EXCLUDED (FB-only until client sign-off)
-      { product: "Men AL", spendDate: D, costUsd: "150", sourcePullId: pull },
-      // FB tab → also excluded (the all-FB fb_ad_spend_daily feed is the source)
       { product: "Men", spendDate: D, costUsd: "999", sourcePullId: pull },
+      { product: "Men AL", spendDate: D, costUsd: "888", sourcePullId: pull },
     ]);
 
     const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
     const mens = find(res.rows, "Mens")!;
-    // FB only: $400. Neither the AppLovin AL tab ($150) nor the FB "Men" tab ($999) is added.
-    expect(mens.spendUsd).toBe(400);
-    expect(res.totalSpendUsd).toBe(400);
+    // FB $400 + AppLovin $150 = $550 combined; ad_spend_daily tabs excluded.
+    expect(mens.fbSpendUsd).toBe(400);
+    expect(mens.appLovinSpendUsd).toBe(150);
+    expect(mens.spendUsd).toBe(550);
+    expect(mens.roas).toBeCloseTo(1000 / 550, 4);
+    expect(res.totalFbSpendUsd).toBe(400);
+    expect(res.totalAppLovinSpendUsd).toBe(150);
+    expect(res.totalSpendUsd).toBe(550);
+  });
+
+  it("surfaces an AppLovin-only family (no FB, no revenue) as a spend bucket", async () => {
+    const pull = await seedPull();
+    const D = "2026-06-10";
+    await db.insert(applovinAdSpendDaily).values([
+      { product: "Clearance / Mixed", spendDate: D, costUsd: "320", sourcePullId: pull },
+    ]);
+    const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
+    const clr = find(res.rows, "Clearance / Mixed")!;
+    expect(clr.kind).toBe("clearance");
+    expect(clr.appLovinSpendUsd).toBe(320);
+    expect(clr.fbSpendUsd).toBe(0);
+    expect(clr.spendUsd).toBe(320);
+    expect(res.totalAppLovinSpendUsd).toBe(320);
   });
 });
