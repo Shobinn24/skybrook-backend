@@ -39,7 +39,10 @@ export function attributeFbPrefix(prefixInner: string): FbAttribution {
   if (p === "clearance") return { product: "Clearance / Mixed", bucket: "clearance" };
   if (p === "9055") return v("9055");
   if (p === "hw" || p === "hwhf") return v("HW");
-  if (p === "bshort" || p === "boyshort") return v("Boyshort");
+  // Boyshort lumps regular + HF into one family (2026-06-26): the landing
+  // URL offers both regular and heavy-flow as purchase options, so splitting
+  // by ad name is meaningless. Unlike 9055/HW/etc, Boyshort ignores the HF flag.
+  if (p === "bshort" || p === "boyshort") return { product: "Boyshort", bucket: "product" };
   if (p === "mens") return { product: "Mens", bucket: "product" }; // Mens + Mens BB merged; no HF line
   if (p === "suphw") return v("Super High-Waist");
   if (p === "shape") return v("Shapewear");
