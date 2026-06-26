@@ -51,3 +51,17 @@ export function attributeFbPrefix(prefixInner: string): FbAttribution {
 export function attributeFbAd(adNameRaw: string): FbAttribution {
   return attributeFbPrefix(extractFbPrefix(adNameRaw));
 }
+
+// AppLovin ad names carry the product in a pipe-delimited segment, e.g.
+//   "<hash>_<adnum> | 9055 | Raul x Applovin 37 | Multi"  -> 9055
+//   "<hash>_<adnum> | HW Gifts | Craig Vid 239"           -> HW
+//   "1816 | Clearance | Raul Vid 212"                     -> Clearance / Mixed
+// The 2nd segment is the product (same vocabulary as the FB prefix), so we
+// reuse attributeFbPrefix on it. Names with no pipe (e.g. third-party
+// "3P_Ad1_EV_..." creatives) or an unrecognized segment ("Mar DOM") fall to
+// Unmapped — same no-silent-correction posture as FB.
+export function attributeAppLovinAd(adName: string): FbAttribution {
+  const parts = (adName ?? "").split("|").map((s) => s.trim());
+  if (parts.length < 2 || !parts[1]) return { product: "Unmapped", bucket: "unmapped" };
+  return attributeFbPrefix(parts[1]);
+}

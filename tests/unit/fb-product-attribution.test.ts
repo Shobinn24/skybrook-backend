@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { attributeFbAd } from "@/lib/domain/fb-product-attribution";
+import {
+  attributeAppLovinAd,
+  attributeFbAd,
+} from "@/lib/domain/fb-product-attribution";
 
 describe("attributeFbAd", () => {
   const cases: Array<[string, string, string]> = [
@@ -27,6 +30,27 @@ describe("attributeFbAd", () => {
   ];
   it.each(cases)("%s -> %s/%s", (raw, product, bucket) => {
     const r = attributeFbAd(raw);
+    expect(r.product).toBe(product);
+    expect(r.bucket).toBe(bucket);
+  });
+});
+
+describe("attributeAppLovinAd", () => {
+  const cases: Array<[string, string, string]> = [
+    // ad name (pipe-delimited),                                    product,            bucket
+    ["0d38e8_698 | 9055 | Raul x Applovin 37 | Multi", "9055", "product"],
+    ["0d38e8_1610 | HW Gifts | Craig Vid 239", "HW", "product"],
+    ["1816 | Clearance | Raul Vid 212", "Clearance / Mixed", "clearance"],
+    ["1424 | OG Gifts | Craig Vid 194 | Multi", "OG", "product"],
+    ["932 | HW Gifts | Craig Free Gifts Vid 3 | EC14.2 | V2 MULTI", "HW", "product"],
+    ["x | 9055 HF | y", "9055 HF", "product"],
+    ["x | Boyshort | y", "Boyshort", "product"],
+    ["x | Mar DOM | y", "Unmapped", "unmapped"], // unrecognized segment
+    ["3P_Ad1_EV_PadComparison60secs_Manticore_StaticConversion01", "Unmapped", "unmapped"], // no pipe
+    ["", "Unmapped", "unmapped"],
+  ];
+  it.each(cases)("%s -> %s/%s", (name, product, bucket) => {
+    const r = attributeAppLovinAd(name);
     expect(r.product).toBe(product);
     expect(r.bucket).toBe(bucket);
   });
