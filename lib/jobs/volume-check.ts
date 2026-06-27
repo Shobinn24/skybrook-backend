@@ -33,6 +33,8 @@ type Source =
   | "sheets_ad_spend"
   | "sheets_fb_ads"
   | "sheets_applovin"
+  | "sheets_fb_geo"
+  | "sheets_fb_url_map"
   | "shopify_us"
   | "shopify_intl";
 
@@ -65,6 +67,14 @@ export const VOLUME_MONITORS: ReadonlyArray<VolumeMonitor> = [
   // AppLovin: row_count = (product × day) aggregated rows; swings with how
   // many products run, so loose floor like the other ad feeds.
   { source: "sheets_applovin", floorFraction: 0.5, minHistory: 5 },
+  // FB geo: row_count = (ad × country) rows in the 30d window snapshot;
+  // FB URL map: row_count = ads in the window. Both swing with how many ads
+  // are live, so a loose floor catches an empty/broken pull without paging on
+  // normal churn. (These are full-replace snapshots, so an empty pull would
+  // zero the table — the volume floor is the main guard since there's no date
+  // column for a freshness check.)
+  { source: "sheets_fb_geo", floorFraction: 0.5, minHistory: 5 },
+  { source: "sheets_fb_url_map", floorFraction: 0.5, minHistory: 5 },
 ];
 
 // How many prior successful pulls to fold into the baseline median.

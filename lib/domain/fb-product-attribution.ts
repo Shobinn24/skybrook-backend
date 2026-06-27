@@ -68,3 +68,64 @@ export function attributeAppLovinAd(adName: string): FbAttribution {
   if (parts.length < 2 || !parts[1]) return { product: "Unmapped", bucket: "unmapped" };
   return attributeFbPrefix(parts[1]);
 }
+
+// Return the path of an everdries.com destination URL, or null when the URL is
+// not an everdries page (facebook video permalink, advertorial domain, blank,
+// or unparseable). Null => the caller should fall back to ad-name attribution.
+export function extractEverdriesPath(destUrl: string | null | undefined): string | null {
+  const u = (destUrl ?? "").trim();
+  if (!u) return null;
+  let host: string;
+  let path: string;
+  try {
+    const url = new URL(u);
+    host = url.hostname.toLowerCase();
+    path = url.pathname;
+  } catch {
+    return null;
+  }
+  if (!host.includes("everdries")) return null;
+  return path;
+}
+
+// Attribute a FB ad to a product family from its DESTINATION URL — the most
+// accurate signal, since ad names are sometimes wrong (Jasper 2026-06-26). The
+// URL is the coalesced landing page (Promoted post -> External -> catch-all
+// destination URL). Returns null when the URL names no product, so the caller
+// falls back to the ad-name prefix (attributeFbPrefix):
+//   - non-everdries host (facebook permalink, advertorial domain) -> null
+//   - advertorials / editorial pages (listicles, /pages/...) -> null
+//   - homepage "/" -> Brand / Homepage
+//
+// JASPER'S FUNNEL RULES (trusted, 2026-06-27, validated 100% per-ad vs their FB
+// report): /comfort & /comfortplus = the 9055 line; heavy-flow OG/HW pages AND
+// all free-gift pages actually sell 9055 HF. Keep this ordering — earlier rules
+// win (e.g. /heavyflow-og is 9055 HF, not OG).
+export function attributeUrlProduct(destUrl: string | null | undefined): FbAttribution | null {
+  const rawPath = extractEverdriesPath(destUrl);
+  if (rawPath === null) return null;
+  const p = rawPath.toLowerCase().replace(/\/+$/, "");
+  if (p === "" || p === "/") return { product: "Brand / Homepage", bucket: "brand" };
+
+  const product = (base: string): FbAttribution => ({ product: base, bucket: "product" });
+  const nineHf = (): FbAttribution => product("9055 HF");
+
+  // Advertorials / editorial pages name no product -> ad-name fallback.
+  if (/(listicle|live-?freely|leakproof-(panties|underwear)|reasons|postpartum|nighttime|^\/?pages\/)/.test(p)) {
+    return null;
+  }
+  // Jasper: heavy-flow OG/HW pages and all free-gift pages funnel to 9055 HF.
+  if (p.includes("heavyflow") && (p.includes("og") || p.includes("hw"))) return nineHf();
+  if (p.includes("gift")) return nineHf();
+  // /comfort, /comfortplus, /comfort-* = the 9055 line (/heavyflow-comfort = HF).
+  if (p.includes("comfort")) return p.includes("heavyflow") ? nineHf() : product("9055");
+  if (p.includes("boyshort")) return product("Boyshort"); // HF lumped (see attributeFbPrefix)
+  if (p.includes("shapewear")) return product("Shapewear");
+  if (p.includes("superhw") || p.includes("highwaist")) return product("Super High-Waist");
+  if (p.includes("highrise") || p.includes("high-rise")) return product("High Rise Short");
+  if (p.includes("lavender") || p.includes("og")) return product("OG");
+  if (/\bhw\b/.test(p) || p.includes("heavyflow")) return product("HW");
+  if (/(mens|boxer|brief|men-)/.test(p)) return product("Mens");
+  if (p.includes("clearance")) return { product: "Clearance / Mixed", bucket: "clearance" };
+  return null;
+}

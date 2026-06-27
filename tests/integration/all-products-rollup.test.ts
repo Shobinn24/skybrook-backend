@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
-import { adSpendDaily, applovinAdSpendDaily, dailySales, fbAdSpendDaily, rawPulls, skus } from "@/lib/db/schema";
+import { adSpendDaily, applovinAdSpendDaily, dailySales, fbAdSpendDaily, fbAdUrlMap, fbGeoSpend, rawPulls, skus } from "@/lib/db/schema";
 import { getAllProductsRollup, type AllProductsRow } from "@/lib/queries/performance";
 import "dotenv/config";
 
@@ -167,6 +167,52 @@ describe("getAllProductsRollup", () => {
     expect(bs.appLovinSpendUsd).toBe(30);
     expect(bs.spendUsd).toBe(350); // 320 + 30
     expect(bs.roas).toBeCloseTo(800 / 350, 4);
+  });
+
+  it("attributes FB spend URL-first (overriding the ad name) and splits US/non-US", async () => {
+    const pull = await seedPull();
+    const D = "2026-06-10";
+    await db.insert(skus).values([
+      { sku: "ev-9055-hf-5x-m", productName: "9055 HF", productLine: "Main", firstSeenAt: D, active: true },
+      { sku: "ev-shape-5x-m", productName: "Shapewear", productLine: "Sec", firstSeenAt: D, active: true },
+    ]);
+    await db.insert(dailySales).values([
+      { channel: "shopify_us", routedLocation: "US", sku: "ev-9055-hf-5x-m", salesDate: D, unitsSold: 10, netSalesUsd: "2200", productSalesUsd: "2000", ancillaryUsd: "200", sourcePullId: pull },
+    ]);
+    // Ad NAMED "(OG HF CC)" but its URL points to the 9055 HF page (Jasper's
+    // rule). A second ad has NO url-map row -> falls back to ad-name prefix.
+    await db.insert(fbAdSpendDaily).values([
+      { adNumber: "100", adName: "x", adNameRaw: "(OG HF CC) Ad 100 - x", adPrefix: "OG HF CC", adLink: null, marketers: [], spendDate: D, costUsd: "1000", sourcePullId: pull },
+      { adNumber: "200", adName: "y", adNameRaw: "(Shape CC) Ad 200 - y", adPrefix: "Shape CC", adLink: null, marketers: [], spendDate: D, costUsd: "500", sourcePullId: pull },
+    ]);
+    // URL map: ad 100 -> /heavyflow-og (Jasper: => 9055 HF). Ad 200 absent.
+    await db.insert(fbAdUrlMap).values([
+      { adId: "a100", adName: "(OG HF CC) Ad 100 - x", destUrl: "https://everdries.com/heavyflow-og", costUsd: "1000", sourcePullId: pull },
+    ]);
+    // Geo: ad 100 = 70% US. Global US fraction (only geo present) = 70%, so the
+    // url-less ad 200 inherits 70% via the global fallback.
+    await db.insert(fbGeoSpend).values([
+      { adId: "a100", countryCode: "US", costUsd: "700", sourcePullId: pull },
+      { adId: "a100", countryCode: "GB", costUsd: "300", sourcePullId: pull },
+    ]);
+
+    const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
+    const hf = find(res.rows, "9055 HF")!;
+    // $1000 reattributed from OG HF -> 9055 HF by the URL.
+    expect(hf.fbSpendUsd).toBe(1000);
+    expect(find(res.rows, "OG HF")).toBeUndefined();
+    // US split for ad 100: 70% of $1000.
+    expect(hf.fbUsSpendUsd).toBeCloseTo(700, 2);
+    expect(hf.fbNonUsSpendUsd).toBeCloseTo(300, 2);
+    // Ad 200 has no URL -> ad-name fallback to Shapewear; US via global 70%.
+    const shape = find(res.rows, "Shapewear")!;
+    expect(shape.fbSpendUsd).toBe(500);
+    expect(shape.fbUsSpendUsd).toBeCloseTo(350, 2);
+    expect(shape.fbNonUsSpendUsd).toBeCloseTo(150, 2);
+    // Totals reconcile: US + non-US = total FB; nothing leaks.
+    expect(res.totalFbSpendUsd).toBe(1500);
+    expect(res.totalFbUsSpendUsd + res.totalFbNonUsSpendUsd).toBeCloseTo(1500, 2);
+    expect(res.totalFbUsSpendUsd).toBeCloseTo(1050, 2);
   });
 
   it("surfaces an AppLovin-only family (no FB, no revenue) as a spend bucket", async () => {

@@ -22,6 +22,8 @@ export const sourceEnum = pgEnum("source", [
   "sheets_ad_spend",
   "sheets_fb_ads",
   "sheets_applovin",
+  "sheets_fb_geo",
+  "sheets_fb_url_map",
   "shopify_us",
   "shopify_intl",
 ]);
@@ -173,6 +175,43 @@ export const applovinAdSpendDaily = pgTable(
     sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
   },
   (t) => ({ pk: primaryKey({ columns: [t.product, t.spendDate] }) })
+);
+
+// FB per-ad delivery-country spend — a 30-day WINDOW SNAPSHOT (no date
+// dimension: a daily x country x ad-level Supermetrics query ScriptErrors the
+// interactive pull, so we pull a window total per ad x country). Full
+// delete-replace each ingest. Joined to fb_ad_url_map on ad_id to derive a
+// per-(ad_number, ad_prefix) US-vs-non-US fraction that getAllProductsRollup
+// applies to the date-flexible daily FB spend in fb_ad_spend_daily. country_code
+// is the 2-letter Meta delivery code ("US", "GB", ...); bucket US vs the rest.
+export const fbGeoSpend = pgTable(
+  "fb_geo_spend",
+  {
+    adId: text("ad_id").notNull(),
+    countryCode: text("country_code").notNull(),
+    costUsd: numeric("cost_usd", { precision: 14, scale: 4 }).notNull(),
+    sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.adId, t.countryCode] }) })
+);
+
+// FB per-ad destination URL map — a 30-day WINDOW SNAPSHOT, full delete-replace
+// each ingest. dest_url is the coalesced landing page (Promoted post dest URL ->
+// External dest URL -> catch-all Destination URL), null when an ad has no usable
+// website URL. ad_name carries the "(PREFIX) Ad NNN" tag, so getAllProductsRollup
+// derives (ad_number, ad_prefix) from it to apply URL-first attribution onto the
+// daily FB spend, with the ad-name prefix as fallback. cost_usd weights the
+// dominant URL when one (ad_number, ad_prefix) spans >1 ad_id (rare, ~0.16%).
+export const fbAdUrlMap = pgTable(
+  "fb_ad_url_map",
+  {
+    adId: text("ad_id").notNull(),
+    adName: text("ad_name").notNull(),
+    destUrl: text("dest_url"),
+    costUsd: numeric("cost_usd", { precision: 14, scale: 4 }).notNull(),
+    sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.adId] }) })
 );
 
 // Per-ad daily spend from the standalone "FB Ads Tracker" sheet (Sheet7
