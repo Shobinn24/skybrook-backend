@@ -201,18 +201,43 @@ describe("getAllProductsRollup", () => {
     // $1000 reattributed from OG HF -> 9055 HF by the URL.
     expect(hf.fbSpendUsd).toBe(1000);
     expect(find(res.rows, "OG HF")).toBeUndefined();
-    // US split for ad 100: 70% of $1000.
-    expect(hf.fbUsSpendUsd).toBeCloseTo(700, 2);
-    expect(hf.fbNonUsSpendUsd).toBeCloseTo(300, 2);
+    // US split for ad 100: 70% of $1000 (no AppLovin here, so us == FB us).
+    expect(hf.usSpendUsd).toBeCloseTo(700, 2);
+    expect(hf.nonUsSpendUsd).toBeCloseTo(300, 2);
     // Ad 200 has no URL -> ad-name fallback to Shapewear; US via global 70%.
     const shape = find(res.rows, "Shapewear")!;
     expect(shape.fbSpendUsd).toBe(500);
-    expect(shape.fbUsSpendUsd).toBeCloseTo(350, 2);
-    expect(shape.fbNonUsSpendUsd).toBeCloseTo(150, 2);
-    // Totals reconcile: US + non-US = total FB; nothing leaks.
+    expect(shape.usSpendUsd).toBeCloseTo(350, 2);
+    expect(shape.nonUsSpendUsd).toBeCloseTo(150, 2);
+    // Totals reconcile: US + non-US = total spend; nothing leaks.
     expect(res.totalFbSpendUsd).toBe(1500);
-    expect(res.totalFbUsSpendUsd + res.totalFbNonUsSpendUsd).toBeCloseTo(1500, 2);
-    expect(res.totalFbUsSpendUsd).toBeCloseTo(1050, 2);
+    expect(res.totalUsSpendUsd + res.totalNonUsSpendUsd).toBeCloseTo(1500, 2);
+    expect(res.totalUsSpendUsd).toBeCloseTo(1050, 2);
+  });
+
+  it("folds AppLovin country into the combined US/non-US split", async () => {
+    const pull = await seedPull();
+    const D = "2026-06-10";
+    await db.insert(skus).values([
+      { sku: "ev-9055-5x-m", productName: "Style 9055", productLine: "Main", firstSeenAt: D, active: true },
+    ]);
+    await db.insert(dailySales).values([
+      { channel: "shopify_us", routedLocation: "US", sku: "ev-9055-5x-m", salesDate: D, unitsSold: 10, netSalesUsd: "1100", productSalesUsd: "1000", ancillaryUsd: "100", sourcePullId: pull },
+    ]);
+    // AppLovin on 9055: 80 US + 20 GB, no FB. The split must reflect AppLovin's
+    // own country column (not just FB).
+    await db.insert(applovinAdSpendDaily).values([
+      { product: "9055", countryCode: "US", spendDate: D, costUsd: "80", sourcePullId: pull },
+      { product: "9055", countryCode: "GB", spendDate: D, costUsd: "20", sourcePullId: pull },
+    ]);
+    const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
+    const r = find(res.rows, "9055")!;
+    expect(r.appLovinSpendUsd).toBe(100);
+    expect(r.spendUsd).toBe(100);
+    expect(r.usSpendUsd).toBeCloseTo(80, 2);
+    expect(r.nonUsSpendUsd).toBeCloseTo(20, 2);
+    expect(res.totalUsSpendUsd).toBeCloseTo(80, 2);
+    expect(res.totalNonUsSpendUsd).toBeCloseTo(20, 2);
   });
 
   it("surfaces an AppLovin-only family (no FB, no revenue) as a spend bucket", async () => {

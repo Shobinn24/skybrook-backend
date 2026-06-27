@@ -399,9 +399,11 @@ export async function getPerformanceDataFreshness(): Promise<PerformanceDataFres
 // product (Jasper's funnel rules; validated 100% per-ad vs the client's FB
 // report), with the ad-name prefix as fallback — applied onto the date-flexible
 // daily fb_ad_spend_daily via the (ad_number, ad_prefix) key. The fb_geo_spend
-// snapshot adds a per-ad US-vs-non-US fraction (FB only — AppLovin has no geo
-// feed). AppLovin comes from its dedicated feed, attributed at ingest. Rows
-// expose fbSpendUsd/appLovinSpendUsd + fbUs/fbNonUs for the expand-to-see UI.
+// snapshot adds a per-ad US-vs-non-US fraction for FB; AppLovin contributes its
+// own country column (2026-06-27), so the US/non-US split now covers all ad
+// spend. AppLovin comes from its dedicated feed, attributed at ingest. Rows
+// expose fbSpendUsd/appLovinSpendUsd (platform) + usSpendUsd/nonUsSpendUsd
+// (region) for the expand-to-see UI.
 
 /** Map a skus.product_name to a canonical product family. MUST emit the same
  * labels as `attributeFbAd` so the revenue and spend sides join. HF split. */
@@ -446,10 +448,10 @@ export type AllProductsRow = {
   /** The split behind `spendUsd`, for the expand-to-see-split UI. */
   fbSpendUsd: number;
   appLovinSpendUsd: number;
-  /** US vs non-US split of the FB spend only. AppLovin has no geo feed, so its
-   * region is unknown and excluded from this split (fbUs + fbNonUs = fbSpend). */
-  fbUsSpendUsd: number;
-  fbNonUsSpendUsd: number;
+  /** US vs non-US split of total ad spend (FB geo fraction + AppLovin country).
+   * us + nonUs = spendUsd. */
+  usSpendUsd: number;
+  nonUsSpendUsd: number;
   /** revenue / combined spend. */
   roas: number | null;
 };
@@ -469,9 +471,9 @@ export type AllProductsResult = {
   totalSpendUsd: number;
   totalFbSpendUsd: number;
   totalAppLovinSpendUsd: number;
-  /** US vs non-US split of total FB spend (AppLovin excluded — no geo feed). */
-  totalFbUsSpendUsd: number;
-  totalFbNonUsSpendUsd: number;
+  /** US vs non-US split of total ad spend (FB + AppLovin). us + nonUs = totalSpend. */
+  totalUsSpendUsd: number;
+  totalNonUsSpendUsd: number;
 };
 
 const round4 = (n: number): number => Number(n.toFixed(4));
@@ -601,9 +603,12 @@ export async function getAllProductsRollup(opts: {
     )
     .groupBy(fbAdSpendDaily.adNumber, fbAdSpendDaily.adPrefix);
 
+  // US/non-US split spans BOTH FB (here, via the geo fraction) and AppLovin
+  // (below, from its own country column) — usByFamily/nonUsByFamily accumulate
+  // both so the row's split covers all ad spend, not just FB.
   const fbSpendByFamily = new Map<string, number>();
-  const fbUsByFamily = new Map<string, number>();
-  const fbNonUsByFamily = new Map<string, number>();
+  const usByFamily = new Map<string, number>();
+  const nonUsByFamily = new Map<string, number>();
   for (const r of spendRows) {
     const prefix = r.adPrefix ?? "";
     const key = keyOf(r.adNumber, prefix);
@@ -611,17 +616,18 @@ export async function getAllProductsRollup(opts: {
     const spend = Number(r.spend);
     const usFrac = usFractionForKey(key);
     fbSpendByFamily.set(product, (fbSpendByFamily.get(product) ?? 0) + spend);
-    fbUsByFamily.set(product, (fbUsByFamily.get(product) ?? 0) + spend * usFrac);
-    fbNonUsByFamily.set(product, (fbNonUsByFamily.get(product) ?? 0) + spend * (1 - usFrac));
+    usByFamily.set(product, (usByFamily.get(product) ?? 0) + spend * usFrac);
+    nonUsByFamily.set(product, (nonUsByFamily.get(product) ?? 0) + spend * (1 - usFrac));
   }
 
-  // --- Spend: AppLovin, from the dedicated feed (applovin_ad_spend_daily is
-  // already attributed to a product family at ingest, so just sum by
-  // product). Combined with FB per family below; the UI shows the combined
-  // number with an expand-to-see-the-split. ---
+  // --- Spend: AppLovin, from the dedicated feed (already attributed to a
+  // product family at ingest). Grouped by (product, country) so it folds into
+  // both the combined per-family total AND the US/non-US split. The UI shows
+  // the combined number with an expand-to-see-the-split. ---
   const alRows = await db
     .select({
       product: applovinAdSpendDaily.product,
+      country: applovinAdSpendDaily.countryCode,
       spend: sql<string>`coalesce(sum(${applovinAdSpendDaily.costUsd}), 0)`,
     })
     .from(applovinAdSpendDaily)
@@ -631,7 +637,7 @@ export async function getAllProductsRollup(opts: {
         lte(applovinAdSpendDaily.spendDate, rangeEnd),
       ),
     )
-    .groupBy(applovinAdSpendDaily.product);
+    .groupBy(applovinAdSpendDaily.product, applovinAdSpendDaily.countryCode);
   const appLovinSpendByFamily = new Map<string, number>();
   for (const r of alRows) {
     // AppLovin spend is attributed to a family at INGEST (unlike FB, which is
@@ -639,7 +645,12 @@ export async function getAllProductsRollup(opts: {
     // family-lump rule change keep the old label, so normalize the stored
     // label here to match current attribution (Boyshort HF -> Boyshort).
     const fam = normalizeStoredFamily(r.product);
-    appLovinSpendByFamily.set(fam, (appLovinSpendByFamily.get(fam) ?? 0) + Number(r.spend));
+    const spend = Number(r.spend);
+    appLovinSpendByFamily.set(fam, (appLovinSpendByFamily.get(fam) ?? 0) + spend);
+    // country "" (legacy rows pulled before the Country column) counts as
+    // non-US; self-heals as the live window re-ingests with real countries.
+    if (r.country === "US") usByFamily.set(fam, (usByFamily.get(fam) ?? 0) + spend);
+    else nonUsByFamily.set(fam, (nonUsByFamily.get(fam) ?? 0) + spend);
   }
 
   // --- Merge on family label (FB + AppLovin) ---
@@ -665,8 +676,8 @@ export async function getAllProductsRollup(opts: {
       spendUsd,
       fbSpendUsd,
       appLovinSpendUsd,
-      fbUsSpendUsd: round4(fbUsByFamily.get(fam) ?? 0),
-      fbNonUsSpendUsd: round4(fbNonUsByFamily.get(fam) ?? 0),
+      usSpendUsd: round4(usByFamily.get(fam) ?? 0),
+      nonUsSpendUsd: round4(nonUsByFamily.get(fam) ?? 0),
       // ROAS only meaningful for product rows; spend-only buckets
       // (brand/clearance/unmapped) have no attributed revenue by design.
       roas: kind === "product" && spendUsd > 0 ? revenueUsd / spendUsd : null,
@@ -691,11 +702,11 @@ export async function getAllProductsRollup(opts: {
     [...appLovinSpendByFamily.values()].reduce((s, v) => s + v, 0),
   );
   const totalSpendUsd = round4(totalFbSpendUsd + totalAppLovinSpendUsd);
-  const totalFbUsSpendUsd = round4(
-    [...fbUsByFamily.values()].reduce((s, v) => s + v, 0),
+  const totalUsSpendUsd = round4(
+    [...usByFamily.values()].reduce((s, v) => s + v, 0),
   );
-  const totalFbNonUsSpendUsd = round4(
-    [...fbNonUsByFamily.values()].reduce((s, v) => s + v, 0),
+  const totalNonUsSpendUsd = round4(
+    [...nonUsByFamily.values()].reduce((s, v) => s + v, 0),
   );
 
   return {
@@ -709,8 +720,8 @@ export async function getAllProductsRollup(opts: {
     totalSpendUsd,
     totalFbSpendUsd,
     totalAppLovinSpendUsd,
-    totalFbUsSpendUsd,
-    totalFbNonUsSpendUsd,
+    totalUsSpendUsd,
+    totalNonUsSpendUsd,
   };
 }
 

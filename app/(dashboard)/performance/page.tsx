@@ -22,26 +22,26 @@ function fmtRoas(n: number | null): string {
   return n.toFixed(2);
 }
 
-// Expandable spend breakdown: FB (with its US / non-US split) and AppLovin.
-// US/non-US is FB-only — AppLovin has no geo feed, so it's labelled region n/a.
+// Expandable spend breakdown: two independent cuts of the same spend — by
+// platform (FB / AppLovin) and by region (US / non-US, across both platforms).
 function SpendSplit({
   fb,
-  fbUs,
-  fbNonUs,
   al,
+  us,
+  nonUs,
 }: {
   fb: number;
-  fbUs: number;
-  fbNonUs: number;
   al: number;
+  us: number;
+  nonUs: number;
 }) {
   return (
     <div className="text-[10px] font-normal text-neutral-400">
-      FB {fmtMoney(fb)}{" "}
+      FB {fmtMoney(fb)}
+      {al > 0 && <> · AL {fmtMoney(al)}</>}
       <span className="text-neutral-300">
-        (US {fmtMoney(fbUs)} · non-US {fmtMoney(fbNonUs)})
+        {" "}· US {fmtMoney(us)} · non-US {fmtMoney(nonUs)}
       </span>
-      {al > 0 && <> · AL {fmtMoney(al)} (region n/a)</>}
     </div>
   );
 }
@@ -468,9 +468,9 @@ export default function PerformancePage() {
                         {showSpendSplit && (
                           <SpendSplit
                             fb={r.fbSpendUsd}
-                            fbUs={r.fbUsSpendUsd}
-                            fbNonUs={r.fbNonUsSpendUsd}
                             al={r.appLovinSpendUsd}
+                            us={r.usSpendUsd}
+                            nonUs={r.nonUsSpendUsd}
                           />
                         )}
                       </td>
@@ -503,9 +503,9 @@ export default function PerformancePage() {
                         {showSpendSplit && (
                           <SpendSplit
                             fb={r.fbSpendUsd}
-                            fbUs={r.fbUsSpendUsd}
-                            fbNonUs={r.fbNonUsSpendUsd}
                             al={r.appLovinSpendUsd}
+                            us={r.usSpendUsd}
+                            nonUs={r.nonUsSpendUsd}
                           />
                         )}
                       </td>
@@ -524,9 +524,9 @@ export default function PerformancePage() {
                     {showSpendSplit && (
                       <SpendSplit
                         fb={allQ.data.totalFbSpendUsd}
-                        fbUs={allQ.data.totalFbUsSpendUsd}
-                        fbNonUs={allQ.data.totalFbNonUsSpendUsd}
                         al={allQ.data.totalAppLovinSpendUsd}
+                        us={allQ.data.totalUsSpendUsd}
+                        nonUs={allQ.data.totalNonUsSpendUsd}
                       />
                     )}
                   </td>
@@ -546,8 +546,8 @@ export default function PerformancePage() {
             (use &ldquo;Show spend breakdown&rdquo; for the FB/AppLovin and
             US/non-US splits). FB spend is attributed by each ad&apos;s{" "}
             <strong>destination URL</strong> (the page it sends to), falling back
-            to the ad name when no URL is available; the US/non-US split is FB
-            only (AppLovin has no geo data). <em>Brand / Homepage</em> and{" "}
+            to the ad name when no URL is available. The US/non-US split now
+            covers both Facebook and AppLovin. <em>Brand / Homepage</em> and{" "}
             <em>Clearance / Mixed</em> are spend not tied to one product;{" "}
             <em>Unmapped</em> = ads with no recognized product page or name tag.
           </div>

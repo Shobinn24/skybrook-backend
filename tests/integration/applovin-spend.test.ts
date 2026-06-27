@@ -47,6 +47,20 @@ describe("parseApplovinSheet", () => {
     expect(skipped.some((s) => s.reason.includes("bad date"))).toBe(true);
   });
 
+  it("captures the Country column (4-col layout) and uppercases the code", () => {
+    const grid = [
+      ["Ad name", "Date", "Country", "Spend"],
+      ["hash_1 | 9055 | a", "2026-06-10", "us", "100"],
+      ["hash_2 | 9055 | b", "2026-06-10", "gb", "40"], // same product/date, diff country
+      ["hash_3 | 9055 | c", "2026-06-10", "us", "25"], // (9055, US, 06-10) -> 125
+    ];
+    const { aggregated } = parseApplovinSheet(grid);
+    const us = aggregated.find((a) => a.product === "9055" && a.countryCode === "US" && a.spendDate === "2026-06-10");
+    const gb = aggregated.find((a) => a.product === "9055" && a.countryCode === "GB" && a.spendDate === "2026-06-10");
+    expect(us!.costUsd).toBe(125);
+    expect(gb!.costUsd).toBe(40);
+  });
+
   it("returns nothing + a skip on an unexpected header", () => {
     const { aggregated, skipped } = parseApplovinSheet([["Foo", "Bar", "Baz"]]);
     expect(aggregated).toEqual([]);
@@ -71,19 +85,19 @@ describe("replaceApplovinSpendLiveWindow", () => {
     const live = await seedPull();
     await replaceApplovinSpendLiveWindow(
       [
-        { product: "HW", spendDate: "2026-06-10", costUsd: 99 },
-        { product: "9055", spendDate: "2026-06-11", costUsd: 40 },
+        { product: "HW", countryCode: "US", spendDate: "2026-06-10", costUsd: 99 },
+        { product: "9055", countryCode: "GB", spendDate: "2026-06-11", costUsd: 40 },
       ],
       live,
     );
     const rows = await db
-      .select({ product: applovinAdSpendDaily.product, spendDate: applovinAdSpendDaily.spendDate, costUsd: applovinAdSpendDaily.costUsd })
+      .select({ product: applovinAdSpendDaily.product, countryCode: applovinAdSpendDaily.countryCode, spendDate: applovinAdSpendDaily.spendDate, costUsd: applovinAdSpendDaily.costUsd })
       .from(applovinAdSpendDaily)
       .orderBy(applovinAdSpendDaily.spendDate, applovinAdSpendDaily.product);
     expect(rows).toEqual([
-      { product: "9055", spendDate: "2026-04-01", costUsd: "500.0000" },
-      { product: "HW", spendDate: "2026-06-10", costUsd: "99.0000" },
-      { product: "9055", spendDate: "2026-06-11", costUsd: "40.0000" },
+      { product: "9055", countryCode: "", spendDate: "2026-04-01", costUsd: "500.0000" }, // history (no country), survives
+      { product: "HW", countryCode: "US", spendDate: "2026-06-10", costUsd: "99.0000" },
+      { product: "9055", countryCode: "GB", spendDate: "2026-06-11", costUsd: "40.0000" },
     ]);
   });
 
