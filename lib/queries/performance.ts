@@ -1,8 +1,10 @@
 import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { adSpendDaily, applovinAdSpendDaily, dailySales, fbAdSpendDaily, rawPulls, skus } from "@/lib/db/schema";
+import { adSpendDaily, applovinAdSpendDaily, dailySales, fbAdSpendDaily, fbAdUrlMap, fbGeoSpend, rawPulls, skus } from "@/lib/db/schema";
 import {
   attributeFbPrefix,
+  attributeUrlProduct,
+  extractFbPrefix,
   type FbBucket,
 } from "@/lib/domain/fb-product-attribution";
 import { AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA } from "@/lib/sources/sheets";
@@ -387,16 +389,19 @@ export async function getPerformanceDataFreshness(): Promise<PerformanceDataFres
 // All-products rollup (the /performance "All products" toggle)
 // ============================================================================
 // Unlike the focus view (4 hand-configured products), this rolls up EVERY
-// product: revenue grouped by product family (from skus.product_name) using
-// the EXACT product revenue column, and ad spend attributed from the FB
-// ad-name (PREFIX). Spend that isn't a product (HOME / Clearance / Unmapped)
-// surfaces as its own buckets; shipping/tax/tips (ancillary) is reported as a
+// product: revenue grouped by product family (from skus.product_name) using the
+// EXACT product revenue column. Spend that isn't a product (HOME / Clearance /
+// Unmapped) surfaces as its own buckets; shipping/tax/tips (ancillary) is a
 // single separate line so product revenue ties to Shopify's by-product figure.
 //
-// Spend = combined FB + AppLovin per family (2026-06-26). FB is attributed at
-// read time from the ad-name prefix; AppLovin comes from its dedicated feed
-// (applovin_ad_spend_daily), already attributed at ingest. The row exposes the
-// FB/AppLovin split (fbSpendUsd/appLovinSpendUsd) for the expand-to-see UI.
+// Spend = combined FB + AppLovin per family. FB is attributed URL-FIRST
+// (2026-06-27): the fb_ad_url_map snapshot maps each ad's destination URL ->
+// product (Jasper's funnel rules; validated 100% per-ad vs the client's FB
+// report), with the ad-name prefix as fallback — applied onto the date-flexible
+// daily fb_ad_spend_daily via the (ad_number, ad_prefix) key. The fb_geo_spend
+// snapshot adds a per-ad US-vs-non-US fraction (FB only — AppLovin has no geo
+// feed). AppLovin comes from its dedicated feed, attributed at ingest. Rows
+// expose fbSpendUsd/appLovinSpendUsd + fbUs/fbNonUs for the expand-to-see UI.
 
 /** Map a skus.product_name to a canonical product family. MUST emit the same
  * labels as `attributeFbAd` so the revenue and spend sides join. HF split. */
@@ -441,6 +446,10 @@ export type AllProductsRow = {
   /** The split behind `spendUsd`, for the expand-to-see-split UI. */
   fbSpendUsd: number;
   appLovinSpendUsd: number;
+  /** US vs non-US split of the FB spend only. AppLovin has no geo feed, so its
+   * region is unknown and excluded from this split (fbUs + fbNonUs = fbSpend). */
+  fbUsSpendUsd: number;
+  fbNonUsSpendUsd: number;
   /** revenue / combined spend. */
   roas: number | null;
 };
@@ -460,6 +469,9 @@ export type AllProductsResult = {
   totalSpendUsd: number;
   totalFbSpendUsd: number;
   totalAppLovinSpendUsd: number;
+  /** US vs non-US split of total FB spend (AppLovin excluded — no geo feed). */
+  totalFbUsSpendUsd: number;
+  totalFbNonUsSpendUsd: number;
 };
 
 const round4 = (n: number): number => Number(n.toFixed(4));
@@ -497,13 +509,86 @@ export async function getAllProductsRollup(opts: {
     ancillaryUsd += Number(r.anc);
   }
 
-  // --- Spend: FB, attributed by the variant product prefix ---
-  // Grouped by ad_prefix (the per-variant grain) so an ad run under both a
-  // product and (HOME US BAU) splits correctly instead of the dominant
-  // product absorbing the homepage spend. ad_prefix is the inner "(...)"
-  // text, so we attribute via attributeFbPrefix directly.
+  // --- URL-first attribution overlay (from the 30-day snapshot feeds) ---
+  // fb_ad_url_map maps each ad's destination URL -> product; fb_geo_spend gives
+  // its US-vs-non-US split. Both are keyed by Meta Ad ID, but the daily spend
+  // (fb_ad_spend_daily) is keyed by (ad_number, ad_prefix), so we collapse the
+  // snapshot to that grain via the ad name. An ad's URL/product is stable, so
+  // applying the current snapshot to historical daily spend is correct (matches
+  // Jasper's "current funnels" intent). URL names a product -> use it; else
+  // fall back to the ad-name prefix (attributeFbPrefix), validated 100% per-ad
+  // against the client's FB report (2026-06-27).
+  const AD_NUMBER_RE = /\b(?:Ad|DCA)\s+(\d+)\b/;
+  const keyOf = (num: string, prefix: string) => `${num}${prefix}`;
+
+  const urlMapRows = await db
+    .select({
+      adId: fbAdUrlMap.adId,
+      adName: fbAdUrlMap.adName,
+      destUrl: fbAdUrlMap.destUrl,
+      cost: fbAdUrlMap.costUsd,
+    })
+    .from(fbAdUrlMap);
+  // (ad_number, ad_prefix) -> product label -> weighting cost (dominant wins
+  // when one key spans >1 ad_id, ~0.16% of spend). Ad ID -> key so geo can roll up.
+  const urlProductVotes = new Map<string, Map<string, number>>();
+  const adIdToKey = new Map<string, string>();
+  for (const r of urlMapRows) {
+    const name = r.adName ?? "";
+    const m = name.match(AD_NUMBER_RE);
+    if (!m) continue;
+    const key = keyOf(m[1], extractFbPrefix(name));
+    adIdToKey.set(r.adId, key);
+    const a = attributeUrlProduct(r.destUrl);
+    if (!a) continue; // URL names no product -> no vote; key falls back to ad name
+    const votes = urlProductVotes.get(key) ?? new Map<string, number>();
+    votes.set(a.product, (votes.get(a.product) ?? 0) + (Number(r.cost) || 0));
+    urlProductVotes.set(key, votes);
+  }
+  const urlProductByKey = new Map<string, string>();
+  for (const [key, votes] of urlProductVotes) {
+    let best = "";
+    let bestCost = -1;
+    for (const [prod, c] of votes) {
+      if (c > bestCost) {
+        best = prod;
+        bestCost = c;
+      }
+    }
+    urlProductByKey.set(key, best);
+  }
+
+  // Geo -> per-key US fraction (+ a global fallback for daily spend whose ad is
+  // not in the URL-map snapshot, e.g. ads outside the 30-day window).
+  const geoRows = await db
+    .select({ adId: fbGeoSpend.adId, country: fbGeoSpend.countryCode, cost: fbGeoSpend.costUsd })
+    .from(fbGeoSpend);
+  const usByKey = new Map<string, number>();
+  const totByKey = new Map<string, number>();
+  let geoUs = 0;
+  let geoTot = 0;
+  for (const r of geoRows) {
+    const c = Number(r.cost) || 0;
+    geoTot += c;
+    if (r.country === "US") geoUs += c;
+    const key = adIdToKey.get(r.adId);
+    if (!key) continue;
+    totByKey.set(key, (totByKey.get(key) ?? 0) + c);
+    if (r.country === "US") usByKey.set(key, (usByKey.get(key) ?? 0) + c);
+  }
+  const globalUsFraction = geoTot > 0 ? geoUs / geoTot : 0;
+  const usFractionForKey = (key: string): number => {
+    const tot = totByKey.get(key);
+    if (!tot || tot <= 0) return globalUsFraction;
+    return (usByKey.get(key) ?? 0) / tot;
+  };
+
+  // --- Spend: FB, grouped by (ad_number, ad_prefix) so the variant grain (the
+  // HOME-undercount fix) survives, attributed URL-first with ad-name fallback,
+  // and split US/non-US by the per-ad geo fraction. ---
   const spendRows = await db
     .select({
+      adNumber: fbAdSpendDaily.adNumber,
       adPrefix: fbAdSpendDaily.adPrefix,
       spend: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}), 0)`,
     })
@@ -514,12 +599,20 @@ export async function getAllProductsRollup(opts: {
         lte(fbAdSpendDaily.spendDate, rangeEnd),
       ),
     )
-    .groupBy(fbAdSpendDaily.adPrefix);
+    .groupBy(fbAdSpendDaily.adNumber, fbAdSpendDaily.adPrefix);
 
   const fbSpendByFamily = new Map<string, number>();
+  const fbUsByFamily = new Map<string, number>();
+  const fbNonUsByFamily = new Map<string, number>();
   for (const r of spendRows) {
-    const a = attributeFbPrefix(r.adPrefix ?? "");
-    fbSpendByFamily.set(a.product, (fbSpendByFamily.get(a.product) ?? 0) + Number(r.spend));
+    const prefix = r.adPrefix ?? "";
+    const key = keyOf(r.adNumber, prefix);
+    const product = urlProductByKey.get(key) ?? attributeFbPrefix(prefix).product;
+    const spend = Number(r.spend);
+    const usFrac = usFractionForKey(key);
+    fbSpendByFamily.set(product, (fbSpendByFamily.get(product) ?? 0) + spend);
+    fbUsByFamily.set(product, (fbUsByFamily.get(product) ?? 0) + spend * usFrac);
+    fbNonUsByFamily.set(product, (fbNonUsByFamily.get(product) ?? 0) + spend * (1 - usFrac));
   }
 
   // --- Spend: AppLovin, from the dedicated feed (applovin_ad_spend_daily is
@@ -572,6 +665,8 @@ export async function getAllProductsRollup(opts: {
       spendUsd,
       fbSpendUsd,
       appLovinSpendUsd,
+      fbUsSpendUsd: round4(fbUsByFamily.get(fam) ?? 0),
+      fbNonUsSpendUsd: round4(fbNonUsByFamily.get(fam) ?? 0),
       // ROAS only meaningful for product rows; spend-only buckets
       // (brand/clearance/unmapped) have no attributed revenue by design.
       roas: kind === "product" && spendUsd > 0 ? revenueUsd / spendUsd : null,
@@ -596,6 +691,12 @@ export async function getAllProductsRollup(opts: {
     [...appLovinSpendByFamily.values()].reduce((s, v) => s + v, 0),
   );
   const totalSpendUsd = round4(totalFbSpendUsd + totalAppLovinSpendUsd);
+  const totalFbUsSpendUsd = round4(
+    [...fbUsByFamily.values()].reduce((s, v) => s + v, 0),
+  );
+  const totalFbNonUsSpendUsd = round4(
+    [...fbNonUsByFamily.values()].reduce((s, v) => s + v, 0),
+  );
 
   return {
     rangeDays: opts.rangeDays,
@@ -608,6 +709,8 @@ export async function getAllProductsRollup(opts: {
     totalSpendUsd,
     totalFbSpendUsd,
     totalAppLovinSpendUsd,
+    totalFbUsSpendUsd,
+    totalFbNonUsSpendUsd,
   };
 }
 

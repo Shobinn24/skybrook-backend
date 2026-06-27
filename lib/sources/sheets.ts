@@ -10,4 +10,6 @@ export * from "./sheets/incoming";
 export * from "./sheets/ad-spend";
 export * from "./sheets/fb-ads";
 export * from "./sheets/applovin";
+export * from "./sheets/fb-geo-spend";
+export * from "./sheets/fb-ad-url-map";
 export * from "./sheets/bulk-order";

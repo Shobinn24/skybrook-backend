@@ -22,6 +22,30 @@ function fmtRoas(n: number | null): string {
   return n.toFixed(2);
 }
 
+// Expandable spend breakdown: FB (with its US / non-US split) and AppLovin.
+// US/non-US is FB-only — AppLovin has no geo feed, so it's labelled region n/a.
+function SpendSplit({
+  fb,
+  fbUs,
+  fbNonUs,
+  al,
+}: {
+  fb: number;
+  fbUs: number;
+  fbNonUs: number;
+  al: number;
+}) {
+  return (
+    <div className="text-[10px] font-normal text-neutral-400">
+      FB {fmtMoney(fb)}{" "}
+      <span className="text-neutral-300">
+        (US {fmtMoney(fbUs)} · non-US {fmtMoney(fbNonUs)})
+      </span>
+      {al > 0 && <> · AL {fmtMoney(al)} (region n/a)</>}
+    </div>
+  );
+}
+
 // Shorten Supermetrics tab names for the spend breakdown — operators just
 // want to see "FB" vs "AL", not the full per-product tab title.
 function shortTabLabel(tab: string): string {
@@ -417,7 +441,7 @@ export default function PerformancePage() {
               onClick={() => setShowSpendSplit((s) => !s)}
               className="text-xs text-neutral-600 underline hover:text-neutral-900"
             >
-              {showSpendSplit ? "Hide FB / AppLovin split" : "Show FB / AppLovin split"}
+              {showSpendSplit ? "Hide spend breakdown" : "Show spend breakdown (FB/AppLovin · US/non-US)"}
             </button>
           </div>
           <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
@@ -442,9 +466,12 @@ export default function PerformancePage() {
                       <td className="px-4 py-2 text-right tabular-nums text-neutral-900">
                         {fmtMoney(r.spendUsd)}
                         {showSpendSplit && (
-                          <div className="text-[10px] font-normal text-neutral-400">
-                            FB {fmtMoney(r.fbSpendUsd)} · AL {fmtMoney(r.appLovinSpendUsd)}
-                          </div>
+                          <SpendSplit
+                            fb={r.fbSpendUsd}
+                            fbUs={r.fbUsSpendUsd}
+                            fbNonUs={r.fbNonUsSpendUsd}
+                            al={r.appLovinSpendUsd}
+                          />
                         )}
                       </td>
                       <td className="px-4 py-2 text-right tabular-nums font-medium text-neutral-900">
@@ -474,9 +501,12 @@ export default function PerformancePage() {
                       <td className="px-4 py-2 text-right tabular-nums">
                         {fmtMoney(r.spendUsd)}
                         {showSpendSplit && (
-                          <div className="text-[10px] font-normal text-neutral-400">
-                            FB {fmtMoney(r.fbSpendUsd)} · AL {fmtMoney(r.appLovinSpendUsd)}
-                          </div>
+                          <SpendSplit
+                            fb={r.fbSpendUsd}
+                            fbUs={r.fbUsSpendUsd}
+                            fbNonUs={r.fbNonUsSpendUsd}
+                            al={r.appLovinSpendUsd}
+                          />
                         )}
                       </td>
                       <td className="px-4 py-2 text-right text-neutral-400">—</td>
@@ -492,10 +522,12 @@ export default function PerformancePage() {
                   <td className="px-4 py-2 text-right tabular-nums">
                     {fmtMoney(allQ.data.totalSpendUsd)}
                     {showSpendSplit && (
-                      <div className="text-[10px] font-normal text-neutral-500">
-                        FB {fmtMoney(allQ.data.totalFbSpendUsd)} · AL{" "}
-                        {fmtMoney(allQ.data.totalAppLovinSpendUsd)}
-                      </div>
+                      <SpendSplit
+                        fb={allQ.data.totalFbSpendUsd}
+                        fbUs={allQ.data.totalFbUsSpendUsd}
+                        fbNonUs={allQ.data.totalFbNonUsSpendUsd}
+                        al={allQ.data.totalAppLovinSpendUsd}
+                      />
                     )}
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums font-medium">
@@ -511,11 +543,13 @@ export default function PerformancePage() {
             <strong>All products:</strong> revenue is exact product sales
             (shipping &amp; tax broken out as its own line) summed from{" "}
             <code>daily_sales</code>; ad spend is Facebook + AppLovin combined
-            (use &ldquo;Show FB / AppLovin split&rdquo; for the breakdown),
-            attributed by the ad-name product tag. <em>Brand / Homepage</em> and{" "}
+            (use &ldquo;Show spend breakdown&rdquo; for the FB/AppLovin and
+            US/non-US splits). FB spend is attributed by each ad&apos;s{" "}
+            <strong>destination URL</strong> (the page it sends to), falling back
+            to the ad name when no URL is available; the US/non-US split is FB
+            only (AppLovin has no geo data). <em>Brand / Homepage</em> and{" "}
             <em>Clearance / Mixed</em> are spend not tied to one product;{" "}
-            <em>Unmapped</em> = ads whose name has no recognized product tag
-            (rename the ad to clear it).
+            <em>Unmapped</em> = ads with no recognized product page or name tag.
           </div>
         </>
       )}

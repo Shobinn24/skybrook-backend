@@ -50,6 +50,10 @@ const TABLE_DASHBOARDS: Record<string, DashboardRoute[]> = {
   fb_ad_spend_daily: ["/performance", "/fb-ads", "/bonus-tracker"],
   // AppLovin feed folded into the All-products view's combined spend.
   applovin_ad_spend_daily: ["/performance"],
+  // FB URL map + geo feeds drive the All-products view's URL-first attribution
+  // and US/non-US split (getAllProductsRollup).
+  fb_ad_url_map: ["/performance"],
+  fb_geo_spend: ["/performance"],
   // velocity-range (queries/velocity-range.ts) reads daily_sales and is
   // pulled into inventory.ts (→ /inventory, /overstock), plus direct
   // reads in performance / sku-detail / sustainability / factory-order-calc.
@@ -75,6 +79,8 @@ const SOURCE_TABLES: Record<string, string[]> = {
   sheets_ad_spend: ["ad_spend_daily"],
   sheets_fb_ads: ["fb_ad_spend_daily"],
   sheets_applovin: ["applovin_ad_spend_daily"],
+  sheets_fb_geo: ["fb_geo_spend"],
+  sheets_fb_url_map: ["fb_ad_url_map"],
   shopify_us: ["daily_sales"],
   shopify_intl: ["daily_sales"],
 };

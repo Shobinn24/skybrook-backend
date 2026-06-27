@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   attributeAppLovinAd,
   attributeFbAd,
+  attributeUrlProduct,
 } from "@/lib/domain/fb-product-attribution";
 
 describe("attributeFbAd", () => {
@@ -58,5 +59,56 @@ describe("attributeAppLovinAd", () => {
     const r = attributeAppLovinAd(name);
     expect(r.product).toBe(product);
     expect(r.bucket).toBe(bucket);
+  });
+});
+
+describe("attributeUrlProduct", () => {
+  // URL (with tracking query string) -> product family, or null (fall back to ad name).
+  const cases: Array<[string, string | null]> = [
+    // comfort / comfortplus = the 9055 line (confirmed vs Scott's URL column)
+    ["https://everdries.com/comfortplus?nbt=x", "9055"],
+    ["https://www.everdries.com/comfort", "9055"],
+    ["https://everdries.com/comfort-pastel", "9055"],
+    ["https://everdries.com/heavyflow-comfort", "9055 HF"],
+    // JASPER: heavy-flow OG/HW + free gifts all funnel to 9055 HF
+    ["https://everdries.com/heavyflow-og", "9055 HF"],
+    ["https://everdries.com/heavyflow-og-int", "9055 HF"],
+    ["https://everdries.com/heavyflow-hw", "9055 HF"],
+    ["https://everdries.com/gifts-og", "9055 HF"],
+    ["https://everdries.com/gifts-hw-int", "9055 HF"],
+    ["https://everdries.com/freegifts", "9055 HF"],
+    // straightforward product pages
+    ["https://www.everdries.com/boyshort", "Boyshort"],
+    ["https://everdries.com/heavyflow-boyshort", "Boyshort"], // HF lumped
+    ["https://shop.everdries.com/shapewear", "Shapewear"],
+    ["https://everdries.com/superhw", "Super High-Waist"],
+    ["https://everdries.com/highrise-shorts", "High Rise Short"],
+    ["https://everdries.com/lavender", "OG"],
+    ["https://everdries.com/boxer-briefs-adv", "Mens"],
+    ["https://everdries.com/mens", "Mens"],
+    ["https://everdries.com/clearance", "Clearance / Mixed"],
+    ["https://everdries.com/", "Brand / Homepage"],
+    ["https://everdries.com", "Brand / Homepage"],
+    // advertorials / editorial -> null (ad-name fallback)
+    ["https://everdries.com/nighttime-listicle", null],
+    ["https://everdries.com/live-freely", null],
+    ["https://everdries.com/mens-incontinence", "Mens"], // names a product
+    ["https://everdries.com/pages/8-reasons-women-ditching-pads", null],
+    // non-everdries -> null (fall back to ad name)
+    ["https://www.facebook.com/1581/videos/1445", null],
+    ["https://www.facebook.com/reel/1485/", null],
+    ["https://womansdailynews.com/some-advertorial", null],
+    ["", null],
+    ["not-a-url", null],
+  ];
+  it.each(cases)("%s -> %s", (url, expected) => {
+    const r = attributeUrlProduct(url);
+    expect(r === null ? null : r.product).toBe(expected);
+  });
+
+  it("tags homepage as brand bucket and products as product bucket", () => {
+    expect(attributeUrlProduct("https://everdries.com/")?.bucket).toBe("brand");
+    expect(attributeUrlProduct("https://everdries.com/comfortplus")?.bucket).toBe("product");
+    expect(attributeUrlProduct("https://everdries.com/clearance")?.bucket).toBe("clearance");
   });
 });
