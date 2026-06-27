@@ -159,22 +159,25 @@ export const adSpendDaily = pgTable(
 
 // Daily AppLovin (Axon) ad spend per product family, sourced from the
 // dedicated "AppLovin Live" Supermetrics sheet (3-account profile, long
-// format: Ad name | Date | Spend). Unlike ad_spend_daily (one row per sheet
-// TAB), AppLovin carries the product inside the ad name's pipe segment, so
-// the ingest attributes each ad to a product family (attributeAppLovinAd)
-// and aggregates to (product, spend_date) here. `product` is a canonical
-// family label ("9055", "HW", "Clearance / Mixed", "Unmapped", ...) — the
-// same labels getAllProductsRollup uses, so the all-products view can add
-// AppLovin alongside FB. Windowed delete-replace per ingest.
+// format: Ad name | Date | Country | Spend). Unlike ad_spend_daily (one row per
+// sheet TAB), AppLovin carries the product inside the ad name's pipe segment, so
+// the ingest attributes each ad to a product family (attributeAppLovinAd) and
+// aggregates to (product, country_code, spend_date) here. `product` is a
+// canonical family label ("9055", "HW", "Clearance / Mixed", "Unmapped", ...) —
+// the same labels getAllProductsRollup uses. country_code is the 2-letter Meta/
+// AXON delivery code (uppercased; "" for legacy rows pulled before the Country
+// column was added 2026-06-27) so the all-products view can split AppLovin
+// US-vs-non-US alongside FB. Windowed delete-replace per ingest.
 export const applovinAdSpendDaily = pgTable(
   "applovin_ad_spend_daily",
   {
     product: text("product").notNull(),
+    countryCode: text("country_code").notNull().default(""),
     spendDate: date("spend_date").notNull(),
     costUsd: numeric("cost_usd", { precision: 14, scale: 4 }).notNull(),
     sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
   },
-  (t) => ({ pk: primaryKey({ columns: [t.product, t.spendDate] }) })
+  (t) => ({ pk: primaryKey({ columns: [t.product, t.countryCode, t.spendDate] }) })
 );
 
 // FB per-ad delivery-country spend — a 30-day WINDOW SNAPSHOT (no date
