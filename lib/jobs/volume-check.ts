@@ -35,6 +35,7 @@ type Source =
   | "sheets_applovin"
   | "sheets_fb_geo"
   | "sheets_fb_url_map"
+  | "sheets_fb_product_map"
   | "shopify_us"
   | "shopify_intl";
 
@@ -75,6 +76,10 @@ export const VOLUME_MONITORS: ReadonlyArray<VolumeMonitor> = [
   // column for a freshness check.)
   { source: "sheets_fb_geo", floorFraction: 0.5, minHistory: 5 },
   { source: "sheets_fb_url_map", floorFraction: 0.5, minHistory: 5 },
+  // FB product map: row_count = mapped URLs in Jasper's sheet. Grows slowly as
+  // funnels are added; loose floor catches an empty/broken pull (which would
+  // zero the lookup table and drop all FB attribution to ad-name fallback).
+  { source: "sheets_fb_product_map", floorFraction: 0.5, minHistory: 5 },
 ];
 
 // How many prior successful pulls to fold into the baseline median.

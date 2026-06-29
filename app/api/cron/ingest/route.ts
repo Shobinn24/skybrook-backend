@@ -18,6 +18,7 @@ import {
   sheetsApplovinRunner,
   sheetsFbAdsRunner,
   sheetsFbGeoRunner,
+  sheetsFbProductMapRunner,
   sheetsFbUrlMapRunner,
   sheetsIncomingRunner,
   sheetsInventoryRunner,
@@ -41,6 +42,7 @@ const SOURCES: Partial<Record<SourceKey, SourceRunner>> = {
   sheets_applovin: sheetsApplovinRunner,
   sheets_fb_geo: sheetsFbGeoRunner,
   sheets_fb_url_map: sheetsFbUrlMapRunner,
+  sheets_fb_product_map: sheetsFbProductMapRunner,
   shopify_us: shopifyUsRunner,
   shopify_intl: shopifyIntlRunner,
 };

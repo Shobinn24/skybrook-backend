@@ -29,6 +29,7 @@ const SOURCES = [
   "sheets_applovin",
   "sheets_fb_geo",
   "sheets_fb_url_map",
+  "sheets_fb_product_map",
   "shopify_us",
   "shopify_intl",
 ] as const;
