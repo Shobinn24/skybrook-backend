@@ -24,6 +24,7 @@ export const sourceEnum = pgEnum("source", [
   "sheets_applovin",
   "sheets_fb_geo",
   "sheets_fb_url_map",
+  "sheets_fb_product_map",
   "shopify_us",
   "shopify_intl",
 ]);
@@ -215,6 +216,26 @@ export const fbAdUrlMap = pgTable(
     sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
   },
   (t) => ({ pk: primaryKey({ columns: [t.adId] }) })
+);
+
+// Jasper-maintained "FB Product Map" sheet (URL | US/INTL | Product). The
+// single source of truth for All-products FB attribution: each landing URL
+// -> product family + funnel region (everdries.com = US, shop.everdries.com =
+// INTL). getAllProductsRollup looks each ad's normalized dest_url up here for
+// BOTH product and region; misses fall back to ad-name + geo and are surfaced
+// by the fb-url-coverage check so Jasper knows what to add. Window snapshot:
+// full delete-replace each ingest. normalized_url is the lookup key (see
+// normalizeFunnelUrl); raw_url is kept for display.
+export const fbProductMap = pgTable(
+  "fb_product_map",
+  {
+    normalizedUrl: text("normalized_url").notNull(),
+    rawUrl: text("raw_url").notNull(),
+    region: text("region").notNull(), // "US" | "INTL"
+    productLabel: text("product_label").notNull(),
+    sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.normalizedUrl] }) })
 );
 
 // Per-ad daily spend from the standalone "FB Ads Tracker" sheet (Sheet7
