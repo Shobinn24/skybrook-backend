@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
-import { adSpendDaily, applovinAdSpendDaily, dailySales, fbAdSpendDaily, fbAdUrlMap, fbGeoSpend, rawPulls, skus } from "@/lib/db/schema";
+import { adSpendDaily, applovinAdSpendDaily, dailySales, fbAdSpendDaily, fbAdUrlMap, fbGeoSpend, fbProductMap, rawPulls, skus } from "@/lib/db/schema";
 import { getAllProductsRollup, type AllProductsRow } from "@/lib/queries/performance";
 import "dotenv/config";
 
@@ -185,12 +185,17 @@ describe("getAllProductsRollup", () => {
       { adNumber: "100", adName: "x", adNameRaw: "(OG HF CC) Ad 100 - x", adPrefix: "OG HF CC", adLink: null, marketers: [], spendDate: D, costUsd: "1000", sourcePullId: pull },
       { adNumber: "200", adName: "y", adNameRaw: "(Shape CC) Ad 200 - y", adPrefix: "Shape CC", adLink: null, marketers: [], spendDate: D, costUsd: "500", sourcePullId: pull },
     ]);
-    // URL map: ad 100 -> /heavyflow-og (Jasper: => 9055 HF). Ad 200 absent.
+    // URL map: ad 100 -> /heavyflow-og. Ad 200 absent (ad-name fallback).
     await db.insert(fbAdUrlMap).values([
       { adId: "a100", adName: "(OG HF CC) Ad 100 - x", destUrl: "https://everdries.com/heavyflow-og", costUsd: "1000", sourcePullId: pull },
     ]);
+    // Product map: /heavyflow-og -> 9055 HF, US funnel (so ad 100 is 100% US by
+    // the sheet, NOT by geo). Ad 200's URL is unmapped -> geo fallback.
+    await db.insert(fbProductMap).values([
+      { normalizedUrl: "everdries.com/heavyflow-og", rawUrl: "https://everdries.com/heavyflow-og", region: "US", productLabel: "9055 HF", sourcePullId: pull },
+    ]);
     // Geo: ad 100 = 70% US. Global US fraction (only geo present) = 70%, so the
-    // url-less ad 200 inherits 70% via the global fallback.
+    // url-unmapped ad 200 inherits 70% via the global fallback.
     await db.insert(fbGeoSpend).values([
       { adId: "a100", countryCode: "US", costUsd: "700", sourcePullId: pull },
       { adId: "a100", countryCode: "GB", costUsd: "300", sourcePullId: pull },
@@ -198,13 +203,13 @@ describe("getAllProductsRollup", () => {
 
     const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
     const hf = find(res.rows, "9055 HF")!;
-    // $1000 reattributed from OG HF -> 9055 HF by the URL.
+    // $1000 reattributed from OG HF -> 9055 HF by the URL (product map).
     expect(hf.fbSpendUsd).toBe(1000);
     expect(find(res.rows, "OG HF")).toBeUndefined();
-    // US split for ad 100: 70% of $1000 (no AppLovin here, so us == FB us).
-    expect(hf.usSpendUsd).toBeCloseTo(700, 2);
-    expect(hf.nonUsSpendUsd).toBeCloseTo(300, 2);
-    // Ad 200 has no URL -> ad-name fallback to Shapewear; US via global 70%.
+    // Region is the sheet's funnel (US) -> binary 100% US, not the geo 70%.
+    expect(hf.usSpendUsd).toBeCloseTo(1000, 2);
+    expect(hf.nonUsSpendUsd).toBeCloseTo(0, 2);
+    // Ad 200 has no URL -> ad-name fallback to Shapewear; US via global geo 70%.
     const shape = find(res.rows, "Shapewear")!;
     expect(shape.fbSpendUsd).toBe(500);
     expect(shape.usSpendUsd).toBeCloseTo(350, 2);
@@ -212,7 +217,7 @@ describe("getAllProductsRollup", () => {
     // Totals reconcile: US + non-US = total spend; nothing leaks.
     expect(res.totalFbSpendUsd).toBe(1500);
     expect(res.totalUsSpendUsd + res.totalNonUsSpendUsd).toBeCloseTo(1500, 2);
-    expect(res.totalUsSpendUsd).toBeCloseTo(1050, 2);
+    expect(res.totalUsSpendUsd).toBeCloseTo(1350, 2);
   });
 
   it("folds AppLovin country into the combined US/non-US split", async () => {

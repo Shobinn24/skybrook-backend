@@ -1,10 +1,10 @@
 import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { adSpendDaily, applovinAdSpendDaily, dailySales, fbAdSpendDaily, fbAdUrlMap, fbGeoSpend, rawPulls, skus } from "@/lib/db/schema";
+import { adSpendDaily, applovinAdSpendDaily, dailySales, fbAdSpendDaily, fbAdUrlMap, fbGeoSpend, fbProductMap, rawPulls, skus } from "@/lib/db/schema";
 import {
   attributeFbPrefix,
-  attributeUrlProduct,
   extractFbPrefix,
+  normalizeFunnelUrl,
   type FbBucket,
 } from "@/lib/domain/fb-product-attribution";
 import { AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA } from "@/lib/sources/sheets";
@@ -511,15 +511,16 @@ export async function getAllProductsRollup(opts: {
     ancillaryUsd += Number(r.anc);
   }
 
-  // --- URL-first attribution overlay (from the 30-day snapshot feeds) ---
-  // fb_ad_url_map maps each ad's destination URL -> product; fb_geo_spend gives
-  // its US-vs-non-US split. Both are keyed by Meta Ad ID, but the daily spend
-  // (fb_ad_spend_daily) is keyed by (ad_number, ad_prefix), so we collapse the
-  // snapshot to that grain via the ad name. An ad's URL/product is stable, so
-  // applying the current snapshot to historical daily spend is correct (matches
-  // Jasper's "current funnels" intent). URL names a product -> use it; else
-  // fall back to the ad-name prefix (attributeFbPrefix), validated 100% per-ad
-  // against the client's FB report (2026-06-27).
+  // --- Product + region overlay from the Jasper-maintained fb_product_map sheet.
+  // fb_ad_url_map gives each ad's coalesced dest_url; we normalize it and look it
+  // up in the sheet for BOTH product family and funnel region (US = everdries.com,
+  // INTL = shop.everdries.com). The daily spend (fb_ad_spend_daily) is keyed by
+  // (ad_number, ad_prefix), so we collapse the snapshot to that grain via the ad
+  // name with a cost-weighted dominant vote. An ad's URL/product is stable, so
+  // applying the current sheet to historical daily spend is correct (Jasper's
+  // "current funnels" intent). A URL not in the sheet casts no vote -> the key
+  // falls back to the ad-name prefix (product) + geo fraction (region), and is
+  // surfaced by the fb-url-coverage check so Jasper knows to add it.
   const AD_NUMBER_RE = /\b(?:Ad|DCA)\s+(\d+)\b/;
   const keyOf = (num: string, prefix: string) => `${num}${prefix}`;
 
@@ -531,9 +532,22 @@ export async function getAllProductsRollup(opts: {
       cost: fbAdUrlMap.costUsd,
     })
     .from(fbAdUrlMap);
-  // (ad_number, ad_prefix) -> product label -> weighting cost (dominant wins
-  // when one key spans >1 ad_id, ~0.16% of spend). Ad ID -> key so geo can roll up.
-  const urlProductVotes = new Map<string, Map<string, number>>();
+  // Jasper-maintained product/region map, keyed by normalized landing URL.
+  const mapByUrl = new Map<string, { region: string; label: string }>();
+  {
+    const productMapRows = await db
+      .select({
+        url: fbProductMap.normalizedUrl,
+        region: fbProductMap.region,
+        label: fbProductMap.productLabel,
+      })
+      .from(fbProductMap);
+    for (const r of productMapRows) mapByUrl.set(r.url, { region: r.region, label: r.label });
+  }
+  // (ad_number, ad_prefix) -> cost-weighted votes for product label and region.
+  // adId -> key so geo can roll up to the same grain for the unmapped fallback.
+  const productVotes = new Map<string, Map<string, number>>();
+  const regionVotes = new Map<string, Map<string, number>>();
   const adIdToKey = new Map<string, string>();
   for (const r of urlMapRows) {
     const name = r.adName ?? "";
@@ -541,24 +555,32 @@ export async function getAllProductsRollup(opts: {
     if (!m) continue;
     const key = keyOf(m[1], extractFbPrefix(name));
     adIdToKey.set(r.adId, key);
-    const a = attributeUrlProduct(r.destUrl);
-    if (!a) continue; // URL names no product -> no vote; key falls back to ad name
-    const votes = urlProductVotes.get(key) ?? new Map<string, number>();
-    votes.set(a.product, (votes.get(a.product) ?? 0) + (Number(r.cost) || 0));
-    urlProductVotes.set(key, votes);
+    const hit = mapByUrl.get(normalizeFunnelUrl(r.destUrl) ?? "");
+    if (!hit) continue; // URL not in sheet -> no vote; key falls back to ad name + geo
+    const cost = Number(r.cost) || 0;
+    const pv = productVotes.get(key) ?? new Map<string, number>();
+    pv.set(hit.label, (pv.get(hit.label) ?? 0) + cost);
+    productVotes.set(key, pv);
+    const rv = regionVotes.get(key) ?? new Map<string, number>();
+    rv.set(hit.region, (rv.get(hit.region) ?? 0) + cost);
+    regionVotes.set(key, rv);
   }
-  const urlProductByKey = new Map<string, string>();
-  for (const [key, votes] of urlProductVotes) {
-    let best = "";
+  const dominant = (votes: Map<string, number> | undefined): string | undefined => {
+    if (!votes) return undefined;
+    let best: string | undefined;
     let bestCost = -1;
-    for (const [prod, c] of votes) {
+    for (const [k, c] of votes) {
       if (c > bestCost) {
-        best = prod;
+        best = k;
         bestCost = c;
       }
     }
-    urlProductByKey.set(key, best);
-  }
+    return best;
+  };
+  const urlProductByKey = new Map<string, string>();
+  for (const [key, votes] of productVotes) urlProductByKey.set(key, dominant(votes)!);
+  const regionByKey = new Map<string, string>();
+  for (const [key, votes] of regionVotes) regionByKey.set(key, dominant(votes)!);
 
   // Geo -> per-key US fraction (+ a global fallback for daily spend whose ad is
   // not in the URL-map snapshot, e.g. ads outside the 30-day window).
@@ -586,8 +608,9 @@ export async function getAllProductsRollup(opts: {
   };
 
   // --- Spend: FB, grouped by (ad_number, ad_prefix) so the variant grain (the
-  // HOME-undercount fix) survives, attributed URL-first with ad-name fallback,
-  // and split US/non-US by the per-ad geo fraction. ---
+  // HOME-undercount fix) survives, attributed by the product map (URL) with
+  // ad-name fallback, and split US/INTL by the sheet's funnel region (geo
+  // fraction only as the fallback for URL-unmapped keys). ---
   const spendRows = await db
     .select({
       adNumber: fbAdSpendDaily.adNumber,
@@ -614,7 +637,11 @@ export async function getAllProductsRollup(opts: {
     const key = keyOf(r.adNumber, prefix);
     const product = urlProductByKey.get(key) ?? attributeFbPrefix(prefix).product;
     const spend = Number(r.spend);
-    const usFrac = usFractionForKey(key);
+    // Region: the sheet's funnel region wins (binary per ad); a URL-unmapped key
+    // falls back to the geo audience-country fraction.
+    const mappedRegion = regionByKey.get(key);
+    const usFrac =
+      mappedRegion === "US" ? 1 : mappedRegion === "INTL" ? 0 : usFractionForKey(key);
     fbSpendByFamily.set(product, (fbSpendByFamily.get(product) ?? 0) + spend);
     usByFamily.set(product, (usByFamily.get(product) ?? 0) + spend * usFrac);
     nonUsByFamily.set(product, (nonUsByFamily.get(product) ?? 0) + spend * (1 - usFrac));
@@ -731,6 +758,6 @@ export async function getAllProductsRollup(opts: {
 function bucketForFamilyLabel(fam: string): FbBucket {
   if (fam === "Brand / Homepage") return "brand";
   if (fam === "Clearance / Mixed") return "clearance";
-  if (fam === "Unmapped") return "unmapped";
+  if (fam === "Unmapped" || fam === "Other (NA)") return "unmapped";
   return "product";
 }
