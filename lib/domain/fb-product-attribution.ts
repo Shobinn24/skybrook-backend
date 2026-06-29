@@ -69,6 +69,47 @@ export function attributeAppLovinAd(adName: string): FbAttribution {
   return attributeFbPrefix(parts[1]);
 }
 
+// Normalize a destination URL into the stable lookup key used by the
+// Jasper-maintained product map sheet (fb_product_map). Host is kept (so
+// shop.everdries.com stays distinct from everdries.com — the funnel/region
+// signal), `www.` and scheme/query/hash are dropped, path is lowercased and
+// de-trailing-slashed. Social permalinks (facebook/instagram) never name a
+// landing page -> null. Unparseable -> null. Root "/" -> host only.
+const SOCIAL_HOST_RE = /(^|\.)(facebook\.com|fb\.me|instagram\.com)$/;
+export function normalizeFunnelUrl(raw: string | null | undefined): string | null {
+  const u = (raw ?? "").trim();
+  if (!u) return null;
+  let url: URL;
+  try {
+    url = new URL(u);
+  } catch {
+    return null;
+  }
+  let host = url.hostname.toLowerCase();
+  if (host.startsWith("www.")) host = host.slice(4);
+  if (SOCIAL_HOST_RE.test(host)) return null;
+  const path = url.pathname.toLowerCase().replace(/\/+$/, "");
+  return path ? `${host}${path}` : host;
+}
+
+// Map a product label as typed in the sheet onto its canonical family label +
+// bucket kind. Special labels (Home/Clearance/NA) become the existing spend-only
+// buckets; "Super HW" aligns to the revenue family "Super High-Waist"; every
+// other label (known or brand-new) passes through as a product so Jasper can add
+// a line by just typing it in the sheet. Blank or "NA" -> intentionally-mapped
+// "Other (NA)" bucket (NOT flagged by the missing-links check).
+export function canonicalProductLabel(
+  sheetLabel: string | null | undefined,
+): { label: string; kind: FbBucket } {
+  const raw = (sheetLabel ?? "").trim();
+  const key = raw.toLowerCase();
+  if (key === "" || key === "na") return { label: "Other (NA)", kind: "unmapped" };
+  if (key === "home") return { label: "Brand / Homepage", kind: "brand" };
+  if (key === "clearance") return { label: "Clearance / Mixed", kind: "clearance" };
+  if (key === "super hw") return { label: "Super High-Waist", kind: "product" };
+  return { label: raw, kind: "product" };
+}
+
 // Return the path of an everdries.com destination URL, or null when the URL is
 // not an everdries page (facebook video permalink, advertorial domain, blank,
 // or unparseable). Null => the caller should fall back to ad-name attribution.
