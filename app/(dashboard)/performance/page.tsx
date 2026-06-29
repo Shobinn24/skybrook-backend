@@ -23,7 +23,7 @@ function fmtRoas(n: number | null): string {
 }
 
 // Expandable spend breakdown: two independent cuts of the same spend — by
-// platform (FB / AppLovin) and by region (US / non-US, across both platforms).
+// platform (FB / AppLovin) and by region (US / INTL funnel, across both platforms).
 function SpendSplit({
   fb,
   al,
@@ -40,7 +40,7 @@ function SpendSplit({
       FB {fmtMoney(fb)}
       {al > 0 && <> · AL {fmtMoney(al)}</>}
       <span className="text-neutral-300">
-        {" "}· US {fmtMoney(us)} · non-US {fmtMoney(nonUs)}
+        {" "}· US {fmtMoney(us)} · INTL {fmtMoney(nonUs)}
       </span>
     </div>
   );
@@ -165,6 +165,14 @@ export default function PerformancePage() {
       enabled: view === "all" && !!rangeStart && !!rangeEnd,
     },
   );
+
+  // Landing URLs carrying FB spend that aren't in the product-map sheet yet
+  // (snapshot-scoped). Shown as a section under the All-products table so new
+  // funnels get added to the sheet. Only fetched on the All-products view.
+  const unmappedQ = trpc.inventory.getUnmappedFbUrls.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+    enabled: view === "all",
+  });
 
   const rows = data?.rows ?? [];
 
@@ -441,7 +449,7 @@ export default function PerformancePage() {
               onClick={() => setShowSpendSplit((s) => !s)}
               className="text-xs text-neutral-600 underline hover:text-neutral-900"
             >
-              {showSpendSplit ? "Hide spend breakdown" : "Show spend breakdown (FB/AppLovin · US/non-US)"}
+              {showSpendSplit ? "Hide spend breakdown" : "Show spend breakdown (FB/AppLovin · US/INTL)"}
             </button>
           </div>
           <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
@@ -544,13 +552,48 @@ export default function PerformancePage() {
             (shipping &amp; tax broken out as its own line) summed from{" "}
             <code>daily_sales</code>; ad spend is Facebook + AppLovin combined
             (use &ldquo;Show spend breakdown&rdquo; for the FB/AppLovin and
-            US/non-US splits). FB spend is attributed by each ad&apos;s{" "}
-            <strong>destination URL</strong> (the page it sends to), falling back
-            to the ad name when no URL is available. The US/non-US split now
-            covers both Facebook and AppLovin. <em>Brand / Homepage</em> and{" "}
-            <em>Clearance / Mixed</em> are spend not tied to one product;{" "}
-            <em>Unmapped</em> = ads with no recognized product page or name tag.
+            US/INTL splits). FB product &amp; US/INTL come from the product-map
+            sheet, matched on each ad&apos;s <strong>destination URL</strong>,
+            falling back to the ad name when a URL is not in the sheet.{" "}
+            <em>Brand / Homepage</em> and <em>Clearance / Mixed</em> are spend
+            not tied to one product; <em>Unmapped</em> / <em>Other (NA)</em> =
+            ads with no recognized product page or name tag.
           </div>
+
+          {/* Links carrying FB spend that aren't in the product-map sheet yet. */}
+          {unmappedQ.data && unmappedQ.data.length > 0 && (
+            <div className="overflow-x-auto rounded-lg border border-amber-200 bg-amber-50">
+              <div className="px-4 py-3 text-sm">
+                <strong className="text-amber-900">
+                  Ad links not in the product sheet ({unmappedQ.data.length})
+                </strong>
+                <p className="mt-1 text-xs text-amber-800">
+                  These landing URLs carry Facebook spend but have no row in the
+                  product-map sheet, so their product &amp; US/INTL fell back to
+                  the ad name. Add each one to the sheet to attribute it
+                  correctly.
+                </p>
+              </div>
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-y border-amber-200 text-left text-[11px] uppercase tracking-wide text-amber-700">
+                    <th className="px-4 py-2 font-medium">URL</th>
+                    <th className="px-4 py-2 text-right font-medium">FB spend</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unmappedQ.data.map((u) => (
+                    <tr key={u.url} className="border-b border-amber-100">
+                      <td className="px-4 py-2 font-mono text-xs text-amber-900">{u.url}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-amber-900">
+                        {fmtMoney(u.spendUsd)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
     </div>

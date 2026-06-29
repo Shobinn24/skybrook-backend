@@ -48,7 +48,7 @@ describe("parseFbUrlMapSheet", () => {
     "Promoted post destination URL",
     "Cost",
   ];
-  it("coalesces promoted-post -> external -> catch-all, keeping only everdries URLs", () => {
+  it("coalesces promoted-post -> external -> catch-all, keeping any landing (non-social) URL", () => {
     const { rows } = parseFbUrlMapSheet([
       header,
       // promoted post is everdries -> wins over the facebook catch-all
@@ -57,11 +57,15 @@ describe("parseFbUrlMapSheet", () => {
       ["(BShort) Ad 2 - y", "a2", "https://facebook.com/reel/2", "https://www.everdries.com/boyshort", "", "50"],
       // only a facebook URL anywhere -> null (ad-name fallback downstream)
       ["(Mens) Ad 3 - z", "a3", "https://facebook.com/reel/3", "", "", "30"],
+      // advertorial host (non-everdries, non-social) is now KEPT so the product
+      // map can attribute it; previously this was dropped to null.
+      ["(9055) Ad 4 - adv", "a4", "https://www.womansdailynews.com/416-adv", "", "", "40"],
     ]);
     const byId = Object.fromEntries(rows.map((r) => [r.adId, r]));
     expect(byId.a1.destUrl).toBe("https://everdries.com/comfortplus");
     expect(byId.a2.destUrl).toBe("https://www.everdries.com/boyshort");
     expect(byId.a3.destUrl).toBeNull();
+    expect(byId.a4.destUrl).toBe("https://www.womansdailynews.com/416-adv");
   });
 
   it("dedupes a repeated ad_id, keeping the highest-cost row", () => {

@@ -37,6 +37,7 @@ import {
   sheetsApplovinRunner,
   sheetsFbAdsRunner,
   sheetsFbGeoRunner,
+  sheetsFbProductMapRunner,
   sheetsFbUrlMapRunner,
 } from "@/lib/sources/sheets";
 import { toEstDate } from "@/lib/tz";
@@ -52,6 +53,7 @@ const AD_SPEND_SOURCES: Partial<Record<SourceKey, SourceRunner>> = {
   sheets_applovin: sheetsApplovinRunner,
   sheets_fb_geo: sheetsFbGeoRunner,
   sheets_fb_url_map: sheetsFbUrlMapRunner,
+  sheets_fb_product_map: sheetsFbProductMapRunner,
 };
 
 export async function POST(req: Request) {

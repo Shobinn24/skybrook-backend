@@ -467,6 +467,13 @@ export async function evaluateFreshness(opts?: {
   const { evaluateFbPrefixCoverage } = await import("./fb-prefix-check");
   checks.push(...(await evaluateFbPrefixCoverage()));
 
+  // --- FB landing-URL coverage (product-map self-maintaining guard).
+  // DB-only, rides this same path. Surfaces live ad URLs that aren't in the
+  // Jasper product-map sheet yet (so attribution falls back to ad-name + geo)
+  // so the sheet can be kept complete. See lib/jobs/fb-url-coverage-check.ts.
+  const { evaluateFbUrlCoverage } = await import("./fb-url-coverage-check");
+  checks.push(...(await evaluateFbUrlCoverage()));
+
   return { asOfDate: today, threshold, checks };
 }
 

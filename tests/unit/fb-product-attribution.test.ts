@@ -3,7 +3,56 @@ import {
   attributeAppLovinAd,
   attributeFbAd,
   attributeUrlProduct,
+  canonicalProductLabel,
+  normalizeFunnelUrl,
 } from "@/lib/domain/fb-product-attribution";
+
+describe("normalizeFunnelUrl", () => {
+  const cases: Array<[string, string | null]> = [
+    ["https://everdries.com/comfortplus", "everdries.com/comfortplus"],
+    ["http://www.everdries.com/boyshort", "everdries.com/boyshort"], // www stripped, scheme ignored
+    ["https://everdries.com/", "everdries.com"], // trailing slash / root -> host only
+    ["https://everdries.com", "everdries.com"],
+    ["https://shop.everdries.com/comfortplus", "shop.everdries.com/comfortplus"], // shop. kept distinct
+    ["http://shop.everdries.com/", "shop.everdries.com"],
+    ["https://everdries.com/Comfort-Pastel", "everdries.com/comfort-pastel"], // lowercased
+    ["https://everdries.com/comfort?utm=x#frag", "everdries.com/comfort"], // query/hash dropped
+    ["https://www.womansdailynews.com/416-adv", "womansdailynews.com/416-adv"], // advertorial host kept
+    // social permalinks -> null (never a landing page)
+    ["https://www.facebook.com/1581/videos/1445", null],
+    ["https://fb.me/abc", null],
+    ["https://l.facebook.com/l.php?u=x", null],
+    ["https://www.instagram.com/p/xyz", null],
+    ["", null],
+    ["not-a-url", null],
+  ];
+  it.each(cases)("%s -> %s", (raw, expected) => {
+    expect(normalizeFunnelUrl(raw)).toBe(expected);
+  });
+});
+
+describe("canonicalProductLabel", () => {
+  it("maps sheet labels to canonical families with correct kind", () => {
+    expect(canonicalProductLabel("Super HW")).toEqual({ label: "Super High-Waist", kind: "product" });
+    expect(canonicalProductLabel("Home")).toEqual({ label: "Brand / Homepage", kind: "brand" });
+    expect(canonicalProductLabel("Clearance")).toEqual({ label: "Clearance / Mixed", kind: "clearance" });
+    expect(canonicalProductLabel("NA")).toEqual({ label: "Other (NA)", kind: "unmapped" });
+  });
+  it("trims trailing spaces", () => {
+    expect(canonicalProductLabel("OG ")).toEqual({ label: "OG", kind: "product" });
+    expect(canonicalProductLabel("HW ")).toEqual({ label: "HW", kind: "product" });
+  });
+  it("passes through known + unknown product labels as kind product", () => {
+    expect(canonicalProductLabel("9055")).toEqual({ label: "9055", kind: "product" });
+    expect(canonicalProductLabel("9055 HF")).toEqual({ label: "9055 HF", kind: "product" });
+    expect(canonicalProductLabel("Boyshort")).toEqual({ label: "Boyshort", kind: "product" });
+    expect(canonicalProductLabel("High Rise Short")).toEqual({ label: "High Rise Short", kind: "product" });
+    expect(canonicalProductLabel("Some New Line")).toEqual({ label: "Some New Line", kind: "product" });
+  });
+  it("blank -> unmapped Other (NA)", () => {
+    expect(canonicalProductLabel("")).toEqual({ label: "Other (NA)", kind: "unmapped" });
+  });
+});
 
 describe("attributeFbAd", () => {
   const cases: Array<[string, string, string]> = [

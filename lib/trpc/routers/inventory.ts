@@ -36,6 +36,7 @@ import {
   getAllProductsRollup,
   getPerformanceDataFreshness,
 } from "@/lib/queries/performance";
+import { unmappedFbUrlSpend } from "@/lib/jobs/fb-url-coverage-check";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getVelocityForRange } from "@/lib/queries/velocity-range";
 import { getOverstockRows } from "@/lib/queries/overstock";
@@ -409,6 +410,13 @@ export const inventoryRouter = router({
         Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86_400_000) + 1;
       return getAllProductsRollup({ today, rangeDays });
     }),
+
+  // /performance "All products" view — landing URLs that carry FB spend but
+  // are not in the Jasper product-map sheet yet (so their product + region
+  // fell back to ad-name + geo). Snapshot-scoped (not date-ranged), like the
+  // url-map feed itself. Drives the "Ad links not in the product sheet"
+  // section so new funnels get added to the sheet.
+  getUnmappedFbUrls: marketingProcedure.query(() => unmappedFbUrlSpend()),
 
   // /performance page — used to default the end-date picker to a date
   // where both revenue + spend exist, and to drive the "ad spend not
