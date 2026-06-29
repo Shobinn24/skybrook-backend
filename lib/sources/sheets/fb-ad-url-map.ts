@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { db } from "@/lib/db";
 import { fbAdUrlMap } from "@/lib/db/schema";
-import { extractEverdriesPath } from "@/lib/domain/fb-product-attribution";
+import { normalizeFunnelUrl } from "@/lib/domain/fb-product-attribution";
 import { logger } from "@/lib/logger";
 import type { SourceRunner } from "@/lib/jobs/ingest";
 import { buildDriveClient, buildSheetsClient } from "./client";
@@ -29,11 +29,14 @@ export type FbUrlMapRow = {
   costUsd: number;
 };
 
-// First candidate URL that resolves to an everdries.com page wins; else null.
-function coalesceEverdriesUrl(candidates: ReadonlyArray<string>): string | null {
+// First candidate that is a real landing page (parses + not a social permalink)
+// wins; else null. Broadened from everdries-only so advertorial hosts (e.g.
+// womansdailynews) are captured too — product attribution is now a lookup in
+// the fb_product_map sheet (by normalized URL), not an everdries-path rule.
+function coalesceLandingUrl(candidates: ReadonlyArray<string>): string | null {
   for (const c of candidates) {
     const u = (c ?? "").trim();
-    if (u && extractEverdriesPath(u) !== null) return u;
+    if (u && normalizeFunnelUrl(u) !== null) return u;
   }
   return null;
 }
@@ -75,7 +78,7 @@ export function parseFbUrlMapSheet(
       exti >= 0 ? String(row[exti] ?? "") : "",
       cati >= 0 ? String(row[cati] ?? "") : "",
     ];
-    const destUrl = coalesceEverdriesUrl(cand);
+    const destUrl = coalesceLandingUrl(cand);
     const existing = byAd.get(adId);
     if (!existing || safeCost > existing.costUsd) {
       byAd.set(adId, { adId, adName, destUrl, costUsd: safeCost });
