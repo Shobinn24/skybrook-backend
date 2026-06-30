@@ -811,6 +811,7 @@ describe("getBonusTracker", () => {
       totalUsd: number;
       approval?: "approved_full" | "approved_half";
       sentAt: Date;
+      periodLabel?: string;
     }) {
       const [raw] = await db
         .insert(rawPulls)
@@ -846,7 +847,7 @@ describe("getBonusTracker", () => {
       }
       const result = await sendNotification({
         sentBy: "jasper",
-        periodLabel: "test",
+        periodLabel: opts.periodLabel ?? "test",
         sendWhatsApp: async () => ({ ok: true }),
       });
       if (result.skipped) {
@@ -857,6 +858,40 @@ describe("getBonusTracker", () => {
         .set({ sentAt: opts.sentAt })
         .where(sql`${bonusNotificationBatches.id} = ${result.batchId}`);
     }
+
+    it("buckets by payout month (period label), not sent_at: May cycle sent in June lands in 2026-05; June cycle sent in July lands in 2026-06", async () => {
+      // The real bug (Jasper 2026-06-30): the May payout was generated June 1-2,
+      // so bucketing by sent_at put the whole May cycle in the 2026-06 column.
+      await awardWith({
+        adNumber: "500",
+        marketer: "Craig",
+        totalUsd: 14_000,
+        approval: "approved_full",
+        sentAt: new Date("2026-06-02T14:00:00Z"), // sent in June...
+        periodLabel: "May 2026", // ...but it is the MAY cycle
+      });
+      // And next month's cycle, generated a day into July, must land in June.
+      await awardWith({
+        adNumber: "501",
+        marketer: "Raul",
+        totalUsd: 14_000,
+        approval: "approved_full",
+        sentAt: new Date("2026-07-01T14:00:00Z"), // sent July 1...
+        periodLabel: "June 2026", // ...June cycle
+      });
+
+      const summary = await getBonusCountSummary();
+      const months = [...new Set(summary.rows.map((r) => r.month))];
+      // Old bug bucketed by sent_at: May->2026-06, June->2026-07. Now both
+      // land in their payout month and nothing leaks into 2026-07.
+      expect(months).not.toContain("2026-07");
+      expect(months.sort()).toEqual(["2026-05", "2026-06"]);
+      // Craig's 13K award sits in 2026-05, Raul's in 2026-06.
+      const may13k = summary.rows.find((r) => r.month === "2026-05" && r.type === "13K");
+      const jun13k = summary.rows.find((r) => r.month === "2026-06" && r.type === "13K");
+      expect(may13k?.counts.Craig).toBe(1);
+      expect(jun13k?.counts.Raul).toBe(1);
+    }, 30_000);
 
     it("returns empty rows when nothing has been sent for May 2026 onwards", async () => {
       const summary = await getBonusCountSummary();
