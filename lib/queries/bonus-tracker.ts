@@ -589,7 +589,9 @@ export const BONUS_COUNT_TYPES = ["13K", "13K 50%", "65K", "65K 50%"] as const;
 export type BonusCountType = (typeof BONUS_COUNT_TYPES)[number];
 
 export type BonusCountSummaryRow = {
-  /** "YYYY-MM" — month bucket derived from batch sent_at in EST. */
+  /** "YYYY-MM" — intended payout month from the batch period label
+   *  (e.g. "May 2026" -> "2026-05"); falls back to sent_at month for
+   *  non-"Month YYYY" labels. NOT the sent_at month. */
   month: string;
   type: BonusCountType;
   /** Award counts keyed by marketer. Missing marketers default to 0. */
@@ -718,7 +720,8 @@ export async function getBonusCountSummary(): Promise<BonusCountSummary> {
       marketer: bonusAwards.marketer,
       tier: bonusAwards.tier,
       status: bonusAwards.status,
-      month: sql<string>`to_char(${bonusNotificationBatches.sentAt} at time zone 'America/New_York', 'YYYY-MM')`,
+      periodLabel: bonusNotificationBatches.periodLabel,
+      sentMonth: sql<string>`to_char(${bonusNotificationBatches.sentAt} at time zone 'America/New_York', 'YYYY-MM')`,
       count: sql<number>`count(*)::int`,
     })
     .from(bonusAwards)
@@ -742,6 +745,7 @@ export async function getBonusCountSummary(): Promise<BonusCountSummary> {
       bonusAwards.marketer,
       bonusAwards.tier,
       bonusAwards.status,
+      bonusNotificationBatches.periodLabel,
       sql`to_char(${bonusNotificationBatches.sentAt} at time zone 'America/New_York', 'YYYY-MM')`,
     );
 
@@ -754,8 +758,14 @@ export async function getBonusCountSummary(): Promise<BonusCountSummary> {
     if (!isBonusMarketer(r.marketer)) continue;
     const type = bonusCountTypeFor(r.tier, r.status);
     if (!type) continue;
-    monthSet.add(r.month);
-    const key = `${r.month}::${type}`;
+    // Bucket by the INTENDED payout month (period label, e.g. "May 2026"),
+    // NOT when the batch was sent. The May payout goes out June 1-2, so
+    // grouping on sent_at lands the whole cycle in the wrong column (Jasper
+    // 2026-06-30). Mirrors getBonusSummary. Non-"Month YYYY" labels (the
+    // historical-backfill batch, already excluded above) fall back to sent month.
+    const month = payoutMonthFromLabel(r.periodLabel) ?? r.sentMonth;
+    monthSet.add(month);
+    const key = `${month}::${type}`;
     const cell = byKey.get(key) ?? {};
     cell[r.marketer] = (cell[r.marketer] ?? 0) + Number(r.count);
     byKey.set(key, cell);
