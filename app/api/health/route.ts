@@ -78,9 +78,40 @@ async function getSourceHealth(): Promise<SourceHealth[]> {
   return out;
 }
 
+// Probes the cloud whatsmeow bridge that delivers bonus notifications.
+// Uses "warn" (never "fail") so a dropped WhatsApp session shows up in the
+// morning daily check WITHOUT flipping /health to 503 — the bridge being
+// down does not break the dashboards. "not configured" is expected until
+// the bridge env vars are set.
+async function checkWhatsAppBridge(): Promise<{
+  name: string;
+  status: "pass" | "warn";
+  detail: string;
+}> {
+  const url = process.env.WHATSAPP_BRIDGE_URL;
+  if (!url) return { name: "whatsapp_bridge", status: "warn", detail: "not configured" };
+  try {
+    const res = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(5000) });
+    const b = (await res.json()) as { loggedIn?: boolean; connected?: boolean };
+    const ok = !!b.loggedIn && !!b.connected;
+    return {
+      name: "whatsapp_bridge",
+      status: ok ? "pass" : "warn",
+      detail: `loggedIn=${b.loggedIn} connected=${b.connected}`,
+    };
+  } catch (e) {
+    return {
+      name: "whatsapp_bridge",
+      status: "warn",
+      detail: `unreachable: ${e instanceof Error ? e.message : String(e)}`.slice(0, 120),
+    };
+  }
+}
+
 export async function GET() {
   const sources = await getSourceHealth();
   const { asOfDate, threshold, checks } = await evaluateFreshness();
+  const bridge = await checkWhatsAppBridge();
 
   const [{ count: openAlerts = 0 } = { count: 0 }] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -99,17 +130,30 @@ export async function GET() {
     threshold,
     openAlerts,
     sources,
-    tables: checks.map((c) => ({
-      name: c.name,
-      status: c.status,
-      maxDate: c.maxDate,
-      threshold: c.threshold,
-      detail: c.detail,
-      // Lineage: which dashboard pages render data derived from this
-      // check's subject, so an operator reading /health knows the blast
-      // radius without tracing the dependency by hand.
-      affectedDashboards: affectedLabel(c.name),
-    })),
+    tables: [
+      ...checks.map((c) => ({
+        name: c.name,
+        status: c.status as "pass" | "fail" | "warn",
+        maxDate: c.maxDate as string | null,
+        threshold: c.threshold as string | null,
+        detail: c.detail,
+        // Lineage: which dashboard pages render data derived from this
+        // check's subject, so an operator reading /health knows the blast
+        // radius without tracing the dependency by hand.
+        affectedDashboards: affectedLabel(c.name),
+      })),
+      // Bonus-notification delivery bridge. "warn" status never affects
+      // `overall` (only "fail" does), so a dropped session is visible in
+      // the daily check but does not 503 the endpoint.
+      {
+        name: bridge.name,
+        status: bridge.status,
+        maxDate: null,
+        threshold: null,
+        detail: bridge.detail,
+        affectedDashboards: affectedLabel(bridge.name),
+      },
+    ],
   };
 
   // HTTP 503 on fail so healthchecks.io's "expected status" feature can
