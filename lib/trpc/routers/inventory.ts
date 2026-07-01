@@ -31,6 +31,7 @@ import {
   rejectBonus,
   sendNotification,
 } from "@/lib/jobs/bonus-mutations";
+import { sendViaWhatsAppBridge } from "@/lib/notifications/whatsapp-bridge";
 import {
   getPerformanceRollup,
   getAllProductsRollup,
@@ -589,6 +590,7 @@ export const inventoryRouter = router({
       sendNotification({
         sentBy: ctx.email ?? "unknown",
         periodLabel: input?.periodLabel,
+        sendWhatsApp: sendViaWhatsAppBridge,
       }),
     ),
 
