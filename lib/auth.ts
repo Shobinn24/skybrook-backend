@@ -82,9 +82,16 @@ async function importHmacKey(secret: string): Promise<CryptoKey> {
   );
 }
 
+// WebCrypto args must be TypedArray VIEWS, never raw ArrayBuffers: the Next.js
+// middleware sandbox is a separate V8 realm, and a raw ArrayBuffer created there
+// fails Node's `instanceof`-based WebCrypto argument checks on some Node
+// versions (observed: 22.11.x/20.x throw "3rd argument is not instance of
+// ArrayBuffer..."; 22.22+ accept). View checks (ArrayBuffer.isView) are
+// realm-independent, so Uint8Array works everywhere. This threw inside
+// verifyAndDecodePayload's catch and bounced every login (2026-07-01 outage).
 async function signPayload(secret: string, payloadAb: ArrayBuffer): Promise<string> {
   const key = await importHmacKey(secret);
-  const sig = await crypto.subtle.sign("HMAC", key, payloadAb);
+  const sig = await crypto.subtle.sign("HMAC", key, new Uint8Array(payloadAb));
   return `${toBase64url(payloadAb)}.${toBase64url(sig)}`;
 }
 
@@ -105,7 +112,8 @@ async function verifyAndDecodePayload<T>(
   const key = await importHmacKey(secret);
   let ok = false;
   try {
-    ok = await crypto.subtle.verify("HMAC", key, sigAb, payloadAb);
+    // Views, not raw ArrayBuffers — see signPayload comment (cross-realm).
+    ok = await crypto.subtle.verify("HMAC", key, new Uint8Array(sigAb), new Uint8Array(payloadAb));
   } catch {
     return null;
   }
