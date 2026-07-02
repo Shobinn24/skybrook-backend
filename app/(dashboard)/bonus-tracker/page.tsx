@@ -83,6 +83,138 @@ function tierBadge(status: string | undefined, tier: "T1" | "T2") {
   return null;
 }
 
+// The count-scoreboard table (month × type rows, one column per
+// recipient) — extracted verbatim from the marketer Summary tab so the
+// Marketers and Video Editors modes render the exact same DOM for
+// their summaries, parameterized only by data, column labels and the
+// two text strings.
+type CountSummaryData = {
+  marketers: ReadonlyArray<string>;
+  rows: ReadonlyArray<{
+    month: string;
+    type: string;
+    counts: Partial<Record<string, number>>;
+    total: number;
+  }>;
+  grandTotal: number;
+};
+
+function CountSummaryTable({
+  data,
+  isLoading,
+  emptyText,
+  columnLabel,
+  footerText,
+}: {
+  data: CountSummaryData | undefined;
+  isLoading: boolean;
+  emptyText: string;
+  columnLabel: (name: string) => string;
+  footerText: string;
+}) {
+  if (isLoading) {
+    return <div className="text-sm text-neutral-500">Loading summary…</div>;
+  }
+  if (!data || data.rows.length === 0) {
+    return (
+      <div className="rounded-md border border-neutral-200 bg-white px-4 py-6 text-sm text-neutral-500">
+        {emptyText}
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+              <th className="px-3 py-2 font-medium">Month</th>
+              <th className="px-3 py-2 font-medium">Type</th>
+              {data.marketers.map((m) => (
+                <th
+                  key={m}
+                  className="px-3 py-2 text-right font-medium tabular-nums"
+                >
+                  {columnLabel(m)}
+                </th>
+              ))}
+              <th className="px-3 py-2 text-right font-medium">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.rows.map((r, i) => {
+              // Render a thicker top border on the FIRST row
+              // of each new month, so the 4-row monthly
+              // sections read visually. Also blank the Month
+              // cell on rows 2-4 of a section.
+              const isFirstOfMonth =
+                i === 0 || data.rows[i - 1].month !== r.month;
+              return (
+                <tr
+                  key={`${r.month}-${r.type}`}
+                  className={
+                    "hover:bg-neutral-50 " +
+                    (isFirstOfMonth
+                      ? "border-t-2 border-neutral-200"
+                      : "border-t border-neutral-100")
+                  }
+                >
+                  <td className="px-3 py-2 font-medium text-neutral-900">
+                    {isFirstOfMonth ? r.month : ""}
+                  </td>
+                  <td className="px-3 py-2 text-neutral-700">
+                    {r.type}
+                  </td>
+                  {data.marketers.map((m) => {
+                    const n = r.counts[m] ?? 0;
+                    return (
+                      <td
+                        key={m}
+                        className="px-3 py-2 text-right tabular-nums text-neutral-800"
+                      >
+                        {n > 0 ? (
+                          n
+                        ) : (
+                          <span className="text-neutral-300">—</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
+                    {r.total > 0 ? (
+                      r.total
+                    ) : (
+                      <span className="text-neutral-300">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr className="border-t-2 border-neutral-200 bg-neutral-50 text-sm font-semibold">
+              <td className="px-3 py-2 text-neutral-700" colSpan={2}>
+                All months — total awards
+              </td>
+              <td
+                className="px-3 py-2 text-right tabular-nums text-neutral-900"
+                colSpan={data.marketers.length}
+              />
+              <td className="px-3 py-2 text-right tabular-nums text-neutral-900">
+                {data.grandTotal}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div className="border-t border-neutral-100 bg-white px-3 py-2 text-xs text-neutral-500">
+        {footerText}
+      </div>
+    </div>
+  );
+}
+
 // The lifetime-spend ad table with per-tier progress bars — extracted
 // verbatim from the per-marketer view so the Marketers and Video
 // Editors modes render the exact same DOM for their tables (quality
@@ -258,6 +390,12 @@ export default function BonusTrackerPage() {
   const summary = trpc.inventory.getBonusCountSummary.useQuery(undefined, {
     refetchOnWindowFocus: false,
   });
+  // Editor Summary — the video-editor mirror of the marketer scoreboard
+  // (client 2026-07-02). Same read tier, so fb_ads_only can load it.
+  const editorSummary = trpc.inventory.getVideoEditorBonusCountSummary.useQuery(
+    undefined,
+    { refetchOnWindowFocus: false },
+  );
   const utils = trpc.useUtils();
 
   const refreshAll = async () => {
@@ -267,6 +405,8 @@ export default function BonusTrackerPage() {
       utils.inventory.previewBonusNotification.invalidate(),
       utils.inventory.getBonusNotificationHistory.invalidate(),
       utils.inventory.getBonusSummary.invalidate(),
+      utils.inventory.getBonusCountSummary.invalidate(),
+      utils.inventory.getVideoEditorBonusCountSummary.invalidate(),
     ]);
   };
 
@@ -293,8 +433,10 @@ export default function BonusTrackerPage() {
   type ActiveView = BonusMarketer | "summary";
   // Summary is the default landing view and the leftmost tab (Jasper 2026-05-26).
   const [activeView, setActiveView] = useState<ActiveView>("summary");
-  const [activeEditor, setActiveEditor] = useState<VideoEditor>(
-    VIDEO_EDITORS[0],
+  // Video Editors mode mirrors the marketer strip: Summary leftmost and
+  // the default landing view for the mode.
+  const [activeEditor, setActiveEditor] = useState<VideoEditor | "summary">(
+    "summary",
   );
   const [showPreviewModal, setShowPreviewModal] = useState(false);
 
@@ -418,124 +560,18 @@ export default function BonusTrackerPage() {
 
               {/* Active tab content */}
               {activeView === "summary" ? (
-                (() => {
-                  // Count-only Summary (Jasper 2026-05-28 redesign) — mirrors
-                  // the Ads Bonus Tracking 3 Summary tab. Rows are (month ×
-                  // type) tuples, columns are marketers in Jasper's order.
-                  // Cells show the count of awards for that (month, type,
-                  // marketer). 4-row sections per month, monthly section
-                  // dividers between months.
-                  const data = summary.data;
-                  if (summary.isLoading) {
-                    return <div className="text-sm text-neutral-500">Loading summary…</div>;
-                  }
-                  if (!data || data.rows.length === 0) {
-                    return (
-                      <div className="rounded-md border border-neutral-200 bg-white px-4 py-6 text-sm text-neutral-500">
-                        No notifications sent yet for May 2026 onwards — the
-                        scoreboard fills in as monthly batches go out.
-                      </div>
-                    );
-                  }
-
-                  // "JW" → "J Weston" for the column header per Jasper's
-                  // sheet labels. Keep the data layer using the short code.
-                  const marketerLabel = (m: string) =>
-                    m === "JW" ? "J Weston" : m;
-
-                  return (
-                    <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
-                              <th className="px-3 py-2 font-medium">Month</th>
-                              <th className="px-3 py-2 font-medium">Type</th>
-                              {data.marketers.map((m) => (
-                                <th
-                                  key={m}
-                                  className="px-3 py-2 text-right font-medium tabular-nums"
-                                >
-                                  {marketerLabel(m)}
-                                </th>
-                              ))}
-                              <th className="px-3 py-2 text-right font-medium">Total</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {data.rows.map((r, i) => {
-                              // Render a thicker top border on the FIRST row
-                              // of each new month, so the 4-row monthly
-                              // sections read visually. Also blank the Month
-                              // cell on rows 2-4 of a section.
-                              const isFirstOfMonth =
-                                i === 0 || data.rows[i - 1].month !== r.month;
-                              return (
-                                <tr
-                                  key={`${r.month}-${r.type}`}
-                                  className={
-                                    "hover:bg-neutral-50 " +
-                                    (isFirstOfMonth
-                                      ? "border-t-2 border-neutral-200"
-                                      : "border-t border-neutral-100")
-                                  }
-                                >
-                                  <td className="px-3 py-2 font-medium text-neutral-900">
-                                    {isFirstOfMonth ? r.month : ""}
-                                  </td>
-                                  <td className="px-3 py-2 text-neutral-700">
-                                    {r.type}
-                                  </td>
-                                  {data.marketers.map((m) => {
-                                    const n = r.counts[m] ?? 0;
-                                    return (
-                                      <td
-                                        key={m}
-                                        className="px-3 py-2 text-right tabular-nums text-neutral-800"
-                                      >
-                                        {n > 0 ? (
-                                          n
-                                        ) : (
-                                          <span className="text-neutral-300">—</span>
-                                        )}
-                                      </td>
-                                    );
-                                  })}
-                                  <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
-                                    {r.total > 0 ? (
-                                      r.total
-                                    ) : (
-                                      <span className="text-neutral-300">—</span>
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                          <tfoot>
-                            <tr className="border-t-2 border-neutral-200 bg-neutral-50 text-sm font-semibold">
-                              <td className="px-3 py-2 text-neutral-700" colSpan={2}>
-                                All months — total awards
-                              </td>
-                              <td
-                                className="px-3 py-2 text-right tabular-nums text-neutral-900"
-                                colSpan={data.marketers.length}
-                              />
-                              <td className="px-3 py-2 text-right tabular-nums text-neutral-900">
-                                {data.grandTotal}
-                              </td>
-                            </tr>
-                          </tfoot>
-                        </table>
-                      </div>
-                      <div className="border-t border-neutral-100 bg-white px-3 py-2 text-xs text-neutral-500">
-                        Counts of approved bonuses sent in monthly batches. May
-                        2026 onwards. Mirrors the Summary tab on Ads Bonus
-                        Tracking 3.
-                      </div>
-                    </div>
-                  );
-                })()
+                // Count-only Summary (Jasper 2026-05-28 redesign) — mirrors
+                // the Ads Bonus Tracking 3 Summary tab. Rows are (month ×
+                // type) tuples, columns are marketers in Jasper's order
+                // ("JW" → "J Weston" per his sheet labels; the data layer
+                // keeps the short code). 4-row sections per month.
+                <CountSummaryTable
+                  data={summary.data}
+                  isLoading={summary.isLoading}
+                  emptyText="No notifications sent yet for May 2026 onwards — the scoreboard fills in as monthly batches go out."
+                  columnLabel={(m) => (m === "JW" ? "J Weston" : m)}
+                  footerText="Counts of approved bonuses sent in monthly batches. May 2026 onwards. Mirrors the Summary tab on Ads Bonus Tracking 3."
+                />
               ) : (
               (() => {
                 const marketer = activeView;
@@ -714,29 +750,11 @@ export default function BonusTrackerPage() {
           ) : (
             (() => {
               // Video Editors program (client 2026-07-02) — mirrors the
-              // marketer UX: per-editor tabs, that editor's pending
-              // queue, summary cards and the shared ad table. fb_ads_only
-              // sees the tables only (admin controls hidden, as on the
-              // marketer side).
-              const editorSection = sectionsByEditor.get(activeEditor);
-              const rows = editorSection?.rows ?? [];
-              const totalAds = rows.length;
-              const hitT1 = rows.filter(
-                (r) => r.lifetimeSpendUsd >= BONUS_TIER_1_USD,
-              ).length;
-              const hitT2 = rows.filter(
-                (r) => r.lifetimeSpendUsd >= BONUS_TIER_2_USD,
-              ).length;
-              const totalLifetime = rows.reduce(
-                (sum, r) => sum + r.lifetimeSpendUsd,
-                0,
-              );
-              // Each editor tab shows only that editor's pending queue —
-              // same convention as the marketer tabs.
-              const editorPending = pendingItems.filter(
-                (p) => p.marketer === activeEditor,
-              );
-
+              // marketer UX: a Summary scoreboard leftmost (and the
+              // mode's default view), then per-editor tabs with that
+              // editor's pending queue, summary cards and the shared ad
+              // table. fb_ads_only sees the tables only (admin controls
+              // hidden, as on the marketer side).
               return (
                 <div className="space-y-4">
                   {/* Unknown initials — needs a ruling (marketing/ops only) */}
@@ -774,8 +792,21 @@ export default function BonusTrackerPage() {
                     </div>
                   )}
 
-                  {/* Per-editor tab strip — mirrors the marketer strip. */}
+                  {/* Summary + per-editor tab strip — mirrors the marketer
+                      strip (Summary leftmost, the mode's default view). */}
                   <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setActiveEditor("summary")}
+                      aria-pressed={activeEditor === "summary"}
+                      className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                        activeEditor === "summary"
+                          ? "bg-neutral-900 text-white"
+                          : "border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
+                      }`}
+                    >
+                      Summary
+                    </button>
                     {VIDEO_EDITORS.map((editor) => {
                       const section = sectionsByEditor.get(editor);
                       const count = section?.rows.length ?? 0;
@@ -807,6 +838,38 @@ export default function BonusTrackerPage() {
                     })}
                   </div>
 
+                  {activeEditor === "summary" ? (
+                    // Editor Summary — same scoreboard layout as the
+                    // marketer Summary tab, columns per editor.
+                    <CountSummaryTable
+                      data={editorSummary.data}
+                      isLoading={editorSummary.isLoading}
+                      emptyText="No editor bonuses sent yet for May 2026 onwards — the scoreboard fills in as monthly batches go out."
+                      columnLabel={(e) => e}
+                      footerText="Counts of approved video-editor bonuses sent in monthly batches. May 2026 onwards."
+                    />
+                  ) : (
+                    (() => {
+                      const editor = activeEditor;
+                      const rows = sectionsByEditor.get(editor)?.rows ?? [];
+                      const totalAds = rows.length;
+                      const hitT1 = rows.filter(
+                        (r) => r.lifetimeSpendUsd >= BONUS_TIER_1_USD,
+                      ).length;
+                      const hitT2 = rows.filter(
+                        (r) => r.lifetimeSpendUsd >= BONUS_TIER_2_USD,
+                      ).length;
+                      const totalLifetime = rows.reduce(
+                        (sum, r) => sum + r.lifetimeSpendUsd,
+                        0,
+                      );
+                      // Each editor tab shows only that editor's pending
+                      // queue — same convention as the marketer tabs.
+                      const editorPending = pendingItems.filter(
+                        (p) => p.marketer === editor,
+                      );
+                      return (
+                        <>
                   {/* Per-editor pending approvals (marketing/ops only) */}
                   {isAdmin && editorPending.length > 0 && (
                     <div className="overflow-hidden rounded-md border border-amber-300 bg-amber-50">
@@ -928,7 +991,7 @@ export default function BonusTrackerPage() {
                   {/* Ad table — shared component with the marketer view. */}
                   <BonusAdTable
                     rows={rows}
-                    emptyText={`No AIAD ads attributed to ${activeEditor} yet.`}
+                    emptyText={`No AIAD ads attributed to ${editor} yet.`}
                     past7dWindow={tracker.data?.past7dWindow}
                   />
 
@@ -938,6 +1001,10 @@ export default function BonusTrackerPage() {
                     flat editor rates. The same ad can also earn its
                     marketer's bonus.
                   </div>
+                        </>
+                      );
+                    })()
+                  )}
                 </div>
               );
             })()
