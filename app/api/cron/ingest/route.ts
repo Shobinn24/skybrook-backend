@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { runArrivalEvidenceCheck } from "@/lib/jobs/arrival-evidence-check";
 import { runAutoReceiptDetection } from "@/lib/jobs/auto-receipt";
 import { runCashflowGenerators } from "@/lib/jobs/cashflow-forecast";
-import { detectAndInsertBonusCrossings } from "@/lib/jobs/bonus-crossings";
+import {
+  detectAndInsertBonusCrossings,
+  detectAndInsertVideoEditorCrossings,
+} from "@/lib/jobs/bonus-crossings";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { runLaunchAutoPopulate } from "@/lib/jobs/launches";
@@ -200,6 +203,13 @@ export async function POST(req: Request) {
       lookbackDays: 14,
     }),
   );
+  // Video-editor pass (client 2026-07-02): AIAD ads with a known editor
+  // tag earn a second, parallel pending award. No lookback here — the
+  // client wants historical AIAD crossings surfaced too; see the
+  // detector's header for where a date cutoff would go if reintroduced.
+  const videoEditorCrossings = await stage("video_editor_crossings", () =>
+    detectAndInsertVideoEditorCrossings(),
+  );
   // Shipping Performance snapshot (Spec: docs/shipping-checks-spec).
   // Pulls last 60d of US-store orders + computes 30d-trailing stats.
   // Best-effort for the cron response: a Shopify hiccup shouldn't block
@@ -272,6 +282,7 @@ export async function POST(req: Request) {
     autoLaunches,
     orphanSkusDeactivated: orphanSweep ? orphanSweep.deactivated.length : null,
     bonusCrossings,
+    videoEditorCrossings,
     shippingSnapshot,
     ...(phase2 ?? { phase2: "stage_failed" }),
     ingestAlertsFired: ingest.alertsFired,
@@ -292,6 +303,7 @@ export async function POST(req: Request) {
     autoLaunches,
     orphanSweep,
     bonusCrossings,
+    videoEditorCrossings,
     shippingSnapshot,
     cashflow,
     phase2,

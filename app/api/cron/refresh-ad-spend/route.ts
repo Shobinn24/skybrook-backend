@@ -27,7 +27,10 @@
 //     -H "Authorization: Bearer $CRON_SECRET"
 
 import { NextResponse } from "next/server";
-import { detectAndInsertBonusCrossings } from "@/lib/jobs/bonus-crossings";
+import {
+  detectAndInsertBonusCrossings,
+  detectAndInsertVideoEditorCrossings,
+} from "@/lib/jobs/bonus-crossings";
 import { runFbTracker2Append } from "@/lib/jobs/fb-tracker2-append";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
@@ -93,6 +96,12 @@ export async function POST(req: Request) {
     lookbackDays: 14,
   });
 
+  // Video-editor pass (client 2026-07-02): parallel pending awards for
+  // AIAD ads with a known editor tag. No lookback — historical AIAD
+  // crossings are wanted; see the detector header in
+  // lib/jobs/bonus-crossings.ts for where a date cutoff would live.
+  const videoEditorCrossings = await detectAndInsertVideoEditorCrossings();
+
   // Replaces the Apps Script `appendDailyTo2026` trigger that was
   // silently skipping date columns because Daily lags FB Ads' 48h
   // finalization window. Runs HERE (afternoon cron) because by 16:00
@@ -141,6 +150,7 @@ export async function POST(req: Request) {
     elapsedMs,
     bonusInserted: bonusCrossings.inserted,
     bonusPhantomSkipped: bonusCrossings.phantomSkipped,
+    videoEditorInserted: videoEditorCrossings.inserted,
     tracker2AppendDates: tracker2Append?.appendedDates ?? [],
     tracker2NewAds: tracker2Append?.newAdsCount ?? null,
     tracker2Skipped: tracker2Append?.skipped ?? null,
@@ -157,6 +167,7 @@ export async function POST(req: Request) {
     alertsFired: ingest.alertsFired,
     alertsResolved: ingest.alertsResolved,
     bonusCrossings,
+    videoEditorCrossings,
     tracker2Append,
     freshness: checkSummary,
   });
