@@ -15,8 +15,10 @@ import {
   getBonusSummary,
   getBonusTracker,
   getPendingApprovals,
+  getVideoEditorCountSummary,
   previewNotification,
 } from "@/lib/queries/bonus-tracker";
+import { VIDEO_EDITORS } from "@/lib/domain/video-editors";
 import {
   detectAndInsertBonusCrossings,
   detectAndInsertVideoEditorCrossings,
@@ -948,6 +950,10 @@ describe("getBonusTracker", () => {
       const summary = await c.inventory.getBonusCountSummary();
       expect(summary.marketers.length).toBeGreaterThan(0);
 
+      const editorSummary =
+        await c.inventory.getVideoEditorBonusCountSummary();
+      expect(editorSummary.marketers).toEqual(VIDEO_EDITORS);
+
       const history = await c.inventory.getBonusNotificationHistory();
       expect(Array.isArray(history)).toBe(true);
     });
@@ -1300,6 +1306,216 @@ describe("getBonusTracker", () => {
       });
 
       const summary = await getBonusCountSummary();
+      expect(summary.rows.every((r) => r.month === "2026-05")).toBe(true);
+      expect(summary.grandTotal).toBe(1);
+    });
+  });
+
+  describe("getVideoEditorCountSummary (editor Summary tab)", () => {
+    beforeEach(async () => {
+      await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+      await db.execute(sql`TRUNCATE TABLE bonus_notification_batches CASCADE`);
+    });
+
+    /** Seed an AIAD ad, detect the editor crossing, approve every
+     * resulting award, ship a batch, and backdate it — the editor
+     * mirror of `awardWith` above. */
+    async function editorAwardWith(opts: {
+      adNumber: string;
+      initials: string;
+      totalUsd: number;
+      approval?: "approved_full" | "approved_half";
+      sentAt: Date;
+      periodLabel?: string;
+    }) {
+      const [raw] = await db
+        .insert(rawPulls)
+        .values({
+          source: "sheets_fb_ads",
+          pullBatchId: randomUUID(),
+          payload: {},
+          rowCount: 0,
+          schemaFingerprint: "fp",
+        })
+        .returning({ id: rawPulls.id });
+      const adNameRaw = `(Product) Ad ${opts.adNumber} - AIad - ${opts.initials} - v1`;
+      await db.insert(fbAdSpendDaily).values({
+        adNumber: opts.adNumber,
+        adName: adNameRaw,
+        adNameRaw,
+        adLink: null,
+        marketers: [],
+        spendDate: "2026-05-10",
+        costUsd: opts.totalUsd.toFixed(4),
+        sourcePullId: raw.id,
+      });
+      await detectAndInsertVideoEditorCrossings();
+      const awards = await db
+        .select()
+        .from(bonusAwards)
+        .where(sql`${bonusAwards.adNumber} = ${opts.adNumber} AND ${bonusAwards.status} = 'pending'`);
+      for (const a of awards) {
+        await approveBonus({
+          awardId: a.id,
+          approval: opts.approval ?? "approved_full",
+          approvedBy: "jasper",
+        });
+      }
+      const result = await sendNotification({
+        sentBy: "jasper",
+        periodLabel: opts.periodLabel ?? "test",
+        sendWhatsApp: async () => ({ ok: true }),
+      });
+      if (result.skipped) {
+        throw new Error(`sendNotification skipped: ${result.reason}`);
+      }
+      await db
+        .update(bonusNotificationBatches)
+        .set({ sentAt: opts.sentAt })
+        .where(sql`${bonusNotificationBatches.id} = ${result.batchId}`);
+    }
+
+    it("returns empty rows and the editor roster when nothing has been sent", async () => {
+      const summary = await getVideoEditorCountSummary();
+      expect(summary.rows).toEqual([]);
+      expect(summary.grandTotal).toBe(0);
+      expect(summary.marketers).toEqual(VIDEO_EDITORS);
+    });
+
+    it("buckets editor awards by payout month (period label) with editor columns", async () => {
+      // The May cycle is reconciled and sent June 2 — must land in 2026-05
+      // (same month-attribution rule as the marketer summary).
+      await editorAwardWith({
+        adNumber: "2077",
+        initials: "SR",
+        totalUsd: 14_000, // T1
+        sentAt: new Date("2026-06-02T14:00:00Z"),
+        periodLabel: "May 2026",
+      });
+
+      const summary = await getVideoEditorCountSummary();
+      const months = [...new Set(summary.rows.map((r) => r.month))];
+      expect(months).toEqual(["2026-05"]);
+      // 4-row month section in type order, like the marketer summary.
+      expect(summary.rows.map((r) => r.type)).toEqual([...BONUS_COUNT_TYPES]);
+      const t1 = summary.rows.find((r) => r.type === "13K")!;
+      expect(t1.counts.Sebastian).toBe(1);
+      expect(t1.total).toBe(1);
+      expect(summary.grandTotal).toBe(1);
+    });
+
+    it("splits full and half approvals into 13K / 13K 50% rows for editors", async () => {
+      await editorAwardWith({
+        adNumber: "2101",
+        initials: "GA",
+        totalUsd: 14_000,
+        approval: "approved_full",
+        sentAt: new Date("2026-05-15T12:00:00Z"),
+      });
+      await editorAwardWith({
+        adNumber: "2102",
+        initials: "PL",
+        totalUsd: 14_000,
+        approval: "approved_half",
+        sentAt: new Date("2026-05-16T12:00:00Z"),
+      });
+
+      const summary = await getVideoEditorCountSummary();
+      const byType = Object.fromEntries(summary.rows.map((r) => [r.type, r]));
+      expect(byType["13K"].counts.Greg).toBe(1);
+      expect(byType["13K 50%"].counts["Phat Lee"]).toBe(1);
+      expect(byType["65K"].total).toBe(0);
+      expect(summary.grandTotal).toBe(2);
+    });
+
+    it("marketer awards never leak into the editor summary, and editor awards never leak into the marketer summary — even inside ONE mixed batch", async () => {
+      const [raw] = await db
+        .insert(rawPulls)
+        .values({
+          source: "sheets_fb_ads",
+          pullBatchId: randomUUID(),
+          payload: {},
+          rowCount: 0,
+          schemaFingerprint: "fp",
+        })
+        .returning({ id: rawPulls.id });
+      // One marketer ad + one editor AIAD ad, approved together and
+      // shipped in a single batch (the real monthly flow — one batch
+      // covers both programs).
+      await db.insert(fbAdSpendDaily).values([
+        {
+          adNumber: "100",
+          adName: "Craig Mens VID 2",
+          adNameRaw: "Craig Mens VID 2",
+          adLink: null,
+          marketers: ["Craig"],
+          spendDate: "2026-05-10",
+          costUsd: "14000.0000",
+          sourcePullId: raw.id,
+        },
+        {
+          adNumber: "2077",
+          adName: "(Mens CC) Ad 2077 - AIad - SR - remix",
+          adNameRaw: "(Mens CC) Ad 2077 - AIad - SR - remix",
+          adLink: null,
+          marketers: [],
+          spendDate: "2026-05-10",
+          costUsd: "14000.0000",
+          sourcePullId: raw.id,
+        },
+      ]);
+      await detectAndInsertBonusCrossings({ asOfDate: "2026-05-13" });
+      await detectAndInsertVideoEditorCrossings();
+      for (const a of await db.select().from(bonusAwards)) {
+        await approveBonus({
+          awardId: a.id,
+          approval: "approved_full",
+          approvedBy: "jasper",
+        });
+      }
+      const result = await sendNotification({
+        sentBy: "jasper",
+        periodLabel: "May 2026",
+        sendWhatsApp: async () => ({ ok: true }),
+      });
+      if (result.skipped) throw new Error("send skipped");
+      await db
+        .update(bonusNotificationBatches)
+        .set({ sentAt: new Date("2026-06-02T14:00:00Z") })
+        .where(sql`${bonusNotificationBatches.id} = ${result.batchId}`);
+
+      const editorSummary = await getVideoEditorCountSummary();
+      const editor13k = editorSummary.rows.find((r) => r.type === "13K")!;
+      expect(editor13k.counts.Sebastian).toBe(1);
+      expect(
+        (editor13k.counts as Record<string, number | undefined>).Craig,
+      ).toBeUndefined();
+      expect(editorSummary.grandTotal).toBe(1);
+
+      const marketerSummary = await getBonusCountSummary();
+      const marketer13k = marketerSummary.rows.find((r) => r.type === "13K")!;
+      expect(marketer13k.counts.Craig).toBe(1);
+      expect(
+        (marketer13k.counts as Record<string, number | undefined>).Sebastian,
+      ).toBeUndefined();
+      expect(marketerSummary.grandTotal).toBe(1);
+    });
+
+    it("applies the same May-2026-onwards sent-date cutoff as the marketer summary", async () => {
+      await editorAwardWith({
+        adNumber: "2201",
+        initials: "RC",
+        totalUsd: 14_000,
+        sentAt: new Date("2026-04-28T12:00:00Z"), // April — excluded
+      });
+      await editorAwardWith({
+        adNumber: "2202",
+        initials: "RC",
+        totalUsd: 14_000,
+        sentAt: new Date("2026-05-01T16:00:00Z"), // May 1 EST — included
+      });
+
+      const summary = await getVideoEditorCountSummary();
       expect(summary.rows.every((r) => r.month === "2026-05")).toBe(true);
       expect(summary.grandTotal).toBe(1);
     });

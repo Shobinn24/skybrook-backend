@@ -727,6 +727,25 @@ export type BonusCountSummary = {
   grandTotal: number;
 };
 
+// Editor Summary (client 2026-07-02): same count-scoreboard shape as
+// BonusCountSummary but over the video-editor roster. The field is
+// still named `marketers` so the two summaries share one render path —
+// it means "the recipient columns", and renaming it on the marketer
+// side would break the persisted API shape.
+export type VideoEditorCountSummaryRow = {
+  month: string;
+  type: BonusCountType;
+  counts: Partial<Record<VideoEditor, number>>;
+  total: number;
+};
+
+export type VideoEditorCountSummary = {
+  /** Display order matches VIDEO_EDITORS. */
+  marketers: ReadonlyArray<VideoEditor>;
+  rows: VideoEditorCountSummaryRow[];
+  grandTotal: number;
+};
+
 export type BonusSummaryRow = {
   marketer: BonusMarketer;
   // Map of "YYYY-MM" → total approved bonus amount sent that month.
@@ -833,6 +852,46 @@ export async function getBonusSummary(): Promise<BonusSummary> {
  * renders this as visual sections per month.
  */
 export async function getBonusCountSummary(): Promise<BonusCountSummary> {
+  return buildCountSummary({
+    roster: BONUS_SUMMARY_MARKETER_ORDER,
+    isMember: isBonusMarketer,
+  });
+}
+
+/**
+ * Editor Summary (client 2026-07-02): the video-editor mirror of
+ * getBonusCountSummary — identical month attribution (payout month from
+ * the period label, sent_at fallback), identical May-2026-onwards
+ * cutoff and backfill exclusion, columns = VIDEO_EDITORS in roster
+ * order. A batch usually mixes both programs' awards; each summary
+ * counts only its own roster's rows, so nothing leaks either way.
+ */
+export async function getVideoEditorCountSummary(): Promise<VideoEditorCountSummary> {
+  return buildCountSummary({
+    roster: VIDEO_EDITORS,
+    isMember: isVideoEditor,
+  });
+}
+
+/**
+ * Shared core for the count scoreboards. One SQL shape, one month-
+ * attribution rule, one row-emission order — parameterized ONLY by the
+ * recipient roster (column order) and its membership guard, so the
+ * marketer and editor summaries can never drift apart on semantics.
+ */
+async function buildCountSummary<Name extends string>(opts: {
+  roster: ReadonlyArray<Name>;
+  isMember: (name: string) => name is Name;
+}): Promise<{
+  marketers: ReadonlyArray<Name>;
+  rows: Array<{
+    month: string;
+    type: BonusCountType;
+    counts: Partial<Record<Name, number>>;
+    total: number;
+  }>;
+  grandTotal: number;
+}> {
   const rows = await db
     .select({
       marketer: bonusAwards.marketer,
@@ -867,13 +926,13 @@ export async function getBonusCountSummary(): Promise<BonusCountSummary> {
       sql`to_char(${bonusNotificationBatches.sentAt} at time zone 'America/New_York', 'YYYY-MM')`,
     );
 
-  // Build a (month, type, marketer) → count map by reducing the rows.
+  // Build a (month, type, recipient) → count map by reducing the rows.
   // Map key = `${month}::${type}` so we can iterate Jasper's type order
   // deterministically afterward without re-sorting by string.
-  const byKey = new Map<string, Partial<Record<BonusMarketer, number>>>();
+  const byKey = new Map<string, Partial<Record<Name, number>>>();
   const monthSet = new Set<string>();
   for (const r of rows) {
-    if (!isBonusMarketer(r.marketer)) continue;
+    if (!opts.isMember(r.marketer)) continue;
     const type = bonusCountTypeFor(r.tier, r.status);
     if (!type) continue;
     // Bucket by the INTENDED payout month (period label, e.g. "May 2026"),
@@ -884,7 +943,7 @@ export async function getBonusCountSummary(): Promise<BonusCountSummary> {
     const month = payoutMonthFromLabel(r.periodLabel) ?? r.sentMonth;
     monthSet.add(month);
     const key = `${month}::${type}`;
-    const cell = byKey.get(key) ?? {};
+    const cell: Partial<Record<Name, number>> = byKey.get(key) ?? {};
     cell[r.marketer] = (cell[r.marketer] ?? 0) + Number(r.count);
     byKey.set(key, cell);
   }
@@ -896,19 +955,27 @@ export async function getBonusCountSummary(): Promise<BonusCountSummary> {
   // hit that new month" — top-to-bottom chronological, latest at the
   // bottom of the table.
   const months = Array.from(monthSet).sort();
-  const resultRows: BonusCountSummaryRow[] = [];
+  const resultRows: Array<{
+    month: string;
+    type: BonusCountType;
+    counts: Partial<Record<Name, number>>;
+    total: number;
+  }> = [];
   let grandTotal = 0;
   for (const month of months) {
     for (const type of BONUS_COUNT_TYPES) {
       const counts = byKey.get(`${month}::${type}`) ?? {};
-      const total = Object.values(counts).reduce((s, n) => s + (n ?? 0), 0);
+      const total = Object.values(counts).reduce<number>(
+        (s, n) => s + ((n as number | undefined) ?? 0),
+        0,
+      );
       grandTotal += total;
       resultRows.push({ month, type, counts, total });
     }
   }
 
   return {
-    marketers: BONUS_SUMMARY_MARKETER_ORDER,
+    marketers: opts.roster,
     rows: resultRows,
     grandTotal,
   };

@@ -22,6 +22,7 @@ import {
   getBonusTracker,
   getNotificationHistory,
   getPendingApprovals,
+  getVideoEditorCountSummary,
   previewNotification,
 } from "@/lib/queries/bonus-tracker";
 import { BONUS_MARKETERS } from "@/lib/domain/bonus-tiers";
@@ -622,4 +623,12 @@ export const inventoryRouter = router({
   // fbAdsProcedure since 2026-07-02 — read-only scoreboard, client-
   // approved for the fb_ads_only tier alongside getBonusTracker.
   getBonusCountSummary: fbAdsProcedure.query(() => getBonusCountSummary()),
+
+  // Editor Summary (client 2026-07-02): the video-editor mirror of
+  // getBonusCountSummary — same month attribution and cutoff, columns
+  // per editor in VIDEO_EDITORS order. Same read tier as the marketer
+  // scoreboard.
+  getVideoEditorBonusCountSummary: fbAdsProcedure.query(() =>
+    getVideoEditorCountSummary(),
+  ),
 });
