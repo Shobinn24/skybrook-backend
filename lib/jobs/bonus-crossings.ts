@@ -10,6 +10,11 @@ import {
   isAboveBonusFloor,
   type BonusMarketer,
 } from "@/lib/domain/bonus-tiers";
+import {
+  type VideoEditor,
+  extractVideoEditor,
+  videoEditorBonusAmountAtFullUsd,
+} from "@/lib/domain/video-editors";
 import { logger } from "@/lib/logger";
 import { toEstDate } from "@/lib/tz";
 
@@ -232,5 +237,169 @@ export async function detectAndInsertBonusCrossings(opts?: {
     phantomSkipped,
   };
   logger.info("bonus.crossings.detect", result);
+  return result;
+}
+
+export type VideoEditorCrossingDetectResult = {
+  scanned: number; // AIAD ads with a KNOWN editor that hit a tier
+  inserted: number; // new pending editor awards created
+  alreadyExisted: number; // crossings that were already tracked
+};
+
+/**
+ * Video-editor pass (client spec 2026-07-02) — the parallel of
+ * `detectAndInsertBonusCrossings` for the AI-video-ads editor program.
+ * Scans lifetime spend per ad, parses the editor tag out of
+ * `ad_name_raw` (the "AIad" dash-segment convention — see
+ * lib/domain/video-editors.ts), and inserts a `pending` bonus_awards
+ * row per (ad, editor, tier) crossing not already tracked. The editor
+ * display name goes in the free-text `marketer` column; the rosters are
+ * disjoint so the (ad, marketer, tier) unique index gives the same
+ * idempotency, and DUAL CREDIT with the marketer pass is intended — one
+ * ad can pay both its marketer and its editor.
+ *
+ * Unlike the marketer pass there is deliberately NO phantom-crossing
+ * lookback and NO eligibility date cutoff: the client wants every
+ * historical AIAD crossing surfaced as pending (amendment 2026-07-02 —
+ * an earlier draft gated on first-spend >= 2026-03-01); already-paid
+ * historical bonuses are reconciled manually at approval time. If a
+ * date cutoff is ever reintroduced after that reconciliation, this is
+ * where it belongs — filter on the ad's first spend date before
+ * building candidates.
+ *
+ * Excluded initials (client-ruled non-editors) and unknown initials
+ * never insert; unknowns surface on the tracker's "needs a ruling"
+ * list instead (lib/queries/bonus-tracker.ts).
+ */
+export async function detectAndInsertVideoEditorCrossings(): Promise<VideoEditorCrossingDetectResult> {
+  // Lifetime spend per ad + raw name. max(ad_name_raw) matches the
+  // convention in queries/bonus-tracker.ts for picking the ad's name
+  // out of its daily rows.
+  const ads = await db
+    .select({
+      adNumber: fbAdSpendDaily.adNumber,
+      adNameRaw: sql<string>`max(${fbAdSpendDaily.adNameRaw})`,
+      lifetimeSpendUsd: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}), 0)`,
+    })
+    .from(fbAdSpendDaily)
+    .groupBy(fbAdSpendDaily.adNumber);
+
+  // First pass: AIAD ads with a KNOWN editor that hit a tier.
+  const hits: Array<{
+    adNumber: string;
+    editor: VideoEditor;
+    hitTier1: boolean;
+    hitTier2: boolean;
+  }> = [];
+  for (const row of ads) {
+    const extraction = extractVideoEditor(row.adNameRaw ?? "");
+    if (extraction?.kind !== "editor") continue;
+    const spend = Number(row.lifetimeSpendUsd);
+    const hitTier2 = spend >= BONUS_TIER_2_USD;
+    const hitTier1 = hitTier2 || spend >= BONUS_TIER_1_USD; // T2 implies T1
+    if (!hitTier1) continue;
+    hits.push({
+      adNumber: row.adNumber,
+      editor: extraction.editor,
+      hitTier1,
+      hitTier2,
+    });
+  }
+
+  // Daily series only for hit ads — same real-crossing-date derivation
+  // as the marketer pass (crossed_at drives the payout month).
+  const hitAdNumbers = hits.map((h) => h.adNumber);
+  const dailyRows = hitAdNumbers.length
+    ? await db
+        .select({
+          adNumber: fbAdSpendDaily.adNumber,
+          spendDate: fbAdSpendDaily.spendDate,
+          costUsd: fbAdSpendDaily.costUsd,
+        })
+        .from(fbAdSpendDaily)
+        .where(inArray(fbAdSpendDaily.adNumber, hitAdNumbers))
+    : [];
+  const dailyByAd = new Map<
+    string,
+    Array<{ spendDate: string; costUsd: number }>
+  >();
+  for (const r of dailyRows) {
+    const arr = dailyByAd.get(r.adNumber) ?? [];
+    arr.push({ spendDate: r.spendDate, costUsd: Number(r.costUsd) });
+    dailyByAd.set(r.adNumber, arr);
+  }
+
+  let scanned = 0;
+  const candidates: Array<{
+    adNumber: string;
+    editor: VideoEditor;
+    tier: "tier1" | "tier2";
+    amount: number;
+    crossedAt: string;
+  }> = [];
+
+  for (const hit of hits) {
+    const daily = dailyByAd.get(hit.adNumber) ?? [];
+    const crossT1 = hit.hitTier1
+      ? firstCrossingDate(daily, BONUS_TIER_1_USD)
+      : null;
+    const crossT2 = hit.hitTier2
+      ? firstCrossingDate(daily, BONUS_TIER_2_USD)
+      : null;
+    if (crossT1 == null && crossT2 == null) continue;
+
+    scanned++;
+    if (crossT1 != null) {
+      candidates.push({
+        adNumber: hit.adNumber,
+        editor: hit.editor,
+        tier: "tier1",
+        amount: videoEditorBonusAmountAtFullUsd({ tier: "tier1" }),
+        crossedAt: crossT1,
+      });
+    }
+    if (crossT2 != null) {
+      candidates.push({
+        adNumber: hit.adNumber,
+        editor: hit.editor,
+        tier: "tier2",
+        amount: videoEditorBonusAmountAtFullUsd({ tier: "tier2" }),
+        crossedAt: crossT2,
+      });
+    }
+  }
+
+  if (candidates.length === 0) {
+    logger.info("bonus.video_editor_crossings.detect", {
+      scanned,
+      inserted: 0,
+      alreadyExisted: 0,
+    });
+    return { scanned, inserted: 0, alreadyExisted: 0 };
+  }
+
+  const inserted = await db
+    .insert(bonusAwards)
+    .values(
+      candidates.map((c) => ({
+        adNumber: c.adNumber,
+        marketer: c.editor,
+        tier: c.tier,
+        crossedAt: c.crossedAt,
+        status: "pending" as const,
+        amountUsd: c.amount.toFixed(2),
+      })),
+    )
+    .onConflictDoNothing({
+      target: [bonusAwards.adNumber, bonusAwards.marketer, bonusAwards.tier],
+    })
+    .returning({ id: bonusAwards.id });
+
+  const result = {
+    scanned,
+    inserted: inserted.length,
+    alreadyExisted: candidates.length - inserted.length,
+  };
+  logger.info("bonus.video_editor_crossings.detect", result);
   return result;
 }

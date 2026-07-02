@@ -2,15 +2,62 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { bonusAwards, bonusNotificationBatches } from "@/lib/db/schema";
 import {
-  type BonusMarketer,
   bonusAmountUsd,
+  isBonusMarketer,
 } from "@/lib/domain/bonus-tiers";
+import {
+  isVideoEditor,
+  videoEditorBonusAmountUsd,
+} from "@/lib/domain/video-editors";
 import { previewNotification } from "@/lib/queries/bonus-tracker";
 import { logger } from "@/lib/logger";
 
 /** Thrown inside the claim transaction when another send already
  * stamped one of the previewed awards — rolls the whole claim back. */
 class ConcurrentSendError extends Error {}
+
+/** Canonical frozen amount for an award row. `bonus_awards.marketer` is
+ * free-text and holds either a marketer name or a video-editor display
+ * name (the two rosters are disjoint — unit-tested in
+ * video-editors.test.ts). Editors use the flat \$200/\$800 rates; the
+ * marketer path is unchanged.
+ *
+ * Fail-LOUD on anything else: award rows only ever come from the two
+ * crossing detectors, so a name in neither roster means a hand-inserted
+ * or corrupted row — investigate it, don't pay it. (Previously such a
+ * name silently fell through to secondary marketer rates.) A name in
+ * BOTH rosters is impossible while the disjointness invariant holds;
+ * this guard is the belt-and-braces that screams the day it doesn't.
+ * Exported for unit tests. */
+export function awardAmountUsd(opts: {
+  marketer: string;
+  tier: "tier1" | "tier2";
+  approval: "approved_full" | "approved_half";
+}): number {
+  if (isVideoEditor(opts.marketer) && isBonusMarketer(opts.marketer)) {
+    throw new Error(
+      `bonus award name "${opts.marketer}" is in BOTH the video-editor and marketer rosters — ` +
+        `the rosters must stay disjoint (see video-editors.test.ts); refusing to price it`,
+    );
+  }
+  if (isVideoEditor(opts.marketer)) {
+    return videoEditorBonusAmountUsd({
+      tier: opts.tier,
+      approval: opts.approval,
+    });
+  }
+  if (isBonusMarketer(opts.marketer)) {
+    return bonusAmountUsd({
+      marketer: opts.marketer,
+      tier: opts.tier,
+      approval: opts.approval,
+    });
+  }
+  throw new Error(
+    `bonus award name "${opts.marketer}" is in neither the marketer nor the video-editor roster — ` +
+      `refusing to price it (award rows should only come from the crossing detectors)`,
+  );
+}
 
 export type ApproveBonusOpts = {
   awardId: string;
@@ -42,8 +89,8 @@ export async function approveBonus(opts: ApproveBonusOpts): Promise<{
     return { updated: false, awardId: opts.awardId };
   }
 
-  const amount = bonusAmountUsd({
-    marketer: current.marketer as BonusMarketer,
+  const amount = awardAmountUsd({
+    marketer: current.marketer,
     tier: current.tier,
     approval: opts.approval,
   });
@@ -133,8 +180,8 @@ export async function bulkApprovePending(opts: {
   // but at the scale we expect (≤100 rows during the one-time
   // backfill), per-row is simpler and easier to audit.
   for (const p of pending) {
-    const amount = bonusAmountUsd({
-      marketer: p.marketer as BonusMarketer,
+    const amount = awardAmountUsd({
+      marketer: p.marketer,
       tier: p.tier,
       approval: "approved_full",
     });

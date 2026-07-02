@@ -374,22 +374,26 @@ describe("isFbAdsOnly (external buyers scoped to the FB Ads Tracker only)", () =
 });
 
 describe("isFbAdsOnlyAllowedPath", () => {
-  it("allows only the FB Ads Tracker page + its subpaths", () => {
+  it("allows the FB Ads Tracker page + its subpaths", () => {
     expect(isFbAdsOnlyAllowedPath("/fb-ads")).toBe(true);
     expect(isFbAdsOnlyAllowedPath("/fb-ads/anything")).toBe(true);
+  });
+  it("allows the Bonus Tracker page + its subpaths (client-approved read access, 2026-07-02)", () => {
+    expect(isFbAdsOnlyAllowedPath("/bonus-tracker")).toBe(true);
+    expect(isFbAdsOnlyAllowedPath("/bonus-tracker/anything")).toBe(true);
   });
   it("allows tRPC paths (Phase 1, same as marketing)", () => {
     expect(isFbAdsOnlyAllowedPath("/api/trpc/inventory.getFbAds")).toBe(true);
   });
   it("blocks every other page, including the other marketing pages and cashflow", () => {
     expect(isFbAdsOnlyAllowedPath("/performance")).toBe(false);
-    expect(isFbAdsOnlyAllowedPath("/bonus-tracker")).toBe(false);
     expect(isFbAdsOnlyAllowedPath("/launches")).toBe(false);
     expect(isFbAdsOnlyAllowedPath("/cashflow")).toBe(false);
     expect(isFbAdsOnlyAllowedPath("/inventory")).toBe(false);
     expect(isFbAdsOnlyAllowedPath("/")).toBe(false);
   });
-  it("no false positive on a similarly-prefixed path", () => {
+  it("no false positive on similarly-prefixed paths", () => {
     expect(isFbAdsOnlyAllowedPath("/fb-ads-history")).toBe(false);
+    expect(isFbAdsOnlyAllowedPath("/bonus-tracker-old")).toBe(false);
   });
 });

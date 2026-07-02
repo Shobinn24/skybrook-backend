@@ -12,6 +12,12 @@ import {
   isBonusMarketer,
   payoutMonthFromLabel,
 } from "@/lib/domain/bonus-tiers";
+import {
+  VIDEO_EDITORS,
+  type VideoEditor,
+  extractVideoEditor,
+  isVideoEditor,
+} from "@/lib/domain/video-editors";
 import { toEstDate } from "@/lib/tz";
 
 // Date-only arithmetic in UTC to avoid host-TZ drift (mirrors the
@@ -62,8 +68,27 @@ export type BonusTrackerSection = {
   rows: BonusAdRow[];
 };
 
+// Video-editor program (client 2026-07-02): AIAD ads grouped under
+// their editor, built exactly like the marketer sections. The awards on
+// each row are the EDITOR's (ad × editor × tier) awards.
+export type VideoEditorSection = {
+  editor: VideoEditor;
+  rows: BonusAdRow[];
+};
+
+// AIAD ads whose initials are neither a known editor nor client-ruled
+// excluded — surfaced so an operator can ask the client for a ruling.
+export type UnknownInitialsRow = {
+  initials: string;
+  exampleAdName: string; // raw name of the highest-spend ad for these initials
+  totalLifetimeSpendUsd: number;
+  adCount: number;
+};
+
 export type BonusTrackerResult = {
   sections: BonusTrackerSection[];
+  videoEditors: VideoEditorSection[];
+  unknownInitials: UnknownInitialsRow[];
   // The exact dates the "Past 7D spend" column covers, so the UI can say
   // "2 Jun - 8 Jun" instead of leaving the window implicit.
   past7dWindow: { start: string; end: string };
@@ -133,32 +158,79 @@ export async function getBonusTracker(opts?: {
   }));
   const sectionByMarketer = new Map(sections.map((s) => [s.marketer, s]));
 
+  // Video-editor sections mirror the marketer sections; the awards on
+  // each row are keyed by the editor's display name (dual credit with
+  // the marketer sections is intended — same ad, two awards).
+  const videoEditors: VideoEditorSection[] = VIDEO_EDITORS.map((e) => ({
+    editor: e,
+    rows: [] as BonusAdRow[],
+  }));
+  const sectionByEditor = new Map(videoEditors.map((s) => [s.editor, s]));
+  const unknownByInitials = new Map<string, UnknownInitialsRow>();
+
+  // Row builder shared by the marketer and editor groupings — same ad
+  // metadata, awards keyed by whichever name owns the section.
+  const buildRow = (
+    r: (typeof adRows)[number],
+    awardName: string,
+  ): BonusAdRow => ({
+    adNumber: r.adNumber,
+    adName: r.adName,
+    adNameRaw: r.adNameRaw,
+    adLink: r.adLink,
+    marketers: r.marketers ?? [],
+    lifetimeSpendUsd: Number(r.lifetimeSpendUsd),
+    past7dSpendUsd: Number(r.past7dSpendUsd),
+    awards: {
+      tier1: awardByKey.get(`${r.adNumber}|${awardName}|tier1`) ?? null,
+      tier2: awardByKey.get(`${r.adNumber}|${awardName}|tier2`) ?? null,
+    },
+  });
+
   for (const r of adRows) {
     const adMarketers = r.marketers ?? [];
-    if (adMarketers.length === 0) continue;
     for (const name of adMarketers) {
       const section = sectionByMarketer.get(name as BonusMarketer);
       if (!section) continue;
       if (!isAboveBonusFloor(name as BonusMarketer, r.adNumber)) continue;
-      const row: BonusAdRow = {
-        adNumber: r.adNumber,
-        adName: r.adName,
-        adNameRaw: r.adNameRaw,
-        adLink: r.adLink,
-        marketers: adMarketers,
-        lifetimeSpendUsd: Number(r.lifetimeSpendUsd),
-        past7dSpendUsd: Number(r.past7dSpendUsd),
-        awards: {
-          tier1: awardByKey.get(`${r.adNumber}|${name}|tier1`) ?? null,
-          tier2: awardByKey.get(`${r.adNumber}|${name}|tier2`) ?? null,
-        },
-      };
-      section.rows.push(row);
+      section.rows.push(buildRow(r, name));
     }
+
+    // Editor grouping + unknown-initials surface. adRows is ordered by
+    // lifetime spend desc, so the FIRST ad seen for a set of unknown
+    // initials is its highest-spend example.
+    const extraction = extractVideoEditor(r.adNameRaw ?? "");
+    if (!extraction) continue;
+    if (extraction.kind === "editor") {
+      sectionByEditor.get(extraction.editor)!.rows.push(
+        buildRow(r, extraction.editor),
+      );
+    } else if (extraction.kind === "unknown") {
+      const existing = unknownByInitials.get(extraction.initials);
+      if (existing) {
+        existing.adCount++;
+        existing.totalLifetimeSpendUsd += Number(r.lifetimeSpendUsd);
+      } else {
+        unknownByInitials.set(extraction.initials, {
+          initials: extraction.initials,
+          exampleAdName: r.adNameRaw,
+          totalLifetimeSpendUsd: Number(r.lifetimeSpendUsd),
+          adCount: 1,
+        });
+      }
+    }
+    // kind === "excluded": client-ruled non-editors — no bonus, and
+    // intentionally kept off the unknown surface.
   }
+
+  const unknownInitials = Array.from(unknownByInitials.values()).sort(
+    (a, b) => b.totalLifetimeSpendUsd - a.totalLifetimeSpendUsd,
+  );
 
   return {
     sections,
+    videoEditors,
+    unknownInitials,
     past7dWindow: { start: sevenDaysAgoEst, end: windowEnd },
   };
 }
@@ -169,7 +241,9 @@ export type PendingApproval = {
   adName: string;
   adNameRaw: string;
   adLink: string | null;
-  marketer: BonusMarketer;
+  // A marketer name, or a video-editor display name for AIAD editor
+  // awards (client 2026-07-02) — same free-text column underneath.
+  marketer: BonusMarketer | VideoEditor;
   tier: BonusAwardTier;
   defaultAmountUsd: number;
   // Default amount if approved half (50% of full).
@@ -225,8 +299,13 @@ export async function getPendingApprovals(opts?: {
 
   return pending
     .map<PendingApproval | null>((p) => {
-      if (!isBonusMarketer(p.marketer)) return null;
-      if (!isAboveBonusFloor(p.marketer, p.adNumber)) return null;
+      // Marketer awards respect the per-marketer ad floor; video-editor
+      // awards (editor display name in the same column) have no floor.
+      if (isBonusMarketer(p.marketer)) {
+        if (!isAboveBonusFloor(p.marketer, p.adNumber)) return null;
+      } else if (!isVideoEditor(p.marketer)) {
+        return null;
+      }
       const m = metaByAd.get(p.adNumber);
       if (!m) return null;
       const full = Number(p.amountUsd);
@@ -254,7 +333,9 @@ export async function getPendingApprovals(opts?: {
 }
 
 export type NotificationAward = {
-  marketer: BonusMarketer;
+  // A marketer name, or a video-editor display name for editor awards
+  // (client 2026-07-02) — the message groups by whichever it is.
+  marketer: BonusMarketer | VideoEditor;
   tier: BonusAwardTier;
   status: "approved_full" | "approved_half";
   amountUsd: number;
@@ -269,10 +350,13 @@ export type NotificationPreview = {
   // Per-award detail powers the rich WhatsApp message body
   // (Jasper 2026-05-20: ad name + link per award + per-marketer total).
   awards: NotificationAward[];
-  // Per-marketer roll-up — kept for backward compat with
-  // bonus_notification_batches.totals_json history records.
+  // Per-person roll-up — kept for backward compat with
+  // bonus_notification_batches.totals_json history records. Every
+  // roster marketer always has a bucket (zeros included); video-editor
+  // buckets are appended only when they have awards, so pure-marketer
+  // batches keep their historical shape.
   totals: Array<{
-    marketer: BonusMarketer;
+    marketer: BonusMarketer | VideoEditor;
     tier1FullCount: number;
     tier1HalfCount: number;
     tier2FullCount: number;
@@ -322,7 +406,7 @@ export async function previewNotification(opts?: {
   const metaByAd = new Map(adMeta.map((m) => [m.adNumber, m]));
 
   type Bucket = NotificationPreview["totals"][number];
-  const byMarketer = new Map<BonusMarketer, Bucket>();
+  const byMarketer = new Map<BonusMarketer | VideoEditor, Bucket>();
   for (const m of BONUS_MARKETERS) {
     byMarketer.set(m, {
       marketer: m,
@@ -337,10 +421,22 @@ export async function previewNotification(opts?: {
   const awards: NotificationAward[] = [];
   const awardIds: string[] = [];
   for (const a of unsent) {
-    if (!isBonusMarketer(a.marketer)) continue;
-    const bucket = byMarketer.get(a.marketer);
-    if (!bucket) continue;
+    if (!isBonusMarketer(a.marketer) && !isVideoEditor(a.marketer)) continue;
     if (a.status !== "approved_full" && a.status !== "approved_half") continue;
+    // Editor buckets are created lazily so pure-marketer batches keep
+    // the historical 6-bucket totals_json shape.
+    let bucket = byMarketer.get(a.marketer);
+    if (!bucket) {
+      bucket = {
+        marketer: a.marketer,
+        tier1FullCount: 0,
+        tier1HalfCount: 0,
+        tier2FullCount: 0,
+        tier2HalfCount: 0,
+        totalUsd: 0,
+      };
+      byMarketer.set(a.marketer, bucket);
+    }
     const amount = Number(a.amountUsd);
     if (a.tier === "tier1") {
       if (a.status === "approved_half") bucket.tier1HalfCount++;
@@ -444,43 +540,65 @@ function renderNotificationMessage(
 
   const byMarketer = new Map<BonusMarketer, NotificationAward[]>();
   for (const m of BONUS_SUMMARY_MARKETER_ORDER) byMarketer.set(m, []);
-  for (const a of awards) byMarketer.get(a.marketer)?.push(a);
+  for (const a of awards) {
+    if (isBonusMarketer(a.marketer)) byMarketer.get(a.marketer)?.push(a);
+  }
 
+  for (const marketer of BONUS_SUMMARY_MARKETER_ORDER) {
+    pushPersonSection(lines, marketer, byMarketer.get(marketer) ?? []);
+  }
+
+  // Video-editor sections (client 2026-07-02) append AFTER the marketer
+  // roster, in editor roster order. Unlike marketers — where Jasper
+  // lists $0 people too — editors with no awards this period are
+  // omitted, so pure-marketer batches render exactly as before.
+  for (const editor of VIDEO_EDITORS) {
+    const list = awards.filter((a) => a.marketer === editor);
+    if (list.length === 0) continue;
+    pushPersonSection(lines, editor, list);
+  }
+  return lines.join("\n").trimEnd();
+}
+
+/** One person's message block: bold name, non-empty count lines, total,
+ * then the per-tier ad breakdown. Shared verbatim between the marketer
+ * roster and the video-editor sections. */
+function pushPersonSection(
+  lines: string[],
+  name: string,
+  list: NotificationAward[],
+): void {
   const adNo = (a: NotificationAward) => {
     const n = parseInt(a.adNumber, 10);
     return Number.isNaN(n) ? Number.POSITIVE_INFINITY : n;
   };
 
-  for (const marketer of BONUS_SUMMARY_MARKETER_ORDER) {
-    const list = byMarketer.get(marketer) ?? [];
-    lines.push(`*${marketer}*`);
+  lines.push(`*${name}*`);
 
-    // Count lines (only non-empty buckets), then the per-marketer total.
-    const total = list.reduce((s, a) => s + a.amountUsd, 0);
-    for (const b of NOTIFICATION_BUCKETS) {
-      const n = list.filter(
-        (a) => a.tier === b.tier && a.status === b.status,
-      ).length;
-      if (n > 0) lines.push(`${n}x ${b.count}`);
-    }
-    lines.push(`Total: $${total.toLocaleString("en-US")}`);
-
-    // Per-tier ad breakdown — "Ad <num> - <name>" then the link below.
-    for (const b of NOTIFICATION_BUCKETS) {
-      const ads = list
-        .filter((a) => a.tier === b.tier && a.status === b.status)
-        .sort((a, c) => adNo(a) - adNo(c));
-      if (ads.length === 0) continue;
-      lines.push("", b.header);
-      ads.forEach((a, i) => {
-        lines.push(`Ad ${a.adNumber} - ${a.adName}`);
-        if (a.adLink) lines.push(`- ${a.adLink}`);
-        if (i < ads.length - 1) lines.push("");
-      });
-    }
-    lines.push("");
+  // Count lines (only non-empty buckets), then the per-person total.
+  const total = list.reduce((s, a) => s + a.amountUsd, 0);
+  for (const b of NOTIFICATION_BUCKETS) {
+    const n = list.filter(
+      (a) => a.tier === b.tier && a.status === b.status,
+    ).length;
+    if (n > 0) lines.push(`${n}x ${b.count}`);
   }
-  return lines.join("\n").trimEnd();
+  lines.push(`Total: $${total.toLocaleString("en-US")}`);
+
+  // Per-tier ad breakdown — "Ad <num> - <name>" then the link below.
+  for (const b of NOTIFICATION_BUCKETS) {
+    const ads = list
+      .filter((a) => a.tier === b.tier && a.status === b.status)
+      .sort((a, c) => adNo(a) - adNo(c));
+    if (ads.length === 0) continue;
+    lines.push("", b.header);
+    ads.forEach((a, i) => {
+      lines.push(`Ad ${a.adNumber} - ${a.adName}`);
+      if (a.adLink) lines.push(`- ${a.adLink}`);
+      if (i < ads.length - 1) lines.push("");
+    });
+  }
+  lines.push("");
 }
 
 /** Default period label = the month that just ended (so the April

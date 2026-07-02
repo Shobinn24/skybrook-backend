@@ -528,7 +528,17 @@ export const inventoryRouter = router({
   // bonus tiers are cumulative. Spec: §Bonus Tracker, Jasper 2026-05-11.
   // Returns each row with its (T1, T2) bonus_award status so the UI
   // colors by approval state (Phase B+, Jasper 2026-05-13).
-  getBonusTracker: marketingProcedure.query(() => getBonusTracker()),
+  //
+  // fbAdsProcedure since 2026-07-02 (client-approved): external media
+  // buyers get READ access to the tracker — approvals/notifications
+  // below stay marketing-tier.
+  getBonusTracker: fbAdsProcedure.query(() => getBonusTracker()),
+
+  // The caller's own access tier, so the client can hide admin-only
+  // controls (approve/reject/bulk/preview/send) instead of rendering
+  // buttons that would FORBIDDEN on click. Purely informational — every
+  // mutation still enforces its tier server-side.
+  getMyAccessTier: fbAdsProcedure.query(({ ctx }) => ({ tier: ctx.tier })),
 
   // Pending bonuses awaiting Jasper's per-ad approval decision.
   // Optional marketer filter — used by per-marketer tab views (Jasper
@@ -594,7 +604,9 @@ export const inventoryRouter = router({
       }),
     ),
 
-  getBonusNotificationHistory: marketingProcedure.query(() =>
+  // fbAdsProcedure since 2026-07-02 — read-only history, client-approved
+  // for the fb_ads_only tier alongside getBonusTracker.
+  getBonusNotificationHistory: fbAdsProcedure.query(() =>
     getNotificationHistory(),
   ),
 
@@ -606,5 +618,8 @@ export const inventoryRouter = router({
   // Count-only scoreboard mirroring Jasper's manual Ads Bonus Tracking 3
   // Summary tab — one row per (month × type), columns per marketer in
   // Jasper's column order. May 2026 onwards.
-  getBonusCountSummary: marketingProcedure.query(() => getBonusCountSummary()),
+  //
+  // fbAdsProcedure since 2026-07-02 — read-only scoreboard, client-
+  // approved for the fb_ads_only tier alongside getBonusTracker.
+  getBonusCountSummary: fbAdsProcedure.query(() => getBonusCountSummary()),
 });
