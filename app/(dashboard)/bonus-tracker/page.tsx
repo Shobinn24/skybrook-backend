@@ -80,14 +80,26 @@ function tierBadge(status: string | undefined, tier: "T1" | "T2") {
 }
 
 export default function BonusTrackerPage() {
+  // The caller's access tier drives which controls render: fb_ads_only
+  // gets a read-only view (client 2026-07-02) — approve/reject/bulk/
+  // preview/send are hidden, and their marketing-tier queries are not
+  // even fired (they would FORBIDDEN).
+  const me = trpc.inventory.getMyAccessTier.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+  const tier = me.data?.tier;
+  const isAdmin = tier === "ops" || tier === "marketing";
+
   const tracker = trpc.inventory.getBonusTracker.useQuery(undefined, {
     refetchOnWindowFocus: false,
   });
   const pending = trpc.inventory.getPendingBonusApprovals.useQuery(undefined, {
     refetchOnWindowFocus: false,
+    enabled: isAdmin,
   });
   const preview = trpc.inventory.previewBonusNotification.useQuery(undefined, {
     refetchOnWindowFocus: false,
+    enabled: isAdmin,
   });
   const history = trpc.inventory.getBonusNotificationHistory.useQuery(
     undefined,
@@ -124,7 +136,7 @@ export default function BonusTrackerPage() {
     onSuccess: refreshAll,
   });
 
-  type ActiveView = BonusMarketer | "summary";
+  type ActiveView = BonusMarketer | "summary" | "videoEditors";
   // Summary is the default landing view and the leftmost tab (Jasper 2026-05-26).
   const [activeView, setActiveView] = useState<ActiveView>("summary");
   const [showPreviewModal, setShowPreviewModal] = useState(false);
@@ -135,6 +147,12 @@ export default function BonusTrackerPage() {
 
   const pendingItems = pending.data ?? [];
   const previewData = preview.data;
+  const videoEditorSections = tracker.data?.videoEditors ?? [];
+  const unknownInitials = tracker.data?.unknownInitials ?? [];
+  const videoEditorAdCount = videoEditorSections.reduce(
+    (sum, s) => sum + s.rows.length,
+    0,
+  );
 
   return (
     <div className="space-y-6">
@@ -148,7 +166,7 @@ export default function BonusTrackerPage() {
             T1 = {fmtMoney(BONUS_TIER_1_USD)} crossed, T2 = {fmtMoney(BONUS_TIER_2_USD)} crossed
           </p>
         </div>
-        {previewData && previewData.awardIds.length > 0 && (
+        {isAdmin && previewData && previewData.awardIds.length > 0 && (
           <button
             type="button"
             onClick={() => setShowPreviewModal(true)}
@@ -213,6 +231,29 @@ export default function BonusTrackerPage() {
                 </button>
               );
             })}
+            {/* Video Editors tab (client 2026-07-02) — appended after the
+                marketer tabs; do not reorder the existing strip. */}
+            <button
+              type="button"
+              onClick={() => setActiveView("videoEditors")}
+              aria-pressed={activeView === "videoEditors"}
+              className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                activeView === "videoEditors"
+                  ? "bg-neutral-900 text-white"
+                  : "border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
+              }`}
+            >
+              Video Editors
+              <span
+                className={`inline-flex min-w-[1.5rem] items-center justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${
+                  activeView === "videoEditors"
+                    ? "bg-white/20 text-white"
+                    : "bg-neutral-100 text-neutral-600"
+                }`}
+              >
+                {videoEditorAdCount}
+              </span>
+            </button>
           </div>
 
           {/* Active tab content */}
@@ -335,6 +376,300 @@ export default function BonusTrackerPage() {
                 </div>
               );
             })()
+          ) : activeView === "videoEditors" ? (
+            (() => {
+              // Video Editors view (client 2026-07-02): per-editor AIAD ad
+              // tables mirroring the marketer tables, plus (marketing/ops
+              // only) each editor's pending queue and the unknown-initials
+              // callout. fb_ads_only sees the read-only tables only.
+              const activeSections = videoEditorSections.filter(
+                (s) => s.rows.length > 0,
+              );
+              const editorNames = new Set(
+                videoEditorSections.map((s) => s.editor as string),
+              );
+              const editorPending = pendingItems.filter((p) =>
+                editorNames.has(p.marketer),
+              );
+              return (
+                <div className="space-y-4">
+                  {/* Unknown initials — needs a ruling (marketing/ops only) */}
+                  {isAdmin && unknownInitials.length > 0 && (
+                    <div className="overflow-hidden rounded-md border border-purple-300 bg-purple-50">
+                      <div className="border-b border-purple-300 bg-purple-100 px-4 py-2 text-sm font-semibold text-purple-900">
+                        Unknown initials — needs a ruling ·{" "}
+                        {unknownInitials.length}
+                      </div>
+                      <div className="divide-y divide-purple-200">
+                        {unknownInitials.map((u) => (
+                          <div
+                            key={u.initials}
+                            className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-sm"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <span className="font-semibold text-purple-900">
+                                {u.initials}
+                              </span>
+                              <span className="ml-3 text-xs text-neutral-600">
+                                e.g. {u.exampleAdName}
+                              </span>
+                            </div>
+                            <div className="text-xs tabular-nums text-neutral-600">
+                              {u.adCount} ad{u.adCount === 1 ? "" : "s"} ·
+                              lifetime {fmtMoney(u.totalLifetimeSpendUsd)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="border-t border-purple-200 bg-purple-50 px-4 py-2 text-xs text-purple-800">
+                        AIAD ads whose initials aren't a known video editor.
+                        No bonus accrues until the client rules on them.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Per-editor pending approvals (marketing/ops only) */}
+                  {isAdmin && editorPending.length > 0 && (
+                    <div className="overflow-hidden rounded-md border border-amber-300 bg-amber-50">
+                      <div className="border-b border-amber-300 bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-900">
+                        Video editor pending approvals · {editorPending.length}
+                      </div>
+                      <div className="divide-y divide-amber-200">
+                        {editorPending.map((p) => (
+                          <div
+                            key={p.awardId}
+                            className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="font-medium text-neutral-900">
+                                <span>{p.marketer}</span>
+                                <span className="ml-3 text-neutral-500">·</span>
+                                <span className="ml-3">Ad {p.adNumber}</span>
+                                <span className="ml-3 text-neutral-500">·</span>
+                                <span className="ml-3">
+                                  {p.tier === "tier1"
+                                    ? "T1 ($13k)"
+                                    : "T2 ($65k)"}
+                                </span>
+                              </div>
+                              <div className="mt-0.5 text-xs text-neutral-600 truncate">
+                                {p.adName} · crossed {fmtDate(p.crossedAt)} ·
+                                lifetime {fmtMoney(p.lifetimeSpendUsd)}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {p.adLink && (
+                                <a
+                                  href={p.adLink}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-blue-600 hover:underline"
+                                >
+                                  View ad ↗
+                                </a>
+                              )}
+                              <button
+                                type="button"
+                                disabled={approve.isPending}
+                                onClick={() =>
+                                  approve.mutate({
+                                    awardId: p.awardId,
+                                    approval: "approved_full",
+                                  })
+                                }
+                                className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
+                                title="Approve"
+                              >
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                disabled={approve.isPending}
+                                onClick={() =>
+                                  approve.mutate({
+                                    awardId: p.awardId,
+                                    approval: "approved_half",
+                                  })
+                                }
+                                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                                title="Approve half"
+                              >
+                                Approve half
+                              </button>
+                              <button
+                                type="button"
+                                disabled={reject.isPending}
+                                onClick={() =>
+                                  reject.mutate({ awardId: p.awardId })
+                                }
+                                className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-100 disabled:opacity-50"
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {activeSections.length === 0 ? (
+                    <div className="rounded-md border border-neutral-200 bg-white px-4 py-6 text-sm text-neutral-500">
+                      No AIAD ads with a known video editor yet.
+                    </div>
+                  ) : (
+                    activeSections.map((section) => (
+                      <div key={section.editor} className="space-y-2">
+                        <div className="flex items-baseline gap-2">
+                          <h2 className="text-lg font-semibold text-neutral-900">
+                            {section.editor}
+                          </h2>
+                          <span className="text-xs text-neutral-500 tabular-nums">
+                            {section.rows.length} ad
+                            {section.rows.length === 1 ? "" : "s"} · lifetime{" "}
+                            {fmtMoney(
+                              section.rows.reduce(
+                                (sum, r) => sum + r.lifetimeSpendUsd,
+                                0,
+                              ),
+                            )}
+                          </span>
+                        </div>
+                        <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                              <thead>
+                                <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+                                  <th className="w-20 px-3 py-2 font-medium">Ad #</th>
+                                  <th className="px-3 py-2 font-medium">Ad name</th>
+                                  <th className="w-20 px-3 py-2 font-medium">Link</th>
+                                  <th className="w-32 px-3 py-2 text-right font-medium">
+                                    Lifetime spend
+                                  </th>
+                                  <th className="w-28 px-3 py-2 text-right font-medium">
+                                    Past 7D spend
+                                    {tracker.data?.past7dWindow && (
+                                      <span className="block text-[10px] font-normal text-neutral-400">
+                                        {fmtDate(tracker.data.past7dWindow.start)} –{" "}
+                                        {fmtDate(tracker.data.past7dWindow.end)}
+                                      </span>
+                                    )}
+                                  </th>
+                                  <th className="w-56 px-3 py-2 font-medium">
+                                    Progress to tiers
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {section.rows.map((r) => {
+                                  const t1Pct = Math.min(
+                                    100,
+                                    Math.round(
+                                      (r.lifetimeSpendUsd / BONUS_TIER_1_USD) * 100,
+                                    ),
+                                  );
+                                  const t2Pct = Math.min(
+                                    100,
+                                    Math.round(
+                                      (r.lifetimeSpendUsd / BONUS_TIER_2_USD) * 100,
+                                    ),
+                                  );
+                                  return (
+                                    <tr
+                                      key={r.adNumber}
+                                      className={`border-b border-neutral-100 last:border-b-0 ${rowClass({
+                                        tier1Status: r.awards.tier1?.status,
+                                        tier2Status: r.awards.tier2?.status,
+                                      })}`}
+                                    >
+                                      <td className="px-3 py-2 font-medium text-neutral-900 tabular-nums">
+                                        {r.adNumber}
+                                      </td>
+                                      <td className="px-3 py-2 text-neutral-800">
+                                        <div title={r.adNameRaw}>{r.adName}</div>
+                                        <div
+                                          className="text-[11px] text-neutral-400 truncate max-w-md"
+                                          title={r.adNameRaw}
+                                        >
+                                          {r.adNameRaw}
+                                        </div>
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {r.adLink ? (
+                                          <a
+                                            href={r.adLink}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-blue-600 hover:underline"
+                                          >
+                                            Open ↗
+                                          </a>
+                                        ) : (
+                                          <span className="text-neutral-400">—</span>
+                                        )}
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
+                                        {fmtMoney(r.lifetimeSpendUsd)}
+                                      </td>
+                                      <td className="px-3 py-2 text-right tabular-nums text-neutral-700">
+                                        {r.past7dSpendUsd > 0 ? (
+                                          fmtMoney(r.past7dSpendUsd)
+                                        ) : (
+                                          <span className="text-neutral-300">—</span>
+                                        )}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <div className="space-y-1.5">
+                                          <div className="flex items-center gap-2 text-[11px]">
+                                            <span className="w-9 text-right text-neutral-500 tabular-nums">
+                                              $13k
+                                            </span>
+                                            <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
+                                              <div
+                                                className="absolute inset-y-0 left-0 bg-orange-500"
+                                                style={{ width: `${t1Pct}%` }}
+                                              />
+                                            </div>
+                                            <span className="w-10 text-right text-neutral-500 tabular-nums">
+                                              {t1Pct}%
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-2 text-[11px]">
+                                            <span className="w-9 text-right text-neutral-500 tabular-nums">
+                                              $65k
+                                            </span>
+                                            <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
+                                              <div
+                                                className="absolute inset-y-0 left-0 bg-green-500"
+                                                style={{ width: `${t2Pct}%` }}
+                                              />
+                                            </div>
+                                            <span className="w-10 text-right text-neutral-500 tabular-nums">
+                                              {t2Pct}%
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+
+                  <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
+                    Video editor bonuses apply to AI video ads only (names
+                    tagged “AIad”). Same $13k / $65k lifetime-spend tiers;
+                    flat editor rates. The same ad can also earn its
+                    marketer's bonus.
+                  </div>
+                </div>
+              );
+            })()
           ) : (
           (() => {
             const marketer = activeView;
@@ -359,8 +694,9 @@ export default function BonusTrackerPage() {
 
             return (
               <div className="space-y-4">
-                {/* Per-marketer pending approvals */}
-                {marketerPending.length > 0 && (
+                {/* Per-marketer pending approvals (marketing/ops only —
+                    fb_ads_only is read-only per client 2026-07-02) */}
+                {isAdmin && marketerPending.length > 0 && (
                   <div className="overflow-hidden rounded-md border border-amber-300 bg-amber-50">
                     <div className="flex items-center justify-between border-b border-amber-300 bg-amber-100 px-4 py-2">
                       <div className="text-sm font-semibold text-amber-900">
@@ -674,8 +1010,8 @@ export default function BonusTrackerPage() {
         </div>
       )}
 
-      {/* Generate-notification preview modal */}
-      {showPreviewModal && previewData && (
+      {/* Generate-notification preview modal (marketing/ops only) */}
+      {isAdmin && showPreviewModal && previewData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-900/60 p-4">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-md bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
