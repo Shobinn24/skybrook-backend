@@ -2,8 +2,8 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { bonusAwards, bonusNotificationBatches } from "@/lib/db/schema";
 import {
-  type BonusMarketer,
   bonusAmountUsd,
+  isBonusMarketer,
 } from "@/lib/domain/bonus-tiers";
 import {
   isVideoEditor,
@@ -20,23 +20,43 @@ class ConcurrentSendError extends Error {}
  * free-text and holds either a marketer name or a video-editor display
  * name (the two rosters are disjoint — unit-tested in
  * video-editors.test.ts). Editors use the flat \$200/\$800 rates; the
- * marketer path is unchanged. */
-function awardAmountUsd(opts: {
+ * marketer path is unchanged.
+ *
+ * Fail-LOUD on anything else: award rows only ever come from the two
+ * crossing detectors, so a name in neither roster means a hand-inserted
+ * or corrupted row — investigate it, don't pay it. (Previously such a
+ * name silently fell through to secondary marketer rates.) A name in
+ * BOTH rosters is impossible while the disjointness invariant holds;
+ * this guard is the belt-and-braces that screams the day it doesn't.
+ * Exported for unit tests. */
+export function awardAmountUsd(opts: {
   marketer: string;
   tier: "tier1" | "tier2";
   approval: "approved_full" | "approved_half";
 }): number {
+  if (isVideoEditor(opts.marketer) && isBonusMarketer(opts.marketer)) {
+    throw new Error(
+      `bonus award name "${opts.marketer}" is in BOTH the video-editor and marketer rosters — ` +
+        `the rosters must stay disjoint (see video-editors.test.ts); refusing to price it`,
+    );
+  }
   if (isVideoEditor(opts.marketer)) {
     return videoEditorBonusAmountUsd({
       tier: opts.tier,
       approval: opts.approval,
     });
   }
-  return bonusAmountUsd({
-    marketer: opts.marketer as BonusMarketer,
-    tier: opts.tier,
-    approval: opts.approval,
-  });
+  if (isBonusMarketer(opts.marketer)) {
+    return bonusAmountUsd({
+      marketer: opts.marketer,
+      tier: opts.tier,
+      approval: opts.approval,
+    });
+  }
+  throw new Error(
+    `bonus award name "${opts.marketer}" is in neither the marketer nor the video-editor roster — ` +
+      `refusing to price it (award rows should only come from the crossing detectors)`,
+  );
 }
 
 export type ApproveBonusOpts = {

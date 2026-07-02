@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { BONUS_MARKETERS } from "@/lib/domain/bonus-tiers";
+import { FB_MARKETERS } from "@/lib/domain/fb-marketers";
 import {
   EXCLUDED_VIDEO_EDITOR_INITIALS,
   VIDEO_EDITORS,
@@ -123,12 +125,16 @@ describe("video editor bonus amounts (flat — no main/secondary split)", () => 
 });
 
 describe("roster invariants", () => {
-  it("editor display names never collide with the marketer roster (shared bonus_awards.marketer column + unique index)", () => {
-    // BONUS_MARKETERS + FB_MARKETERS live in their own modules; the
-    // uniqueness contract on bonus_awards (ad, marketer, tier) relies on
-    // editor names being disjoint from marketer names.
-    const marketers = ["Craig", "Nate", "Raul", "Tyler", "Scotty", "Jacob", "Dan", "JW"];
-    for (const e of VIDEO_EDITORS) expect(marketers).not.toContain(e);
+  it("editor display names never collide with the LIVE marketer rosters (shared bonus_awards.marketer column + unique index)", () => {
+    // The uniqueness contract on bonus_awards (ad, marketer, tier) — and
+    // the amount branching in bonus-mutations — rely on editor display
+    // names being disjoint from marketer names. Assert against the LIVE
+    // rosters so adding a colliding name to either side trips this test
+    // immediately (a frozen copy here would defeat the invariant).
+    for (const e of VIDEO_EDITORS) {
+      expect(FB_MARKETERS as ReadonlyArray<string>).not.toContain(e);
+      expect(BONUS_MARKETERS as ReadonlyArray<string>).not.toContain(e);
+    }
   });
 
   it("excluded initials cover the client's ruled-out tags", () => {
