@@ -118,6 +118,123 @@ describe("approveBonus", () => {
   });
 });
 
+describe("approveBonus — video editor awards (flat \$200/\$800 rates)", () => {
+  beforeAll(() => {
+    if (!process.env.DATABASE_URL)
+      throw new Error("DATABASE_URL not set in test env");
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+    await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+    await db.execute(sql`TRUNCATE TABLE bonus_notification_batches CASCADE`);
+    await db.execute(sql`TRUNCATE TABLE data_pulls CASCADE`);
+  });
+
+  async function seedEditorPending(opts: {
+    adNumber: string;
+    editor: string;
+    tier: "tier1" | "tier2";
+  }) {
+    const [row] = await db
+      .insert(bonusAwards)
+      .values({
+        adNumber: opts.adNumber,
+        marketer: opts.editor, // free-text column stores the editor display name
+        tier: opts.tier,
+        crossedAt: "2026-06-01",
+        status: "pending",
+        amountUsd: opts.tier === "tier1" ? "200.00" : "800.00",
+      })
+      .returning();
+    return row;
+  }
+
+  it("approves an editor T1 at \$200 full / \$100 half", async () => {
+    const t1 = await seedEditorPending({
+      adNumber: "3001",
+      editor: "Sebastian",
+      tier: "tier1",
+    });
+    await approveBonus({
+      awardId: t1.id,
+      approval: "approved_full",
+      approvedBy: "jasper",
+    });
+    let [after] = await db.select().from(bonusAwards);
+    expect(after.status).toBe("approved_full");
+    expect(Number(after.amountUsd)).toBe(200);
+
+    await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+    const t1b = await seedEditorPending({
+      adNumber: "3002",
+      editor: "Phat Lee",
+      tier: "tier1",
+    });
+    await approveBonus({
+      awardId: t1b.id,
+      approval: "approved_half",
+      approvedBy: "jasper",
+    });
+    [after] = await db.select().from(bonusAwards);
+    expect(after.status).toBe("approved_half");
+    expect(Number(after.amountUsd)).toBe(100);
+  });
+
+  it("approves an editor T2 at \$800 full / \$400 half", async () => {
+    const t2 = await seedEditorPending({
+      adNumber: "3003",
+      editor: "Greg",
+      tier: "tier2",
+    });
+    await approveBonus({
+      awardId: t2.id,
+      approval: "approved_full",
+      approvedBy: "jasper",
+    });
+    let [after] = await db.select().from(bonusAwards);
+    expect(Number(after.amountUsd)).toBe(800);
+
+    await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+    const t2b = await seedEditorPending({
+      adNumber: "3004",
+      editor: "Ryan",
+      tier: "tier2",
+    });
+    await approveBonus({
+      awardId: t2b.id,
+      approval: "approved_half",
+      approvedBy: "jasper",
+    });
+    [after] = await db.select().from(bonusAwards);
+    expect(Number(after.amountUsd)).toBe(400);
+  });
+
+  it("bulk-approve prices editor rows at editor rates and marketer rows at marketer rates", async () => {
+    await seedPending("601", ["Craig"], 14_000); // marketer T1 → $500
+    await seedEditorPending({
+      adNumber: "601",
+      editor: "Cristian",
+      tier: "tier1", // editor T1 → $200 (dual credit on the same ad)
+    });
+    await seedEditorPending({
+      adNumber: "3005",
+      editor: "Job",
+      tier: "tier2", // editor T2 → $800
+    });
+
+    const result = await bulkApprovePending({ approvedBy: "jasper" });
+    expect(result.updatedCount).toBe(3);
+
+    const rows = await db.select().from(bonusAwards);
+    const amounts = rows.map((r) => Number(r.amountUsd)).sort((a, b) => a - b);
+    expect(amounts).toEqual([200, 500, 800]);
+    expect(new Set(rows.map((r) => r.status))).toEqual(
+      new Set(["approved_full"]),
+    );
+  });
+});
+
 describe("rejectBonus", () => {
   beforeAll(() => {
     if (!process.env.DATABASE_URL)

@@ -5,12 +5,39 @@ import {
   type BonusMarketer,
   bonusAmountUsd,
 } from "@/lib/domain/bonus-tiers";
+import {
+  isVideoEditor,
+  videoEditorBonusAmountUsd,
+} from "@/lib/domain/video-editors";
 import { previewNotification } from "@/lib/queries/bonus-tracker";
 import { logger } from "@/lib/logger";
 
 /** Thrown inside the claim transaction when another send already
  * stamped one of the previewed awards — rolls the whole claim back. */
 class ConcurrentSendError extends Error {}
+
+/** Canonical frozen amount for an award row. `bonus_awards.marketer` is
+ * free-text and holds either a marketer name or a video-editor display
+ * name (the two rosters are disjoint — unit-tested in
+ * video-editors.test.ts). Editors use the flat \$200/\$800 rates; the
+ * marketer path is unchanged. */
+function awardAmountUsd(opts: {
+  marketer: string;
+  tier: "tier1" | "tier2";
+  approval: "approved_full" | "approved_half";
+}): number {
+  if (isVideoEditor(opts.marketer)) {
+    return videoEditorBonusAmountUsd({
+      tier: opts.tier,
+      approval: opts.approval,
+    });
+  }
+  return bonusAmountUsd({
+    marketer: opts.marketer as BonusMarketer,
+    tier: opts.tier,
+    approval: opts.approval,
+  });
+}
 
 export type ApproveBonusOpts = {
   awardId: string;
@@ -42,8 +69,8 @@ export async function approveBonus(opts: ApproveBonusOpts): Promise<{
     return { updated: false, awardId: opts.awardId };
   }
 
-  const amount = bonusAmountUsd({
-    marketer: current.marketer as BonusMarketer,
+  const amount = awardAmountUsd({
+    marketer: current.marketer,
     tier: current.tier,
     approval: opts.approval,
   });
@@ -133,8 +160,8 @@ export async function bulkApprovePending(opts: {
   // but at the scale we expect (≤100 rows during the one-time
   // backfill), per-row is simpler and easier to audit.
   for (const p of pending) {
-    const amount = bonusAmountUsd({
-      marketer: p.marketer as BonusMarketer,
+    const amount = awardAmountUsd({
+      marketer: p.marketer,
       tier: p.tier,
       approval: "approved_full",
     });
