@@ -163,6 +163,17 @@ export function lineageForCheck(name: string): Lineage {
     };
   }
 
+  // Session auth round-trip: not a table — a broken login gate takes down
+  // (or un-protects) every page at once, so name that instead of listing
+  // routes.
+  if (name === "auth_round_trip") {
+    return {
+      subject: "session auth",
+      dashboards: [],
+      note: "ALL pages (session login gate)",
+    };
+  }
+
   // Factory-order integrity checks.
   if (name.startsWith("factory_orders.")) {
     // active_skus_missing_cost is really a skus.unit_cost gap; route it to

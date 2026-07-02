@@ -16,6 +16,7 @@ import { desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { alertEvents, dataPulls } from "@/lib/db/schema";
 import { evaluateFreshness } from "@/lib/jobs/freshness-check";
+import { checkAuthRoundTrip } from "@/lib/jobs/auth-roundtrip-check";
 import { affectedLabel } from "@/lib/jobs/lineage";
 
 export const runtime = "nodejs";
@@ -112,6 +113,7 @@ export async function GET() {
   const sources = await getSourceHealth();
   const { asOfDate, threshold, checks } = await evaluateFreshness();
   const bridge = await checkWhatsAppBridge();
+  const auth = await checkAuthRoundTrip();
 
   const [{ count: openAlerts = 0 } = { count: 0 }] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -120,8 +122,13 @@ export async function GET() {
 
   const tableFails = checks.filter((c) => c.status === "fail").length;
   const sourceFails = sources.filter((s) => s.lastStatus === "failed").length;
+  // auth_round_trip "fail" is page-worthy (login gate broken = every page
+  // unusable or unprotected — the 2026-07-01 outage class), so it flips
+  // overall like a data-freshness fail. Its "warn" (probe couldn't run)
+  // does not.
+  const authFails = auth.status === "fail" ? 1 : 0;
   const overall: "pass" | "fail" =
-    tableFails === 0 && sourceFails === 0 ? "pass" : "fail";
+    tableFails === 0 && sourceFails === 0 && authFails === 0 ? "pass" : "fail";
 
   const body = {
     ok: overall === "pass",
@@ -152,6 +159,17 @@ export async function GET() {
         threshold: null,
         detail: bridge.detail,
         affectedDashboards: affectedLabel(bridge.name),
+      },
+      // Auth round-trip: signs a session token (Node runtime) and fetches
+      // the protected selfcheck route through the real middleware (Edge
+      // sandbox), catching sign/verify divergence before users hit it.
+      {
+        name: auth.name,
+        status: auth.status,
+        maxDate: null,
+        threshold: null,
+        detail: auth.detail,
+        affectedDashboards: affectedLabel(auth.name),
       },
     ],
   };

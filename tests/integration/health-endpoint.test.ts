@@ -10,6 +10,7 @@ import {
 } from "@/lib/db/schema";
 import { GET } from "@/app/api/health/route";
 import { AD_SPEND_TABS } from "@/lib/sources/sheets";
+import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
 import "dotenv/config";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -30,6 +31,83 @@ async function seedRawPull() {
   rawPullId = row.id;
 }
 
+// Cookie-aware fetch stub. The health route's auth round-trip check probes
+// /api/auth/selfcheck through the (real, deployed) middleware; here we fake
+// that boundary: a cookie that verifies against SESSION_SECRET gets 200,
+// anything else 307-bounces — the middleware's contract. All other URLs
+// (e.g. the whatsapp bridge probe) keep the old generic 200 "ok" response.
+function stubAppFetch(overrides?: { validStatus?: number; selfcheckError?: boolean }) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/api/auth/selfcheck")) {
+        if (overrides?.selfcheckError) throw new Error("connect ECONNREFUSED");
+        const cookie = String(
+          (init?.headers as Record<string, string> | undefined)?.cookie ?? "",
+        );
+        const m = new RegExp(`${SESSION_COOKIE}=([^;]+)`).exec(cookie);
+        const session = m
+          ? await verifySessionToken(process.env.SESSION_SECRET!, m[1])
+          : null;
+        const status = session ? (overrides?.validStatus ?? 200) : 307;
+        return new Response(status === 200 ? JSON.stringify({ ok: true }) : null, {
+          status,
+          headers: status === 307 ? { location: "https://app.example/login" } : {},
+        });
+      }
+      return new Response("ok", { status: 200 });
+    }),
+  );
+}
+
+// Seeds yesterday-EST rows into every freshness-checked table so the data
+// side of /api/health evaluates to pass. Extracted so the auth-check tests
+// can isolate "auth broke" from "data is stale".
+async function seedFreshData() {
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  // Per-product freshness check (added 2026-05-22) requires every
+  // canonical Supermetrics tab to have fresh data — seeding a single
+  // synthetic product no longer counts as "ad_spend is healthy".
+  for (const product of AD_SPEND_TABS) {
+    await db.insert(adSpendDaily).values({
+      product,
+      spendDate: yesterday,
+      costUsd: "1",
+      sourcePullId: rawPullId,
+    });
+  }
+  await db.execute(sql`
+      INSERT INTO fb_ad_spend_daily (ad_number, ad_name, ad_name_raw, marketers, spend_date, cost_usd, source_pull_id)
+      VALUES ('1', 'x', 'x', '{}', ${yesterday}, '1', ${rawPullId})
+    `);
+  await db.execute(sql`
+      INSERT INTO applovin_ad_spend_daily (product, spend_date, cost_usd, source_pull_id)
+      VALUES ('9055', ${yesterday}, '1', ${rawPullId})
+    `);
+  await db.execute(sql`
+      INSERT INTO stock_snapshots (sku, location, snapshot_date, on_hand, source_pull_id)
+      VALUES ('s', 'US', ${yesterday}, 1, ${rawPullId})
+    `);
+  await db.execute(sql`
+      INSERT INTO daily_sales (channel, routed_location, sku, sales_date, units_sold, net_sales_usd, source_pull_id)
+      VALUES ('shopify_us', 'US', 's', ${yesterday}, 1, '1', ${rawPullId})
+    `);
+  await db.execute(sql`
+      INSERT INTO daily_sales (channel, routed_location, sku, sales_date, units_sold, net_sales_usd, source_pull_id)
+      VALUES ('shopify_intl', 'CN', 's', ${yesterday}, 1, '1', ${rawPullId})
+    `);
+  // 2026-05-18 monitoring extension: shipping_stats_daily freshness
+  // must also pass. The other two new checks (factory-order integrity)
+  // pass by default on empty tables, so no seed needed for them.
+  await db.execute(sql`
+      INSERT INTO shipping_stats_daily (snapshot_date, delivered_count, transit_histogram)
+      VALUES (${yesterday}, 0, '{}'::jsonb)
+    `);
+}
+
 describe("GET /api/health", () => {
   beforeAll(() => {
     if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL not set");
@@ -40,10 +118,7 @@ describe("GET /api/health", () => {
       sql`TRUNCATE TABLE alert_events, data_pulls, ad_spend_daily, fb_ad_spend_daily, daily_sales, stock_snapshots, shipping_stats_daily, factory_order_lines, factory_orders, factory_order_inputs, skus, raw_pulls CASCADE`,
     );
     await seedRawPull();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(new Response("ok", { status: 200 })),
-    );
+    stubAppFetch();
   });
 
   afterEach(() => {
@@ -143,53 +218,51 @@ describe("GET /api/health", () => {
   });
 
   it("returns 200 + overall=pass when everything is fresh", async () => {
-    // Seed yesterday EST data into every table.
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000)
-      .toISOString()
-      .slice(0, 10);
-    // Per-product freshness check (added 2026-05-22) requires every
-    // canonical Supermetrics tab to have fresh data — seeding a single
-    // synthetic product no longer counts as "ad_spend is healthy".
-    for (const product of AD_SPEND_TABS) {
-      await db.insert(adSpendDaily).values({
-        product,
-        spendDate: yesterday,
-        costUsd: "1",
-        sourcePullId: rawPullId,
-      });
-    }
-    await db.execute(sql`
-      INSERT INTO fb_ad_spend_daily (ad_number, ad_name, ad_name_raw, marketers, spend_date, cost_usd, source_pull_id)
-      VALUES ('1', 'x', 'x', '{}', ${yesterday}, '1', ${rawPullId})
-    `);
-    await db.execute(sql`
-      INSERT INTO applovin_ad_spend_daily (product, spend_date, cost_usd, source_pull_id)
-      VALUES ('9055', ${yesterday}, '1', ${rawPullId})
-    `);
-    await db.execute(sql`
-      INSERT INTO stock_snapshots (sku, location, snapshot_date, on_hand, source_pull_id)
-      VALUES ('s', 'US', ${yesterday}, 1, ${rawPullId})
-    `);
-    await db.execute(sql`
-      INSERT INTO daily_sales (channel, routed_location, sku, sales_date, units_sold, net_sales_usd, source_pull_id)
-      VALUES ('shopify_us', 'US', 's', ${yesterday}, 1, '1', ${rawPullId})
-    `);
-    await db.execute(sql`
-      INSERT INTO daily_sales (channel, routed_location, sku, sales_date, units_sold, net_sales_usd, source_pull_id)
-      VALUES ('shopify_intl', 'CN', 's', ${yesterday}, 1, '1', ${rawPullId})
-    `);
-    // 2026-05-18 monitoring extension: shipping_stats_daily freshness
-    // must also pass. The other two new checks (factory-order integrity)
-    // pass by default on empty tables, so no seed needed for them.
-    await db.execute(sql`
-      INSERT INTO shipping_stats_daily (snapshot_date, delivered_count, transit_histogram)
-      VALUES (${yesterday}, 0, '{}'::jsonb)
-    `);
+    await seedFreshData();
 
     const res = await GET();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(body.overall).toBe("pass");
+  });
+
+  it("includes a passing auth_round_trip table entry when the login gate round-trips", async () => {
+    await seedFreshData();
+    const res = await GET();
+    const body = await res.json();
+    const auth = body.tables.find(
+      (t: { name: string }) => t.name === "auth_round_trip",
+    );
+    expect(auth).toBeDefined();
+    expect(auth.status).toBe("pass");
+  });
+
+  it("flips overall to fail + 503 when the middleware bounces a signed session, even with fresh data", async () => {
+    await seedFreshData();
+    stubAppFetch({ validStatus: 307 });
+    const res = await GET();
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.overall).toBe("fail");
+    const auth = body.tables.find(
+      (t: { name: string }) => t.name === "auth_round_trip",
+    );
+    expect(auth.status).toBe("fail");
+    expect(auth.detail).toContain("bounced");
+  });
+
+  it("treats an unreachable auth probe as warn, not fail", async () => {
+    await seedFreshData();
+    stubAppFetch({ selfcheckError: true });
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.overall).toBe("pass");
+    const auth = body.tables.find(
+      (t: { name: string }) => t.name === "auth_round_trip",
+    );
+    expect(auth.status).toBe("warn");
+    expect(auth.detail).toContain("unreachable");
   });
 });
