@@ -405,6 +405,7 @@ export default function BonusTrackerPage() {
       utils.inventory.previewBonusNotification.invalidate(),
       utils.inventory.getBonusNotificationHistory.invalidate(),
       utils.inventory.getBonusSummary.invalidate(),
+      utils.inventory.getBonusCountSummary.invalidate(),
       utils.inventory.getVideoEditorBonusCountSummary.invalidate(),
     ]);
   };
