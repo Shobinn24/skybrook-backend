@@ -52,7 +52,6 @@ describe("tRPC tier gating", () => {
 
   it("fb_ads_only cannot reach marketing or ops surfaces", async () => {
     const c = caller({ tier: "fb_ads_only" });
-    await expectCode(c.inventory.getBonusTracker(), "FORBIDDEN");
     await expectCode(c.inventory.getLaunches(), "FORBIDDEN");
     await expectCode(c.inventory.getInventoryRows({ location: "US" }), "FORBIDDEN");
     await expectCode(c.inventory.bulkApprovePending(), "FORBIDDEN");
@@ -60,6 +59,41 @@ describe("tRPC tier gating", () => {
     await expectCode(c.admin.listKnownFamilies(), "FORBIDDEN");
     await expectCode(c.shippingAudit.getView(), "FORBIDDEN");
     await expectCode(c.pipeline.getPullHistoryAllSources(), "FORBIDDEN");
+  });
+
+  it("fb_ads_only can read the bonus tracker but NOT touch approval/notification surfaces (client 2026-07-02)", async () => {
+    const c = caller({ tier: "fb_ads_only" });
+    // Deny paths throw in the tier middleware BEFORE any resolver runs,
+    // so no DB is needed. (The allow path for getBonusTracker & co. hits
+    // the DB and is covered in tests/integration/bonus-tracker.test.ts.)
+    await expectCode(
+      c.inventory.approveBonus({
+        awardId: "00000000-0000-0000-0000-000000000000",
+        approval: "approved_full",
+      }),
+      "FORBIDDEN",
+    );
+    await expectCode(
+      c.inventory.rejectBonus({
+        awardId: "00000000-0000-0000-0000-000000000000",
+      }),
+      "FORBIDDEN",
+    );
+    await expectCode(c.inventory.getPendingBonusApprovals(), "FORBIDDEN");
+    await expectCode(c.inventory.previewBonusNotification(), "FORBIDDEN");
+    await expectCode(c.inventory.sendBonusNotification(), "FORBIDDEN");
+  });
+
+  it("getMyAccessTier reflects the session tier for every tier", async () => {
+    await expect(
+      caller({ tier: "fb_ads_only" }).inventory.getMyAccessTier(),
+    ).resolves.toEqual({ tier: "fb_ads_only" });
+    await expect(
+      caller({ tier: "marketing" }).inventory.getMyAccessTier(),
+    ).resolves.toEqual({ tier: "marketing" });
+    await expect(
+      caller({ tier: "ops" }).inventory.getMyAccessTier(),
+    ).resolves.toEqual({ tier: "ops" });
   });
 
   it("marketing cannot reach ops-only surfaces", async () => {

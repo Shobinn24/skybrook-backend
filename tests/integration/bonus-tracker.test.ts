@@ -24,6 +24,7 @@ import {
 import { approveBonus, sendNotification } from "@/lib/jobs/bonus-mutations";
 import { resetDb } from "@/tests/fixtures/seed";
 import { toEstDate } from "@/lib/tz";
+import { appRouter } from "@/lib/trpc/routers";
 
 // Date-only arithmetic mirroring lib/queries/bonus-tracker.ts so the
 // 7d-window tests stay in sync with the production calculation.
@@ -925,6 +926,30 @@ describe("getBonusTracker", () => {
       expect(preview.awards).toEqual([]);
       expect(preview.messageBody).toContain("May 2026 Bonuses");
       expect(preview.messageBody).toContain("(no approved bonuses this period)");
+    });
+  });
+
+  describe("fb_ads_only read access via tRPC (client 2026-07-02)", () => {
+    beforeEach(async () => {
+      await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+      await db.execute(sql`TRUNCATE TABLE bonus_notification_batches CASCADE`);
+    });
+
+    it("an fb_ads_only session can call the bonus-tracker read queries", async () => {
+      const c = appRouter.createCaller({
+        email: "buyer@example.com",
+        tier: "fb_ads_only",
+        cashflowAllowed: false,
+      });
+      const tracker = await c.inventory.getBonusTracker();
+      expect(tracker.sections.map((s) => s.marketer)).toContain("Craig");
+      expect(tracker.videoEditors.map((s) => s.editor)).toContain("Sebastian");
+
+      const summary = await c.inventory.getBonusCountSummary();
+      expect(summary.marketers.length).toBeGreaterThan(0);
+
+      const history = await c.inventory.getBonusNotificationHistory();
+      expect(Array.isArray(history)).toBe(true);
     });
   });
 
