@@ -9,6 +9,10 @@ import {
   isBonusMarketer,
   type BonusMarketer,
 } from "@/lib/domain/bonus-tiers";
+import { VIDEO_EDITORS, type VideoEditor } from "@/lib/domain/video-editors";
+// Type-only import — erased at compile time, so the client bundle never
+// pulls in the query module (which imports the db client).
+import type { BonusAdRow } from "@/lib/queries/bonus-tracker";
 
 function fmtMoney(n: number): string {
   return n.toLocaleString("en-US", {
@@ -79,6 +83,149 @@ function tierBadge(status: string | undefined, tier: "T1" | "T2") {
   return null;
 }
 
+// The lifetime-spend ad table with per-tier progress bars — extracted
+// verbatim from the per-marketer view so the Marketers and Video
+// Editors modes render the exact same DOM for their tables (quality
+// review 2026-07-02: single source for the duplicated markup).
+function BonusAdTable({
+  rows,
+  emptyText,
+  past7dWindow,
+}: {
+  rows: BonusAdRow[];
+  emptyText: string;
+  past7dWindow: { start: string; end: string } | undefined;
+}) {
+  return (
+    <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
+      {rows.length === 0 ? (
+        <div className="px-4 py-6 text-sm text-neutral-500">{emptyText}</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+                <th className="w-20 px-3 py-2 font-medium">Ad #</th>
+                <th className="px-3 py-2 font-medium">Ad name</th>
+                <th className="w-20 px-3 py-2 font-medium">Link</th>
+                <th className="w-32 px-3 py-2 text-right font-medium">
+                  Lifetime spend
+                </th>
+                <th className="w-28 px-3 py-2 text-right font-medium">
+                  Past 7D spend
+                  {past7dWindow && (
+                    <span className="block text-[10px] font-normal text-neutral-400">
+                      {fmtDate(past7dWindow.start)} –{" "}
+                      {fmtDate(past7dWindow.end)}
+                    </span>
+                  )}
+                </th>
+                <th className="w-56 px-3 py-2 font-medium">
+                  Progress to tiers
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const t1Pct = Math.min(
+                  100,
+                  Math.round(
+                    (r.lifetimeSpendUsd / BONUS_TIER_1_USD) * 100,
+                  ),
+                );
+                const t2Pct = Math.min(
+                  100,
+                  Math.round(
+                    (r.lifetimeSpendUsd / BONUS_TIER_2_USD) * 100,
+                  ),
+                );
+                return (
+                  <tr
+                    key={r.adNumber}
+                    className={`border-b border-neutral-100 last:border-b-0 ${rowClass({
+                      tier1Status: r.awards.tier1?.status,
+                      tier2Status: r.awards.tier2?.status,
+                    })}`}
+                  >
+                    <td className="px-3 py-2 font-medium text-neutral-900 tabular-nums">
+                      {r.adNumber}
+                    </td>
+                    <td className="px-3 py-2 text-neutral-800">
+                      <div title={r.adNameRaw}>{r.adName}</div>
+                      <div
+                        className="text-[11px] text-neutral-400 truncate max-w-md"
+                        title={r.adNameRaw}
+                      >
+                        {r.adNameRaw}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      {r.adLink ? (
+                        <a
+                          href={r.adLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline"
+                        >
+                          Open ↗
+                        </a>
+                      ) : (
+                        <span className="text-neutral-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
+                      {fmtMoney(r.lifetimeSpendUsd)}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-neutral-700">
+                      {r.past7dSpendUsd > 0 ? (
+                        fmtMoney(r.past7dSpendUsd)
+                      ) : (
+                        <span className="text-neutral-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2 text-[11px]">
+                          <span className="w-9 text-right text-neutral-500 tabular-nums">
+                            $13k
+                          </span>
+                          <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
+                            <div
+                              className="absolute inset-y-0 left-0 bg-orange-500"
+                              style={{ width: `${t1Pct}%` }}
+                            />
+                          </div>
+                          <span className="w-10 text-right text-neutral-500 tabular-nums">
+                            {t1Pct}%
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px]">
+                          <span className="w-9 text-right text-neutral-500 tabular-nums">
+                            $65k
+                          </span>
+                          <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
+                            <div
+                              className="absolute inset-y-0 left-0 bg-green-500"
+                              style={{ width: `${t2Pct}%` }}
+                            />
+                          </div>
+                          <span className="w-10 text-right text-neutral-500 tabular-nums">
+                            {t2Pct}%
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function BonusTrackerPage() {
   // The caller's access tier drives which controls render: fb_ads_only
   // gets a read-only view (client 2026-07-02) — approve/reject/bulk/
@@ -136,23 +283,31 @@ export default function BonusTrackerPage() {
     onSuccess: refreshAll,
   });
 
-  type ActiveView = BonusMarketer | "summary" | "videoEditors";
+  // Program toggle (operator design 2026-07-02): the page hosts two
+  // bonus programs. "Marketers" renders the original page unchanged;
+  // "Video Editors" mirrors that UX per-editor. Each program keeps its
+  // own active-tab state so flipping between them doesn't lose position.
+  type Program = "marketers" | "videoEditors";
+  const [program, setProgram] = useState<Program>("marketers");
+
+  type ActiveView = BonusMarketer | "summary";
   // Summary is the default landing view and the leftmost tab (Jasper 2026-05-26).
   const [activeView, setActiveView] = useState<ActiveView>("summary");
+  const [activeEditor, setActiveEditor] = useState<VideoEditor>(
+    VIDEO_EDITORS[0],
+  );
   const [showPreviewModal, setShowPreviewModal] = useState(false);
 
   const sectionsByMarketer = new Map(
     (tracker.data?.sections ?? []).map((s) => [s.marketer, s]),
   );
+  const sectionsByEditor = new Map(
+    (tracker.data?.videoEditors ?? []).map((s) => [s.editor, s]),
+  );
+  const unknownInitials = tracker.data?.unknownInitials ?? [];
 
   const pendingItems = pending.data ?? [];
   const previewData = preview.data;
-  const videoEditorSections = tracker.data?.videoEditors ?? [];
-  const unknownInitials = tracker.data?.unknownInitials ?? [];
-  const videoEditorAdCount = videoEditorSections.reduce(
-    (sum, s) => sum + s.rows.length,
-    0,
-  );
 
   return (
     <div className="space-y-6">
@@ -187,210 +342,401 @@ export default function BonusTrackerPage() {
         <div className="text-sm text-neutral-500">Loading…</div>
       ) : (
         <div className="space-y-4">
-          {/* Summary + marketer tab strip — Summary first (Jasper 2026-05-26). */}
-          <div className="flex flex-wrap gap-2">
-            {/* Summary tab — bonus paid per month per marketer (Jasper 2026-05-20). */}
-            <button
-              type="button"
-              onClick={() => setActiveView("summary")}
-              aria-pressed={activeView === "summary"}
-              className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                activeView === "summary"
-                  ? "bg-neutral-900 text-white"
-                  : "border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
-              }`}
-            >
-              Summary
-            </button>
-            {BONUS_MARKETERS.map((marketer) => {
-              const section = sectionsByMarketer.get(marketer);
-              const count = section?.rows.length ?? 0;
-              const isActive = activeView === marketer;
-              return (
+          {/* Program toggle — Marketers (the original page, unchanged) vs
+              Video Editors (client 2026-07-02). One notification batch
+              covers both programs, so the header controls stay global. */}
+          <div className="inline-flex rounded-md border border-neutral-200 bg-white p-0.5">
+            {(
+              [
+                ["marketers", "Marketers"],
+                ["videoEditors", "Video Editors"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setProgram(value)}
+                aria-pressed={program === value}
+                className={`rounded px-3 py-1.5 text-sm font-medium transition ${
+                  program === value
+                    ? "bg-neutral-900 text-white"
+                    : "text-neutral-700 hover:bg-neutral-50"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {program === "marketers" ? (
+            <>
+              {/* Summary + marketer tab strip — Summary first (Jasper 2026-05-26). */}
+              <div className="flex flex-wrap gap-2">
+                {/* Summary tab — bonus paid per month per marketer (Jasper 2026-05-20). */}
                 <button
-                  key={marketer}
                   type="button"
-                  onClick={() => setActiveView(marketer)}
-                  aria-pressed={isActive}
+                  onClick={() => setActiveView("summary")}
+                  aria-pressed={activeView === "summary"}
                   className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                    isActive
+                    activeView === "summary"
                       ? "bg-neutral-900 text-white"
                       : "border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
                   }`}
                 >
-                  {marketer}
-                  <span
-                    className={`inline-flex min-w-[1.5rem] items-center justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${
-                      isActive
-                        ? "bg-white/20 text-white"
-                        : "bg-neutral-100 text-neutral-600"
-                    }`}
-                  >
-                    {count}
-                  </span>
+                  Summary
                 </button>
-              );
-            })}
-            {/* Video Editors tab (client 2026-07-02) — appended after the
-                marketer tabs; do not reorder the existing strip. */}
-            <button
-              type="button"
-              onClick={() => setActiveView("videoEditors")}
-              aria-pressed={activeView === "videoEditors"}
-              className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                activeView === "videoEditors"
-                  ? "bg-neutral-900 text-white"
-                  : "border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
-              }`}
-            >
-              Video Editors
-              <span
-                className={`inline-flex min-w-[1.5rem] items-center justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${
-                  activeView === "videoEditors"
-                    ? "bg-white/20 text-white"
-                    : "bg-neutral-100 text-neutral-600"
-                }`}
-              >
-                {videoEditorAdCount}
-              </span>
-            </button>
-          </div>
+                {BONUS_MARKETERS.map((marketer) => {
+                  const section = sectionsByMarketer.get(marketer);
+                  const count = section?.rows.length ?? 0;
+                  const isActive = activeView === marketer;
+                  return (
+                    <button
+                      key={marketer}
+                      type="button"
+                      onClick={() => setActiveView(marketer)}
+                      aria-pressed={isActive}
+                      className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                        isActive
+                          ? "bg-neutral-900 text-white"
+                          : "border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
+                      }`}
+                    >
+                      {marketer}
+                      <span
+                        className={`inline-flex min-w-[1.5rem] items-center justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${
+                          isActive
+                            ? "bg-white/20 text-white"
+                            : "bg-neutral-100 text-neutral-600"
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
 
-          {/* Active tab content */}
-          {activeView === "summary" ? (
-            (() => {
-              // Count-only Summary (Jasper 2026-05-28 redesign) — mirrors
-              // the Ads Bonus Tracking 3 Summary tab. Rows are (month ×
-              // type) tuples, columns are marketers in Jasper's order.
-              // Cells show the count of awards for that (month, type,
-              // marketer). 4-row sections per month, monthly section
-              // dividers between months.
-              const data = summary.data;
-              if (summary.isLoading) {
-                return <div className="text-sm text-neutral-500">Loading summary…</div>;
-              }
-              if (!data || data.rows.length === 0) {
-                return (
-                  <div className="rounded-md border border-neutral-200 bg-white px-4 py-6 text-sm text-neutral-500">
-                    No notifications sent yet for May 2026 onwards — the
-                    scoreboard fills in as monthly batches go out.
-                  </div>
-                );
-              }
+              {/* Active tab content */}
+              {activeView === "summary" ? (
+                (() => {
+                  // Count-only Summary (Jasper 2026-05-28 redesign) — mirrors
+                  // the Ads Bonus Tracking 3 Summary tab. Rows are (month ×
+                  // type) tuples, columns are marketers in Jasper's order.
+                  // Cells show the count of awards for that (month, type,
+                  // marketer). 4-row sections per month, monthly section
+                  // dividers between months.
+                  const data = summary.data;
+                  if (summary.isLoading) {
+                    return <div className="text-sm text-neutral-500">Loading summary…</div>;
+                  }
+                  if (!data || data.rows.length === 0) {
+                    return (
+                      <div className="rounded-md border border-neutral-200 bg-white px-4 py-6 text-sm text-neutral-500">
+                        No notifications sent yet for May 2026 onwards — the
+                        scoreboard fills in as monthly batches go out.
+                      </div>
+                    );
+                  }
 
-              // "JW" → "J Weston" for the column header per Jasper's
-              // sheet labels. Keep the data layer using the short code.
-              const marketerLabel = (m: string) =>
-                m === "JW" ? "J Weston" : m;
+                  // "JW" → "J Weston" for the column header per Jasper's
+                  // sheet labels. Keep the data layer using the short code.
+                  const marketerLabel = (m: string) =>
+                    m === "JW" ? "J Weston" : m;
 
-              return (
-                <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
-                          <th className="px-3 py-2 font-medium">Month</th>
-                          <th className="px-3 py-2 font-medium">Type</th>
-                          {data.marketers.map((m) => (
-                            <th
-                              key={m}
-                              className="px-3 py-2 text-right font-medium tabular-nums"
-                            >
-                              {marketerLabel(m)}
-                            </th>
-                          ))}
-                          <th className="px-3 py-2 text-right font-medium">Total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.rows.map((r, i) => {
-                          // Render a thicker top border on the FIRST row
-                          // of each new month, so the 4-row monthly
-                          // sections read visually. Also blank the Month
-                          // cell on rows 2-4 of a section.
-                          const isFirstOfMonth =
-                            i === 0 || data.rows[i - 1].month !== r.month;
-                          return (
-                            <tr
-                              key={`${r.month}-${r.type}`}
-                              className={
-                                "hover:bg-neutral-50 " +
-                                (isFirstOfMonth
-                                  ? "border-t-2 border-neutral-200"
-                                  : "border-t border-neutral-100")
-                              }
-                            >
-                              <td className="px-3 py-2 font-medium text-neutral-900">
-                                {isFirstOfMonth ? r.month : ""}
-                              </td>
-                              <td className="px-3 py-2 text-neutral-700">
-                                {r.type}
-                              </td>
-                              {data.marketers.map((m) => {
-                                const n = r.counts[m] ?? 0;
-                                return (
-                                  <td
-                                    key={m}
-                                    className="px-3 py-2 text-right tabular-nums text-neutral-800"
-                                  >
-                                    {n > 0 ? (
-                                      n
+                  return (
+                    <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+                              <th className="px-3 py-2 font-medium">Month</th>
+                              <th className="px-3 py-2 font-medium">Type</th>
+                              {data.marketers.map((m) => (
+                                <th
+                                  key={m}
+                                  className="px-3 py-2 text-right font-medium tabular-nums"
+                                >
+                                  {marketerLabel(m)}
+                                </th>
+                              ))}
+                              <th className="px-3 py-2 text-right font-medium">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {data.rows.map((r, i) => {
+                              // Render a thicker top border on the FIRST row
+                              // of each new month, so the 4-row monthly
+                              // sections read visually. Also blank the Month
+                              // cell on rows 2-4 of a section.
+                              const isFirstOfMonth =
+                                i === 0 || data.rows[i - 1].month !== r.month;
+                              return (
+                                <tr
+                                  key={`${r.month}-${r.type}`}
+                                  className={
+                                    "hover:bg-neutral-50 " +
+                                    (isFirstOfMonth
+                                      ? "border-t-2 border-neutral-200"
+                                      : "border-t border-neutral-100")
+                                  }
+                                >
+                                  <td className="px-3 py-2 font-medium text-neutral-900">
+                                    {isFirstOfMonth ? r.month : ""}
+                                  </td>
+                                  <td className="px-3 py-2 text-neutral-700">
+                                    {r.type}
+                                  </td>
+                                  {data.marketers.map((m) => {
+                                    const n = r.counts[m] ?? 0;
+                                    return (
+                                      <td
+                                        key={m}
+                                        className="px-3 py-2 text-right tabular-nums text-neutral-800"
+                                      >
+                                        {n > 0 ? (
+                                          n
+                                        ) : (
+                                          <span className="text-neutral-300">—</span>
+                                        )}
+                                      </td>
+                                    );
+                                  })}
+                                  <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
+                                    {r.total > 0 ? (
+                                      r.total
                                     ) : (
                                       <span className="text-neutral-300">—</span>
                                     )}
                                   </td>
-                                );
-                              })}
-                              <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
-                                {r.total > 0 ? (
-                                  r.total
-                                ) : (
-                                  <span className="text-neutral-300">—</span>
-                                )}
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                          <tfoot>
+                            <tr className="border-t-2 border-neutral-200 bg-neutral-50 text-sm font-semibold">
+                              <td className="px-3 py-2 text-neutral-700" colSpan={2}>
+                                All months — total awards
+                              </td>
+                              <td
+                                className="px-3 py-2 text-right tabular-nums text-neutral-900"
+                                colSpan={data.marketers.length}
+                              />
+                              <td className="px-3 py-2 text-right tabular-nums text-neutral-900">
+                                {data.grandTotal}
                               </td>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                      <tfoot>
-                        <tr className="border-t-2 border-neutral-200 bg-neutral-50 text-sm font-semibold">
-                          <td className="px-3 py-2 text-neutral-700" colSpan={2}>
-                            All months — total awards
-                          </td>
-                          <td
-                            className="px-3 py-2 text-right tabular-nums text-neutral-900"
-                            colSpan={data.marketers.length}
-                          />
-                          <td className="px-3 py-2 text-right tabular-nums text-neutral-900">
-                            {data.grandTotal}
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
+                          </tfoot>
+                        </table>
+                      </div>
+                      <div className="border-t border-neutral-100 bg-white px-3 py-2 text-xs text-neutral-500">
+                        Counts of approved bonuses sent in monthly batches. May
+                        2026 onwards. Mirrors the Summary tab on Ads Bonus
+                        Tracking 3.
+                      </div>
+                    </div>
+                  );
+                })()
+              ) : (
+              (() => {
+                const marketer = activeView;
+                const section = sectionsByMarketer.get(marketer);
+                const rows = section?.rows ?? [];
+                const totalAds = rows.length;
+                const hitT1 = rows.filter(
+                  (r) => r.lifetimeSpendUsd >= BONUS_TIER_1_USD,
+                ).length;
+                const hitT2 = rows.filter(
+                  (r) => r.lifetimeSpendUsd >= BONUS_TIER_2_USD,
+                ).length;
+                const totalLifetime = rows.reduce(
+                  (sum, r) => sum + r.lifetimeSpendUsd,
+                  0,
+                );
+                // Per-marketer pending — Jasper 2026-05-20: each tab shows
+                // only that marketer's pending queue.
+                const marketerPending = pendingItems.filter(
+                  (p) => p.marketer === marketer,
+                );
+
+                return (
+                  <div className="space-y-4">
+                    {/* Per-marketer pending approvals (marketing/ops only —
+                        fb_ads_only is read-only per client 2026-07-02) */}
+                    {isAdmin && marketerPending.length > 0 && (
+                      <div className="overflow-hidden rounded-md border border-amber-300 bg-amber-50">
+                        <div className="flex items-center justify-between border-b border-amber-300 bg-amber-100 px-4 py-2">
+                          <div className="text-sm font-semibold text-amber-900">
+                            {marketer} pending approvals · {marketerPending.length}
+                          </div>
+                          {marketerPending.length >= 5 && (
+                            <button
+                              type="button"
+                              disabled={bulkApprove.isPending}
+                              onClick={() => {
+                                if (
+                                  confirm(
+                                    `Bulk-approve ALL ${pendingItems.length} pending bonuses (across all marketers) at full amount? Use this for historical backlog only.`,
+                                  )
+                                ) {
+                                  bulkApprove.mutate();
+                                }
+                              }}
+                              className="rounded-md border border-amber-400 bg-white px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                            >
+                              {bulkApprove.isPending ? "Approving…" : "Bulk-approve all (every marketer) at full"}
+                            </button>
+                          )}
+                        </div>
+                        <div className="divide-y divide-amber-200">
+                          {marketerPending.map((p) => (
+                            <div
+                              key={p.awardId}
+                              className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="font-medium text-neutral-900">
+                                  <span>Ad {p.adNumber}</span>
+                                  <span className="ml-3 text-neutral-500">·</span>
+                                  <span className="ml-3">
+                                    {p.tier === "tier1"
+                                      ? "T1 ($13k)"
+                                      : "T2 ($65k)"}
+                                  </span>
+                                </div>
+                                <div className="mt-0.5 text-xs text-neutral-600 truncate">
+                                  {p.adName} · crossed {fmtDate(p.crossedAt)} · lifetime {fmtMoney(p.lifetimeSpendUsd)}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {p.adLink && (
+                                  <a
+                                    href={p.adLink}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs text-blue-600 hover:underline"
+                                  >
+                                    View ad ↗
+                                  </a>
+                                )}
+                                <button
+                                  type="button"
+                                  disabled={approve.isPending}
+                                  onClick={() =>
+                                    approve.mutate({
+                                      awardId: p.awardId,
+                                      approval: "approved_full",
+                                    })
+                                  }
+                                  className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
+                                  title="Approve"
+                                >
+                                  Approve
+                                </button>
+                                {isBonusMarketer(p.marketer) &&
+                                  bonusCategory(p.marketer) === "main" && (
+                                  <button
+                                    type="button"
+                                    disabled={approve.isPending}
+                                    onClick={() =>
+                                      approve.mutate({
+                                        awardId: p.awardId,
+                                        approval: "approved_half",
+                                      })
+                                    }
+                                    className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                                    title="Approve half (rehook / collab)"
+                                  >
+                                    Approve half
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  disabled={reject.isPending}
+                                  onClick={() => reject.mutate({ awardId: p.awardId })}
+                                  className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-100 disabled:opacity-50"
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Summary cards */}
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      <div className="rounded-md border border-neutral-200 bg-white p-4">
+                        <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                          Total ads
+                        </div>
+                        <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                          {totalAds}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-orange-200 bg-orange-50 p-4">
+                        <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                          Hit $13k tier
+                        </div>
+                        <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                          {hitT1}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-green-200 bg-green-50 p-4">
+                        <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                          Hit $65k tier
+                        </div>
+                        <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                          {hitT2}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-neutral-200 bg-white p-4">
+                        <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                          Total lifetime spend
+                        </div>
+                        <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                          {fmtMoney(totalLifetime)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Ad table */}
+                    <BonusAdTable
+                      rows={rows}
+                      emptyText={`No ads attributed to ${marketer} yet.`}
+                      past7dWindow={tracker.data?.past7dWindow}
+                    />
                   </div>
-                  <div className="border-t border-neutral-100 bg-white px-3 py-2 text-xs text-neutral-500">
-                    Counts of approved bonuses sent in monthly batches. May
-                    2026 onwards. Mirrors the Summary tab on Ads Bonus
-                    Tracking 3.
-                  </div>
-                </div>
-              );
-            })()
-          ) : activeView === "videoEditors" ? (
+                );
+              })()
+              )}
+            </>
+          ) : (
             (() => {
-              // Video Editors view (client 2026-07-02): per-editor AIAD ad
-              // tables mirroring the marketer tables, plus (marketing/ops
-              // only) each editor's pending queue and the unknown-initials
-              // callout. fb_ads_only sees the read-only tables only.
-              const activeSections = videoEditorSections.filter(
-                (s) => s.rows.length > 0,
+              // Video Editors program (client 2026-07-02) — mirrors the
+              // marketer UX: per-editor tabs, that editor's pending
+              // queue, summary cards and the shared ad table. fb_ads_only
+              // sees the tables only (admin controls hidden, as on the
+              // marketer side).
+              const editorSection = sectionsByEditor.get(activeEditor);
+              const rows = editorSection?.rows ?? [];
+              const totalAds = rows.length;
+              const hitT1 = rows.filter(
+                (r) => r.lifetimeSpendUsd >= BONUS_TIER_1_USD,
+              ).length;
+              const hitT2 = rows.filter(
+                (r) => r.lifetimeSpendUsd >= BONUS_TIER_2_USD,
+              ).length;
+              const totalLifetime = rows.reduce(
+                (sum, r) => sum + r.lifetimeSpendUsd,
+                0,
               );
-              const editorNames = new Set(
-                videoEditorSections.map((s) => s.editor as string),
+              // Each editor tab shows only that editor's pending queue —
+              // same convention as the marketer tabs.
+              const editorPending = pendingItems.filter(
+                (p) => p.marketer === activeEditor,
               );
-              const editorPending = pendingItems.filter((p) =>
-                editorNames.has(p.marketer),
-              );
+
               return (
                 <div className="space-y-4">
                   {/* Unknown initials — needs a ruling (marketing/ops only) */}
@@ -428,11 +774,44 @@ export default function BonusTrackerPage() {
                     </div>
                   )}
 
+                  {/* Per-editor tab strip — mirrors the marketer strip. */}
+                  <div className="flex flex-wrap gap-2">
+                    {VIDEO_EDITORS.map((editor) => {
+                      const section = sectionsByEditor.get(editor);
+                      const count = section?.rows.length ?? 0;
+                      const isActive = activeEditor === editor;
+                      return (
+                        <button
+                          key={editor}
+                          type="button"
+                          onClick={() => setActiveEditor(editor)}
+                          aria-pressed={isActive}
+                          className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                            isActive
+                              ? "bg-neutral-900 text-white"
+                              : "border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
+                          }`}
+                        >
+                          {editor}
+                          <span
+                            className={`inline-flex min-w-[1.5rem] items-center justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${
+                              isActive
+                                ? "bg-white/20 text-white"
+                                : "bg-neutral-100 text-neutral-600"
+                            }`}
+                          >
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
                   {/* Per-editor pending approvals (marketing/ops only) */}
                   {isAdmin && editorPending.length > 0 && (
                     <div className="overflow-hidden rounded-md border border-amber-300 bg-amber-50">
                       <div className="border-b border-amber-300 bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-900">
-                        Video editor pending approvals · {editorPending.length}
+                        {activeEditor} pending approvals · {editorPending.length}
                       </div>
                       <div className="divide-y divide-amber-200">
                         {editorPending.map((p) => (
@@ -442,9 +821,7 @@ export default function BonusTrackerPage() {
                           >
                             <div className="min-w-0 flex-1">
                               <div className="font-medium text-neutral-900">
-                                <span>{p.marketer}</span>
-                                <span className="ml-3 text-neutral-500">·</span>
-                                <span className="ml-3">Ad {p.adNumber}</span>
+                                <span>Ad {p.adNumber}</span>
                                 <span className="ml-3 text-neutral-500">·</span>
                                 <span className="ml-3">
                                   {p.tier === "tier1"
@@ -453,8 +830,7 @@ export default function BonusTrackerPage() {
                                 </span>
                               </div>
                               <div className="mt-0.5 text-xs text-neutral-600 truncate">
-                                {p.adName} · crossed {fmtDate(p.crossedAt)} ·
-                                lifetime {fmtMoney(p.lifetimeSpendUsd)}
+                                {p.adName} · crossed {fmtDate(p.crossedAt)} · lifetime {fmtMoney(p.lifetimeSpendUsd)}
                               </div>
                             </div>
                             <div className="flex items-center gap-2">
@@ -513,153 +889,48 @@ export default function BonusTrackerPage() {
                     </div>
                   )}
 
-                  {activeSections.length === 0 ? (
-                    <div className="rounded-md border border-neutral-200 bg-white px-4 py-6 text-sm text-neutral-500">
-                      No AIAD ads with a known video editor yet.
-                    </div>
-                  ) : (
-                    activeSections.map((section) => (
-                      <div key={section.editor} className="space-y-2">
-                        <div className="flex items-baseline gap-2">
-                          <h2 className="text-lg font-semibold text-neutral-900">
-                            {section.editor}
-                          </h2>
-                          <span className="text-xs text-neutral-500 tabular-nums">
-                            {section.rows.length} ad
-                            {section.rows.length === 1 ? "" : "s"} · lifetime{" "}
-                            {fmtMoney(
-                              section.rows.reduce(
-                                (sum, r) => sum + r.lifetimeSpendUsd,
-                                0,
-                              ),
-                            )}
-                          </span>
-                        </div>
-                        <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-sm">
-                              <thead>
-                                <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
-                                  <th className="w-20 px-3 py-2 font-medium">Ad #</th>
-                                  <th className="px-3 py-2 font-medium">Ad name</th>
-                                  <th className="w-20 px-3 py-2 font-medium">Link</th>
-                                  <th className="w-32 px-3 py-2 text-right font-medium">
-                                    Lifetime spend
-                                  </th>
-                                  <th className="w-28 px-3 py-2 text-right font-medium">
-                                    Past 7D spend
-                                    {tracker.data?.past7dWindow && (
-                                      <span className="block text-[10px] font-normal text-neutral-400">
-                                        {fmtDate(tracker.data.past7dWindow.start)} –{" "}
-                                        {fmtDate(tracker.data.past7dWindow.end)}
-                                      </span>
-                                    )}
-                                  </th>
-                                  <th className="w-56 px-3 py-2 font-medium">
-                                    Progress to tiers
-                                  </th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {section.rows.map((r) => {
-                                  const t1Pct = Math.min(
-                                    100,
-                                    Math.round(
-                                      (r.lifetimeSpendUsd / BONUS_TIER_1_USD) * 100,
-                                    ),
-                                  );
-                                  const t2Pct = Math.min(
-                                    100,
-                                    Math.round(
-                                      (r.lifetimeSpendUsd / BONUS_TIER_2_USD) * 100,
-                                    ),
-                                  );
-                                  return (
-                                    <tr
-                                      key={r.adNumber}
-                                      className={`border-b border-neutral-100 last:border-b-0 ${rowClass({
-                                        tier1Status: r.awards.tier1?.status,
-                                        tier2Status: r.awards.tier2?.status,
-                                      })}`}
-                                    >
-                                      <td className="px-3 py-2 font-medium text-neutral-900 tabular-nums">
-                                        {r.adNumber}
-                                      </td>
-                                      <td className="px-3 py-2 text-neutral-800">
-                                        <div title={r.adNameRaw}>{r.adName}</div>
-                                        <div
-                                          className="text-[11px] text-neutral-400 truncate max-w-md"
-                                          title={r.adNameRaw}
-                                        >
-                                          {r.adNameRaw}
-                                        </div>
-                                      </td>
-                                      <td className="px-3 py-2">
-                                        {r.adLink ? (
-                                          <a
-                                            href={r.adLink}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="text-blue-600 hover:underline"
-                                          >
-                                            Open ↗
-                                          </a>
-                                        ) : (
-                                          <span className="text-neutral-400">—</span>
-                                        )}
-                                      </td>
-                                      <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
-                                        {fmtMoney(r.lifetimeSpendUsd)}
-                                      </td>
-                                      <td className="px-3 py-2 text-right tabular-nums text-neutral-700">
-                                        {r.past7dSpendUsd > 0 ? (
-                                          fmtMoney(r.past7dSpendUsd)
-                                        ) : (
-                                          <span className="text-neutral-300">—</span>
-                                        )}
-                                      </td>
-                                      <td className="px-3 py-2">
-                                        <div className="space-y-1.5">
-                                          <div className="flex items-center gap-2 text-[11px]">
-                                            <span className="w-9 text-right text-neutral-500 tabular-nums">
-                                              $13k
-                                            </span>
-                                            <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
-                                              <div
-                                                className="absolute inset-y-0 left-0 bg-orange-500"
-                                                style={{ width: `${t1Pct}%` }}
-                                              />
-                                            </div>
-                                            <span className="w-10 text-right text-neutral-500 tabular-nums">
-                                              {t1Pct}%
-                                            </span>
-                                          </div>
-                                          <div className="flex items-center gap-2 text-[11px]">
-                                            <span className="w-9 text-right text-neutral-500 tabular-nums">
-                                              $65k
-                                            </span>
-                                            <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
-                                              <div
-                                                className="absolute inset-y-0 left-0 bg-green-500"
-                                                style={{ width: `${t2Pct}%` }}
-                                              />
-                                            </div>
-                                            <span className="w-10 text-right text-neutral-500 tabular-nums">
-                                              {t2Pct}%
-                                            </span>
-                                          </div>
-                                        </div>
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
+                  {/* Summary cards — same layout as the marketer tabs. */}
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <div className="rounded-md border border-neutral-200 bg-white p-4">
+                      <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                        Total ads
                       </div>
-                    ))
-                  )}
+                      <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                        {totalAds}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-orange-200 bg-orange-50 p-4">
+                      <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                        Hit $13k tier
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                        {hitT1}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-green-200 bg-green-50 p-4">
+                      <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                        Hit $65k tier
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                        {hitT2}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-neutral-200 bg-white p-4">
+                      <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                        Total lifetime spend
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
+                        {fmtMoney(totalLifetime)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Ad table — shared component with the marketer view. */}
+                  <BonusAdTable
+                    rows={rows}
+                    emptyText={`No AIAD ads attributed to ${activeEditor} yet.`}
+                    past7dWindow={tracker.data?.past7dWindow}
+                  />
 
                   <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
                     Video editor bonuses apply to AI video ads only (names
@@ -670,302 +941,6 @@ export default function BonusTrackerPage() {
                 </div>
               );
             })()
-          ) : (
-          (() => {
-            const marketer = activeView;
-            const section = sectionsByMarketer.get(marketer);
-            const rows = section?.rows ?? [];
-            const totalAds = rows.length;
-            const hitT1 = rows.filter(
-              (r) => r.lifetimeSpendUsd >= BONUS_TIER_1_USD,
-            ).length;
-            const hitT2 = rows.filter(
-              (r) => r.lifetimeSpendUsd >= BONUS_TIER_2_USD,
-            ).length;
-            const totalLifetime = rows.reduce(
-              (sum, r) => sum + r.lifetimeSpendUsd,
-              0,
-            );
-            // Per-marketer pending — Jasper 2026-05-20: each tab shows
-            // only that marketer's pending queue.
-            const marketerPending = pendingItems.filter(
-              (p) => p.marketer === marketer,
-            );
-
-            return (
-              <div className="space-y-4">
-                {/* Per-marketer pending approvals (marketing/ops only —
-                    fb_ads_only is read-only per client 2026-07-02) */}
-                {isAdmin && marketerPending.length > 0 && (
-                  <div className="overflow-hidden rounded-md border border-amber-300 bg-amber-50">
-                    <div className="flex items-center justify-between border-b border-amber-300 bg-amber-100 px-4 py-2">
-                      <div className="text-sm font-semibold text-amber-900">
-                        {marketer} pending approvals · {marketerPending.length}
-                      </div>
-                      {marketerPending.length >= 5 && (
-                        <button
-                          type="button"
-                          disabled={bulkApprove.isPending}
-                          onClick={() => {
-                            if (
-                              confirm(
-                                `Bulk-approve ALL ${pendingItems.length} pending bonuses (across all marketers) at full amount? Use this for historical backlog only.`,
-                              )
-                            ) {
-                              bulkApprove.mutate();
-                            }
-                          }}
-                          className="rounded-md border border-amber-400 bg-white px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
-                        >
-                          {bulkApprove.isPending ? "Approving…" : "Bulk-approve all (every marketer) at full"}
-                        </button>
-                      )}
-                    </div>
-                    <div className="divide-y divide-amber-200">
-                      {marketerPending.map((p) => (
-                        <div
-                          key={p.awardId}
-                          className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="font-medium text-neutral-900">
-                              <span>Ad {p.adNumber}</span>
-                              <span className="ml-3 text-neutral-500">·</span>
-                              <span className="ml-3">
-                                {p.tier === "tier1"
-                                  ? "T1 ($13k)"
-                                  : "T2 ($65k)"}
-                              </span>
-                            </div>
-                            <div className="mt-0.5 text-xs text-neutral-600 truncate">
-                              {p.adName} · crossed {fmtDate(p.crossedAt)} · lifetime {fmtMoney(p.lifetimeSpendUsd)}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {p.adLink && (
-                              <a
-                                href={p.adLink}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-xs text-blue-600 hover:underline"
-                              >
-                                View ad ↗
-                              </a>
-                            )}
-                            <button
-                              type="button"
-                              disabled={approve.isPending}
-                              onClick={() =>
-                                approve.mutate({
-                                  awardId: p.awardId,
-                                  approval: "approved_full",
-                                })
-                              }
-                              className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
-                              title="Approve"
-                            >
-                              Approve
-                            </button>
-                            {isBonusMarketer(p.marketer) &&
-                              bonusCategory(p.marketer) === "main" && (
-                              <button
-                                type="button"
-                                disabled={approve.isPending}
-                                onClick={() =>
-                                  approve.mutate({
-                                    awardId: p.awardId,
-                                    approval: "approved_half",
-                                  })
-                                }
-                                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-                                title="Approve half (rehook / collab)"
-                              >
-                                Approve half
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              disabled={reject.isPending}
-                              onClick={() => reject.mutate({ awardId: p.awardId })}
-                              className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-100 disabled:opacity-50"
-                            >
-                              Reject
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Summary cards */}
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  <div className="rounded-md border border-neutral-200 bg-white p-4">
-                    <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-                      Total ads
-                    </div>
-                    <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
-                      {totalAds}
-                    </div>
-                  </div>
-                  <div className="rounded-md border border-orange-200 bg-orange-50 p-4">
-                    <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-                      Hit $13k tier
-                    </div>
-                    <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
-                      {hitT1}
-                    </div>
-                  </div>
-                  <div className="rounded-md border border-green-200 bg-green-50 p-4">
-                    <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-                      Hit $65k tier
-                    </div>
-                    <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
-                      {hitT2}
-                    </div>
-                  </div>
-                  <div className="rounded-md border border-neutral-200 bg-white p-4">
-                    <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-                      Total lifetime spend
-                    </div>
-                    <div className="mt-1 text-2xl font-semibold text-neutral-900 tabular-nums">
-                      {fmtMoney(totalLifetime)}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Ad table */}
-                <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
-                  {rows.length === 0 ? (
-                    <div className="px-4 py-6 text-sm text-neutral-500">
-                      No ads attributed to {marketer} yet.
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
-                            <th className="w-20 px-3 py-2 font-medium">Ad #</th>
-                            <th className="px-3 py-2 font-medium">Ad name</th>
-                            <th className="w-20 px-3 py-2 font-medium">Link</th>
-                            <th className="w-32 px-3 py-2 text-right font-medium">
-                              Lifetime spend
-                            </th>
-                            <th className="w-28 px-3 py-2 text-right font-medium">
-                              Past 7D spend
-                              {tracker.data?.past7dWindow && (
-                                <span className="block text-[10px] font-normal text-neutral-400">
-                                  {fmtDate(tracker.data.past7dWindow.start)} –{" "}
-                                  {fmtDate(tracker.data.past7dWindow.end)}
-                                </span>
-                              )}
-                            </th>
-                            <th className="w-56 px-3 py-2 font-medium">
-                              Progress to tiers
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {rows.map((r) => {
-                            const t1Pct = Math.min(
-                              100,
-                              Math.round(
-                                (r.lifetimeSpendUsd / BONUS_TIER_1_USD) * 100,
-                              ),
-                            );
-                            const t2Pct = Math.min(
-                              100,
-                              Math.round(
-                                (r.lifetimeSpendUsd / BONUS_TIER_2_USD) * 100,
-                              ),
-                            );
-                            return (
-                              <tr
-                                key={r.adNumber}
-                                className={`border-b border-neutral-100 last:border-b-0 ${rowClass({
-                                  tier1Status: r.awards.tier1?.status,
-                                  tier2Status: r.awards.tier2?.status,
-                                })}`}
-                              >
-                                <td className="px-3 py-2 font-medium text-neutral-900 tabular-nums">
-                                  {r.adNumber}
-                                </td>
-                                <td className="px-3 py-2 text-neutral-800">
-                                  <div title={r.adNameRaw}>{r.adName}</div>
-                                  <div
-                                    className="text-[11px] text-neutral-400 truncate max-w-md"
-                                    title={r.adNameRaw}
-                                  >
-                                    {r.adNameRaw}
-                                  </div>
-                                </td>
-                                <td className="px-3 py-2">
-                                  {r.adLink ? (
-                                    <a
-                                      href={r.adLink}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-blue-600 hover:underline"
-                                    >
-                                      Open ↗
-                                    </a>
-                                  ) : (
-                                    <span className="text-neutral-400">—</span>
-                                  )}
-                                </td>
-                                <td className="px-3 py-2 text-right font-semibold tabular-nums text-neutral-900">
-                                  {fmtMoney(r.lifetimeSpendUsd)}
-                                </td>
-                                <td className="px-3 py-2 text-right tabular-nums text-neutral-700">
-                                  {r.past7dSpendUsd > 0 ? (
-                                    fmtMoney(r.past7dSpendUsd)
-                                  ) : (
-                                    <span className="text-neutral-300">—</span>
-                                  )}
-                                </td>
-                                <td className="px-3 py-2">
-                                  <div className="space-y-1.5">
-                                    <div className="flex items-center gap-2 text-[11px]">
-                                      <span className="w-9 text-right text-neutral-500 tabular-nums">
-                                        $13k
-                                      </span>
-                                      <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
-                                        <div
-                                          className="absolute inset-y-0 left-0 bg-orange-500"
-                                          style={{ width: `${t1Pct}%` }}
-                                        />
-                                      </div>
-                                      <span className="w-10 text-right text-neutral-500 tabular-nums">
-                                        {t1Pct}%
-                                      </span>
-                                    </div>
-                                    <div className="flex items-center gap-2 text-[11px]">
-                                      <span className="w-9 text-right text-neutral-500 tabular-nums">
-                                        $65k
-                                      </span>
-                                      <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
-                                        <div
-                                          className="absolute inset-y-0 left-0 bg-green-500"
-                                          style={{ width: `${t2Pct}%` }}
-                                        />
-                                      </div>
-                                      <span className="w-10 text-right text-neutral-500 tabular-nums">
-                                        {t2Pct}%
-                                      </span>
-                                    </div>
-                                  </div>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })()
           )}
         </div>
       )}
