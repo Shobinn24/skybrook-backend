@@ -6,6 +6,7 @@ import {
   BONUS_TIER_1_USD,
   BONUS_TIER_2_USD,
   bonusCategory,
+  isBonusMarketer,
   type BonusMarketer,
 } from "@/lib/domain/bonus-tiers";
 
@@ -429,7 +430,8 @@ export default function BonusTrackerPage() {
                             >
                               Approve
                             </button>
-                            {bonusCategory(p.marketer) === "main" && (
+                            {isBonusMarketer(p.marketer) &&
+                              bonusCategory(p.marketer) === "main" && (
                               <button
                                 type="button"
                                 disabled={approve.isPending}

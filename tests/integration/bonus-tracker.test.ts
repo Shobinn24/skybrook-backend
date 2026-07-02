@@ -17,7 +17,10 @@ import {
   getPendingApprovals,
   previewNotification,
 } from "@/lib/queries/bonus-tracker";
-import { detectAndInsertBonusCrossings } from "@/lib/jobs/bonus-crossings";
+import {
+  detectAndInsertBonusCrossings,
+  detectAndInsertVideoEditorCrossings,
+} from "@/lib/jobs/bonus-crossings";
 import { approveBonus, sendNotification } from "@/lib/jobs/bonus-mutations";
 import { resetDb } from "@/tests/fixtures/seed";
 import { toEstDate } from "@/lib/tz";
@@ -406,6 +409,207 @@ describe("getBonusTracker", () => {
     });
   });
 
+  describe("videoEditors section + unknownInitials (client 2026-07-02)", () => {
+    beforeEach(async () => {
+      await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+    });
+
+    async function makePull(): Promise<string> {
+      const [raw] = await db
+        .insert(rawPulls)
+        .values({
+          source: "sheets_fb_ads",
+          pullBatchId: randomUUID(),
+          payload: {},
+          rowCount: 0,
+          schemaFingerprint: "fp",
+        })
+        .returning({ id: rawPulls.id });
+      return raw.id;
+    }
+
+    it("groups AIAD ads under their editor in roster order, with award status per tier", async () => {
+      const rawId = await makePull();
+      await seedAdSpend({
+        adNumber: "2077",
+        adName: "(Mens CC) Ad 2077 - AIad - SR - UGC remix",
+        marketers: [],
+        totalCostUsd: 20_000,
+        sourcePullId: rawId,
+      });
+      await seedAdSpend({
+        adNumber: "2078",
+        adName: "(Mens CC) Ad 2078 - AIad - SR - small one",
+        marketers: [],
+        totalCostUsd: 5_000,
+        sourcePullId: rawId,
+      });
+      await seedAdSpend({
+        adNumber: "2100",
+        adName: "(Boyshort) Ad 2100 - AIad - PL - remix",
+        marketers: [],
+        totalCostUsd: 14_000,
+        sourcePullId: rawId,
+      });
+      // Non-AIAD ad must not appear in any editor section.
+      await seedAdSpend({
+        adNumber: "999",
+        adName: "Craig Mens VID 2",
+        marketers: ["Craig"],
+        totalCostUsd: 20_000,
+        sourcePullId: rawId,
+      });
+      await detectAndInsertVideoEditorCrossings();
+
+      const result = await getBonusTracker();
+      expect(result.videoEditors.map((s) => s.editor)).toEqual([
+        "Greg",
+        "Ryan",
+        "Sebastian",
+        "Job",
+        "Cristian",
+        "Phat Lee",
+      ]);
+
+      const sebastian = result.videoEditors.find(
+        (s) => s.editor === "Sebastian",
+      )!;
+      // Sorted by lifetime spend desc, includes below-threshold ads.
+      expect(sebastian.rows.map((r) => r.adNumber)).toEqual(["2077", "2078"]);
+      expect(sebastian.rows[0].lifetimeSpendUsd).toBeCloseTo(20_000, 2);
+      expect(sebastian.rows[0].awards.tier1?.status).toBe("pending");
+      expect(sebastian.rows[0].awards.tier2).toBeNull();
+      expect(sebastian.rows[1].awards.tier1).toBeNull();
+
+      const phatLee = result.videoEditors.find((s) => s.editor === "Phat Lee")!;
+      expect(phatLee.rows.map((r) => r.adNumber)).toEqual(["2100"]);
+      expect(phatLee.rows[0].awards.tier1?.amountUsd).toBe(200);
+
+      // The marketer sections are untouched by the editor grouping.
+      const craig = result.sections.find((s) => s.marketer === "Craig")!;
+      expect(craig.rows.map((r) => r.adNumber)).toEqual(["999"]);
+      for (const s of result.videoEditors) {
+        expect(s.rows.map((r) => r.adNumber)).not.toContain("999");
+      }
+    });
+
+    it("dual credit: an AIAD ad with a marketer name shows in BOTH the marketer section and the editor section", async () => {
+      const rawId = await makePull();
+      await seedAdSpend({
+        adNumber: "2200",
+        adName: "(Mens CC) Ad 2200 - AIad - GA - Craig remix",
+        marketers: ["Craig"],
+        totalCostUsd: 15_000,
+        sourcePullId: rawId,
+      });
+
+      const result = await getBonusTracker();
+      const craig = result.sections.find((s) => s.marketer === "Craig")!;
+      const greg = result.videoEditors.find((s) => s.editor === "Greg")!;
+      expect(craig.rows.map((r) => r.adNumber)).toEqual(["2200"]);
+      expect(greg.rows.map((r) => r.adNumber)).toEqual(["2200"]);
+    });
+
+    it("aggregates unknown initials with example ad, spend and count — excluded initials stay off the list", async () => {
+      const rawId = await makePull();
+      await seedAdSpend({
+        adNumber: "3001",
+        adName: "(A) Ad 3001 - AIad - XY - contractor v1",
+        marketers: [],
+        totalCostUsd: 12_000,
+        sourcePullId: rawId,
+      });
+      await seedAdSpend({
+        adNumber: "3002",
+        adName: "(A) Ad 3002 - AIad - XY - contractor v2",
+        marketers: [],
+        totalCostUsd: 2_000,
+        sourcePullId: rawId,
+      });
+      await seedAdSpend({
+        adNumber: "3003",
+        adName: "(B) Ad 3003 - AIad - ZZ - other",
+        marketers: [],
+        totalCostUsd: 500,
+        sourcePullId: rawId,
+      });
+      // Excluded (client-ruled non-editors) and known editors never
+      // reach the unknown surface.
+      await seedAdSpend({
+        adNumber: "3004",
+        adName: "(C) Ad 3004 - AIad - SJ - ruled out",
+        marketers: [],
+        totalCostUsd: 50_000,
+        sourcePullId: rawId,
+      });
+      await seedAdSpend({
+        adNumber: "3005",
+        adName: "(C) Ad 3005 - AIad - Scotty - ruled out",
+        marketers: [],
+        totalCostUsd: 50_000,
+        sourcePullId: rawId,
+      });
+      await seedAdSpend({
+        adNumber: "3006",
+        adName: "(D) Ad 3006 - AIad - RC - known",
+        marketers: [],
+        totalCostUsd: 50_000,
+        sourcePullId: rawId,
+      });
+
+      const result = await getBonusTracker();
+      expect(result.unknownInitials.map((u) => u.initials)).toEqual([
+        "XY",
+        "ZZ",
+      ]); // spend desc
+      const xy = result.unknownInitials[0];
+      expect(xy.adCount).toBe(2);
+      expect(xy.totalLifetimeSpendUsd).toBeCloseTo(14_000, 2);
+      // Example = the highest-spend ad for those initials.
+      expect(xy.exampleAdName).toBe("(A) Ad 3001 - AIad - XY - contractor v1");
+    });
+
+    it("returns empty videoEditors rows and unknownInitials when there are no AIAD ads", async () => {
+      const result = await getBonusTracker();
+      expect(result.videoEditors.every((s) => s.rows.length === 0)).toBe(true);
+      expect(result.unknownInitials).toEqual([]);
+    });
+  });
+
+  describe("getPendingApprovals — video editor awards", () => {
+    beforeEach(async () => {
+      await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+    });
+
+    it("includes editor pendings with flat default/half amounts", async () => {
+      const [raw] = await db
+        .insert(rawPulls)
+        .values({
+          source: "sheets_fb_ads",
+          pullBatchId: randomUUID(),
+          payload: {},
+          rowCount: 0,
+          schemaFingerprint: "fp",
+        })
+        .returning({ id: rawPulls.id });
+      await seedAdSpend({
+        adNumber: "2077",
+        adName: "(Mens CC) Ad 2077 - AIad - SR - UGC remix",
+        marketers: [],
+        totalCostUsd: 20_000,
+        sourcePullId: raw.id,
+      });
+      await detectAndInsertVideoEditorCrossings();
+
+      const pending = await getPendingApprovals();
+      expect(pending).toHaveLength(1);
+      expect(pending[0].marketer).toBe("Sebastian");
+      expect(pending[0].tier).toBe("tier1");
+      expect(pending[0].defaultAmountUsd).toBe(200);
+      expect(pending[0].halfAmountUsd).toBe(100);
+    });
+  });
+
   describe("getPendingApprovals marketer filter (Jasper 2026-05-20)", () => {
     beforeEach(async () => {
       // bonus_awards has no FK to raw_pulls so resetDb misses it.
@@ -641,6 +845,79 @@ describe("getBonusTracker", () => {
       );
       expect(order).toEqual([...order].sort((a, b) => a - b));
       expect(order.every((i) => i >= 0)).toBe(true);
+    });
+
+    it("appends editor sections after the marketer roster; \$0 editors are omitted (client 2026-07-02)", async () => {
+      const [raw] = await db
+        .insert(rawPulls)
+        .values({
+          source: "sheets_fb_ads",
+          pullBatchId: randomUUID(),
+          payload: {},
+          rowCount: 0,
+          schemaFingerprint: "fp",
+        })
+        .returning({ id: rawPulls.id });
+      // One marketer award (Craig) + one editor award (Sebastian) on
+      // different ads; the editor ad also dual-credits Craig — but here
+      // we keep them separate to assert the message structure simply.
+      await db.insert(fbAdSpendDaily).values([
+        {
+          adNumber: "2037",
+          adName: "Craig Boyshort new colors Vid 2",
+          adNameRaw: "Craig Boyshort new colors Vid 2",
+          adLink: "https://facebook.com/2037",
+          marketers: ["Craig"],
+          spendDate: "2026-04-01",
+          costUsd: "14000.0000",
+          sourcePullId: raw.id,
+        },
+        {
+          adNumber: "2077",
+          adName: "(Mens CC) Ad 2077 - AIad - SR - UGC remix",
+          adNameRaw: "(Mens CC) Ad 2077 - AIad - SR - UGC remix",
+          adLink: "https://facebook.com/2077",
+          marketers: [],
+          spendDate: "2026-04-01",
+          costUsd: "14000.0000",
+          sourcePullId: raw.id,
+        },
+      ]);
+      await detectAndInsertBonusCrossings({ asOfDate: "2026-05-13" });
+      await detectAndInsertVideoEditorCrossings();
+      for (const a of await db.select().from(bonusAwards)) {
+        await approveBonus({
+          awardId: a.id,
+          approval: "approved_full",
+          approvedBy: "jasper",
+        });
+      }
+
+      const preview = await previewNotification({ periodLabel: "June 2026" });
+      const body = preview.messageBody;
+
+      // Marketer roster unchanged: all six appear, in order.
+      for (const m of ["Craig", "Raul", "Tyler", "Jacob", "JW", "Dan"]) {
+        expect(body).toContain(`*${m}*`);
+      }
+      // Sebastian's editor section appears AFTER the marketer roster,
+      // with the editor amount.
+      expect(body).toContain("*Sebastian*\n1x 13k bonus\nTotal: $200");
+      expect(body.indexOf("*Sebastian*")).toBeGreaterThan(body.indexOf("*Dan*"));
+      expect(body).toContain("Ad 2077 - (Mens CC) Ad 2077 - AIad - SR - UGC remix");
+      // Editors with no awards are NOT listed (unlike $0 marketers).
+      expect(body).not.toContain("*Greg*");
+      expect(body).not.toContain("*Phat Lee*");
+
+      // Both awards ship in the batch, and the editor bucket lands in
+      // the persisted totals.
+      expect(preview.awardIds).toHaveLength(2);
+      expect(preview.grandTotalUsd).toBe(700); // $500 Craig + $200 Sebastian
+      const sebastianTotal = preview.totals.find(
+        (t) => t.marketer === "Sebastian",
+      );
+      expect(sebastianTotal?.totalUsd).toBe(200);
+      expect(sebastianTotal?.tier1FullCount).toBe(1);
     });
 
     it("handles empty batch gracefully", async () => {
