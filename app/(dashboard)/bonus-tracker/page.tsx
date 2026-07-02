@@ -1052,7 +1052,9 @@ export default function BonusTrackerPage() {
       <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
         <strong>How this works:</strong> An ad crosses $13k or $65k lifetime
         spend → it appears in <em>Pending approvals</em>. Jasper picks Approve /
-        Approve half / Reject per ad (Approve half is main-marketer only — rehook or collab).
+        Approve half / Reject per ad (for marketers, Approve half is
+        main-marketer only — rehook or collab; video-editor awards can also be
+        approved at half).
         Approved bonuses queue for the next notification. Click{" "}
         <em>Generate notification</em> to render the WhatsApp message and lock
         the batch.
