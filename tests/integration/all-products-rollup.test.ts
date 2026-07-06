@@ -33,7 +33,7 @@ describe("getAllProductsRollup", () => {
   });
   beforeEach(truncate);
 
-  it("rolls up exact product revenue + FB-attributed spend, with buckets + ancillary", async () => {
+  it("rolls up net product revenue (incl. pro-rated ancillary) + FB-attributed spend, with buckets", async () => {
     const pull = await seedPull();
     const D = "2026-06-10"; // inside the 30d window ending 2026-06-24
 
@@ -59,11 +59,12 @@ describe("getAllProductsRollup", () => {
 
     const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
 
-    // product rows: revenue + spend joined on family label
-    expect(find(res.rows, "9055")).toMatchObject({ kind: "product", revenueUsd: 1000, spendUsd: 300 });
-    expect(find(res.rows, "9055")!.roas).toBeCloseTo(1000 / 300, 4);
-    expect(find(res.rows, "Boyshort")).toMatchObject({ kind: "product", revenueUsd: 500, spendUsd: 200 });
-    expect(find(res.rows, "HW")).toMatchObject({ kind: "product", revenueUsd: 200, spendUsd: 50 });
+    // product rows: NET revenue (product + pro-rated ancillary) + spend
+    // joined on family label
+    expect(find(res.rows, "9055")).toMatchObject({ kind: "product", revenueUsd: 1100, spendUsd: 300 });
+    expect(find(res.rows, "9055")!.roas).toBeCloseTo(1100 / 300, 4);
+    expect(find(res.rows, "Boyshort")).toMatchObject({ kind: "product", revenueUsd: 550, spendUsd: 200 });
+    expect(find(res.rows, "HW")).toMatchObject({ kind: "product", revenueUsd: 220, spendUsd: 50 });
 
     // spend-only buckets
     expect(find(res.rows, "Brand / Homepage")).toMatchObject({ kind: "brand", revenueUsd: 0, spendUsd: 80, roas: null });
@@ -76,9 +77,9 @@ describe("getAllProductsRollup", () => {
     const lastProductIdx = res.rows.map((r) => r.kind).lastIndexOf("product");
     expect(lastProductIdx).toBeLessThan(firstBucketIdx);
 
-    // ancillary + totals
-    expect(res.ancillaryUsd).toBe(170);
-    expect(res.totalProductRevenueUsd).toBe(1700);
+    // totals: sum of nets == old products+ancillary total (1700 + 170);
+    // no separate ancillary bucket anymore
+    expect(res).not.toHaveProperty("ancillaryUsd");
     expect(res.totalRevenueUsd).toBe(1870);
     expect(res.totalSpendUsd).toBe(635);
     expect(res.rangeStart).toBe("2026-05-26");
@@ -97,7 +98,7 @@ describe("getAllProductsRollup", () => {
       { adNumber: "1", adName: "x", adNameRaw: "(9055) old", adPrefix: "9055", adLink: null, marketers: [], spendDate: "2026-05-01", costUsd: "999", sourcePullId: pull },
     ]);
     const res = await getAllProductsRollup({ today: "2026-06-25", rangeDays: 30 });
-    expect(res.totalProductRevenueUsd).toBe(0);
+    expect(res.totalRevenueUsd).toBe(0);
     expect(res.totalSpendUsd).toBe(0);
     expect(res.rows).toEqual([]);
   });
@@ -131,7 +132,7 @@ describe("getAllProductsRollup", () => {
     expect(mens.fbSpendUsd).toBe(400);
     expect(mens.appLovinSpendUsd).toBe(150);
     expect(mens.spendUsd).toBe(550);
-    expect(mens.roas).toBeCloseTo(1000 / 550, 4);
+    expect(mens.roas).toBeCloseTo(1100 / 550, 4); // net revenue / combined spend
     expect(res.totalFbSpendUsd).toBe(400);
     expect(res.totalAppLovinSpendUsd).toBe(150);
     expect(res.totalSpendUsd).toBe(550);
@@ -162,11 +163,11 @@ describe("getAllProductsRollup", () => {
     expect(res.rows.filter((r) => r.product === "Boyshort HF")).toEqual([]);
     const bs = find(res.rows, "Boyshort")!;
     expect(bs.kind).toBe("product");
-    expect(bs.revenueUsd).toBe(800); // 500 + 300
+    expect(bs.revenueUsd).toBe(880); // net: (500 + 50) + (300 + 30)
     expect(bs.fbSpendUsd).toBe(320); // 200 + 120
     expect(bs.appLovinSpendUsd).toBe(30);
     expect(bs.spendUsd).toBe(350); // 320 + 30
-    expect(bs.roas).toBeCloseTo(800 / 350, 4);
+    expect(bs.roas).toBeCloseTo(880 / 350, 4);
   });
 
   it("attributes FB spend URL-first (overriding the ad name) and splits US/non-US", async () => {

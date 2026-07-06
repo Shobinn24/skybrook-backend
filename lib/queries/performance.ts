@@ -1,109 +1,68 @@
-import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
+import { and, eq, gte, ilike, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { adSpendDaily, applovinAdSpendDaily, dailySales, fbAdSpendDaily, fbAdUrlMap, fbGeoSpend, fbProductMap, rawPulls, skus } from "@/lib/db/schema";
+import { applovinAdSpendDaily, dailySales, fbAdSpendDaily, fbAdUrlMap, fbGeoSpend, fbProductMap, skus } from "@/lib/db/schema";
 import {
   attributeFbPrefix,
   extractFbPrefix,
   normalizeFunnelUrl,
   type FbBucket,
 } from "@/lib/domain/fb-product-attribution";
-import { AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA } from "@/lib/sources/sheets";
 import { toEstDate } from "@/lib/tz";
 
 export type SalesChannel = "shopify_us" | "shopify_intl";
 
-/** Canonical products surfaced on /performance. Each one rolls up:
- *   - Spend across one or more sheet tabs (Facebook + AppLovin etc.)
- *   - Revenue across the SKUs whose productName matches any of the
- *     configured patterns.
+/** Canonical focus products surfaced on the /performance "Focus areas"
+ * cards. Each card is a VIEW of one product line from the shared
+ * per-line computation (`computeProductLineStats`) — the same row the
+ * All-products table shows, so revenue / spend / ROAS are identical in
+ * both views BY CONSTRUCTION (owner direction 2026-07).
  *
- * Source for the product names is Scott's manual daily reports
- * (2026-05-05): Men's, Shapewear, SupHW. The "Super HW AL" tab is
- * AppLovin spend on Super HW; rolling FB + AL into one canonical
- * product matches how Scott reads the numbers.
- */
+ * `line` is the canonical family label emitted by
+ * `revenueFamilyFromProductName` / `attributeFbPrefix`. */
 const PRODUCT_CONFIG = {
-  men: {
-    label: "Men's",
-    spendTabs: ["Men", "Men AL"],
-    productNamePatterns: ["Mens%"],
-  },
-  shapewear: {
-    label: "Shapewear",
-    spendTabs: ["Shapewear", "Shapewear AL"],
-    productNamePatterns: ["Shapewear%"],
-  },
-  suphw: {
-    label: "SupHW",
-    spendTabs: ["SuperHW", "Super HW AL"],
-    productNamePatterns: ["Super High-Waist%"],
-  },
-  hrshort: {
-    label: "High Rise Short",
-    // HRS launched EV INTL 2026-05-22 and began FB spend 2026-06-02. The
-    // "HRS" tab in the AD_SPEND sheet (Supermetrics query: FB CS6, metric
-    // Amount spent, split by Date, filter Ad name CONTAINS HRS) feeds this
-    // card; "HRS" is also registered in AD_SPEND_TABS so the runner
-    // ingests it. "HRS AL" (AppLovin) was wired 2026-06-03 so spend imports
-    // the day it starts even though AppLovin HRS spend is $0 today; it is
-    // exempt from the per-tab stale badge until its first dated row (see
-    // AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA).
-    spendTabs: ["HRS", "HRS AL"],
-    productNamePatterns: ["High Rise Short%"],
-  },
+  men: { label: "Men's", line: "Mens" },
+  shapewear: { label: "Shapewear", line: "Shapewear" },
+  suphw: { label: "SupHW", line: "Super High-Waist" },
+  hrshort: { label: "High Rise Short", line: "High Rise Short" },
 } as const;
 
 type ProductKey = keyof typeof PRODUCT_CONFIG;
 
-/** Upstream error detected in the latest sheets_ad_spend pull for a
- * specific tab. Sourced from rawPulls.payload.sourceErrors which is
- * populated by parseAdSpendTab when Supermetrics returns an inline
- * error string instead of data (license expired, quota exceeded,
- * connector deauthorized). The page uses this to surface a per-tab
- * badge so $0 spend caused by an upstream outage is visually
- * distinguishable from a real $0 spend day. */
-export type AdSpendSourceErrorSummary = {
-  /** Stable dedup-friendly text — used to render a one-line reason. */
-  signature: string;
-  /** Approx human reason, derived from signature (license / quota / auth / unknown). */
-  reason: "license" | "quota" | "auth" | "unknown";
-};
-
-/** Per-tab summary for a tab whose data hasn't refreshed in N+ days.
- * Catches the failure mode where Supermetrics silently fails to write
- * (no error row appears in the tab) — e.g. when the upstream license
- * fails before a query writes anything, the sheet keeps stale data
- * from prior runs and there's nothing for `sourceErrors` to flag.
- * Render an amber badge so a quietly-broken feed surfaces visually
- * the same way a loud-broken one does. */
+/** Per-source summary for a spend feed whose data hasn't refreshed in
+ * N+ days. Catches the silent-failure mode where the upstream sheet
+ * stops refreshing without any loud error: max(spend_date) keeps
+ * drifting back from yesterday. Rendered as an amber badge on the
+ * focus-card FB / AppLovin breakdown lines. */
 export type AdSpendStalenessSummary = {
-  /** Latest spend_date present in our DB for this tab, or null when
-   * the tab has never landed any data. */
+  /** Latest spend_date present in our DB for this source, or null when
+   * the source has never landed any data. */
   latestDate: string | null;
   /** Days behind yesterday-EST. >= 2 when surfaced (1-day lag is
-   * normal cron timing and not flagged). */
+   * normal cron timing and not flagged). -1 = never landed any data. */
   daysBehind: number;
 };
+
+/** The two spend feeds behind every product line: the FB ads sheet
+ * (fb_ad_spend_daily, URL-first attribution) and the AppLovin sheet
+ * (applovin_ad_spend_daily, attributed at ingest). */
+export type SpendSource = "FB" | "AL";
 
 export type PerformanceRow = {
   key: ProductKey;
   label: string;
+  /** Net revenue = product revenue + the line's pro-rated shipping/tax
+   * share (sum of daily_sales.net_sales_usd over the line's SKUs). */
   revenueUsd: number;
   spendUsd: number;
   /** ROAS = revenue / spend. Null when spend is 0 (avoid divide-by-zero). */
   roas: number | null;
-  spendByTab: Array<{
-    tab: string;
+  /** Per-platform split of `spendUsd` (FB URL-first + AppLovin), with
+   * per-source staleness so a quietly-frozen feed surfaces visually. */
+  spendBySource: Array<{
+    source: SpendSource;
     spendUsd: number;
-    /** When set, the LATEST upstream pull returned an error for this
-     * tab. Spend value above is from prior successful pulls; future
-     * dates won't fill until the upstream issue is fixed. */
-    sourceError?: AdSpendSourceErrorSummary;
-    /** When set, this tab's data is more than 1 day behind. Distinct
-     * from `sourceError` — staleness can happen WITHOUT an explicit
-     * error row (silent upstream failure that doesn't even write an
-     * error string). Both may be set if the feed both errored AND is
-     * stale. */
+    /** When set, this source's data is more than 1 day behind — the
+     * spend above reflects only what has landed so far. */
     staleness?: AdSpendStalenessSummary;
   }>;
 };
@@ -114,13 +73,10 @@ export type PerformanceResult = {
   rangeEnd: string;
   rows: PerformanceRow[];
   /** True when a non-trivial subset of canonical products has zero
-   * spend and zero revenue, suggesting either (a) the ad spend sheet
-   * hasn't refreshed yet today or (b) the product mapping is wrong.
+   * spend and zero revenue, suggesting either (a) the spend feeds
+   * haven't refreshed yet today or (b) the product mapping is wrong.
    * Page can show a hint. */
   warnEmpty: boolean;
-  /** Distinct tabs with an upstream error in the latest pull. Drives
-   * the red page-level banner. */
-  sourceErrors: Array<{ tab: string; signature: string; reason: AdSpendSourceErrorSummary["reason"] }>;
   /** Owner request 2026-07-03: spend-only box for ads with "infotainment"
    * in the name. FB only (AppLovin carries no ad names). No revenue can be
    * attributed to these ads, so the box exposes spend without revenue/ROAS. */
@@ -138,66 +94,6 @@ function addDays(ymd: string, days: number): string {
   return new Date(ymdToUtcMs(ymd) + days * MS_PER_DAY).toISOString().slice(0, 10);
 }
 
-/** Pulls the most-recent sheets_ad_spend rawPull and extracts a map of
- * tab → error signature for any upstream-error rows the parser saw. A
- * tab appears here when Supermetrics returned an inline error string
- * (license expired, quota, auth) in place of data on that ingest.
- *
- * Cheap: one indexed lookup + JSON access on a single payload. Called
- * once per /performance render so the page can render per-tab badges
- * + a top-level banner. Returns an empty map when (a) no sourceErrors
- * field exists (pre-monitoring-2026-05-23 pulls), (b) the field is
- * empty, or (c) the table has no rows. */
-function classifyReason(signature: string): AdSpendSourceErrorSummary["reason"] {
-  const s = signature.toLowerCase();
-  if (s.includes("license")) return "license";
-  if (s.includes("quota")) return "quota";
-  if (s.includes("auth") || s.includes("token") || s.includes("permission")) return "auth";
-  return "unknown";
-}
-
-export async function getLatestAdSpendSourceErrors(): Promise<
-  Map<string, AdSpendSourceErrorSummary>
-> {
-  const [row] = await db
-    .select({ payload: rawPulls.payload })
-    .from(rawPulls)
-    .where(eq(rawPulls.source, "sheets_ad_spend"))
-    .orderBy(desc(rawPulls.pulledAt))
-    .limit(1);
-  const errs = (row?.payload as { sourceErrors?: Array<{ tab: string; signature: string }> } | null)?.sourceErrors;
-  const out = new Map<string, AdSpendSourceErrorSummary>();
-  if (!errs?.length) return out;
-  // Multiple rows per tab possible (rare — same tab returning two
-  // error variants). Last write wins, signature stays deterministic.
-  for (const e of errs) {
-    out.set(e.tab, { signature: e.signature, reason: classifyReason(e.signature) });
-  }
-  return out;
-}
-
-/** Per-tab max(spend_date) in ad_spend_daily. Used to surface silent
- * staleness — the case where Supermetrics fails to refresh but doesn't
- * write an error row to the sheet either (license dropped mid-batch,
- * connector deauth in such a way the query never executes). In that
- * case `getLatestAdSpendSourceErrors` returns nothing for the tab, but
- * its max(spend_date) keeps drifting back from yesterday — that's the
- * signal this query exposes. One indexed groupBy, no joins. */
-export async function getAdSpendMaxDateByTab(): Promise<Map<string, string>> {
-  const rows = await db
-    .select({
-      product: adSpendDaily.product,
-      max: sql<string | null>`max(${adSpendDaily.spendDate})`,
-    })
-    .from(adSpendDaily)
-    .groupBy(adSpendDaily.product);
-  const out = new Map<string, string>();
-  for (const r of rows) {
-    if (r.max) out.set(r.product, r.max);
-  }
-  return out;
-}
-
 // Compute how many whole days `maxDate` (YYYY-MM-DD) lags behind
 // `threshold` (also YYYY-MM-DD). Positive number = stale; <=0 = fresh.
 // `maxDate=null` returns Infinity (never landed, maximally stale).
@@ -206,149 +102,95 @@ function daysBehind(maxDate: string | null, threshold: string): number {
   return Math.round((ymdToUtcMs(threshold) - ymdToUtcMs(maxDate)) / MS_PER_DAY);
 }
 
-/** Returns per-product revenue + spend totals for the trailing N days
- * ending `today`. `rangeDays === 1` is "yesterday" — the single most
- * recent fully-complete day, which is what Scott's daily report shows.
+/** Per-source max(spend_date) for the two spend feeds behind every
+ * product line. Used to surface SILENT staleness — the case where a
+ * sheet stops refreshing without any loud error: the max keeps
+ * drifting back from yesterday. Two indexed max() scans, no joins. */
+async function getSpendSourceMaxDates(): Promise<Record<SpendSource, string | null>> {
+  const [fbRow] = await db
+    .select({ max: sql<string | null>`max(${fbAdSpendDaily.spendDate})` })
+    .from(fbAdSpendDaily);
+  const [alRow] = await db
+    .select({ max: sql<string | null>`max(${applovinAdSpendDaily.spendDate})` })
+    .from(applovinAdSpendDaily);
+  return { FB: fbRow?.max ?? null, AL: alRow?.max ?? null };
+}
+
+/** Returns per-focus-product revenue + spend totals for the trailing N
+ * days ending `today`. `rangeDays === 1` is "yesterday" — the single
+ * most recent fully-complete day, which is what Scott's daily report
+ * shows.
+ *
+ * Each row is a VIEW of the shared per-line computation
+ * (`computeProductLineStats`) — the exact numbers the All-products
+ * table shows for the same line. Revenue is net (product + pro-rated
+ * shipping/tax); spend is URL-first FB attribution + AppLovin. The
+ * Supermetrics name-tabs (ad_spend_daily) are NOT read here anymore.
  */
 export async function getPerformanceRollup(opts: {
   today: string; // YYYY-MM-DD anchor (treated as "today, not yet complete")
   rangeDays: number; // 1 (yesterday) | 7 | 14 | 30
   /** Optional channel filter on the revenue side. Spend is unaffected
-   * because ad-spend tabs aren't channel-tagged uniformly (e.g., the
-   * "SuperHW" tab is FB INTL by convention; "Super HW AL" is AppLovin
-   * across regions). When set, revenue rolls up only the matching
-   * Shopify store — used to reconcile against partial reports
-   * (e.g., the daily-report agency's "SupHW INTL Daily Report"). */
+   * (ad spend isn't channel-tagged; the US/INTL split is a separate
+   * dimension). When set, revenue rolls up only the matching Shopify
+   * store — used to reconcile against partial reports (e.g., the
+   * daily-report agency's "SupHW INTL Daily Report"). */
   channel?: SalesChannel;
 }): Promise<PerformanceResult> {
-  // Range is [today - rangeDays, today - 1] inclusive. Excludes today
-  // itself because the day's sales are still accumulating.
-  const rangeEnd = addDays(opts.today, -1);
-  const rangeStart = addDays(opts.today, -opts.rangeDays);
+  const { rangeStart, rangeEnd, lines } = await computeProductLineStats(opts);
+  const statsByLine = new Map(lines.map((l) => [l.line, l]));
 
-  // 1. Spend: sum cost_usd per tab in [rangeStart, rangeEnd].
-  const spendRows = await db
-    .select({
-      product: adSpendDaily.product,
-      total: sql<string>`coalesce(sum(${adSpendDaily.costUsd}), 0)`,
-    })
-    .from(adSpendDaily)
-    .where(
-      and(
-        gte(adSpendDaily.spendDate, rangeStart),
-        lte(adSpendDaily.spendDate, rangeEnd),
-      ),
-    )
-    .groupBy(adSpendDaily.product);
-  const spendByTab = new Map<string, number>();
-  for (const r of spendRows) {
-    spendByTab.set(r.product, Number(r.total));
-  }
-
-  // 1b. Upstream-error map from the latest sheets_ad_spend pull. When
-  // a tab is here, its spend value above reflects ONLY prior successful
-  // pulls — future dates won't fill until the upstream issue is fixed.
-  // UI surfaces this via per-tab badge + page-level banner so $0 caused
-  // by a broken feed is visually distinct from a real $0 spend day.
-  const errorByTab = await getLatestAdSpendSourceErrors();
-
-  // 1c. Per-tab max(spend_date) — used to detect SILENT staleness, the
-  // case where Supermetrics never wrote an error row to the sheet so
-  // errorByTab is empty, but the data hasn't refreshed in days either
-  // (e.g., upstream license failed before the query could execute). A
-  // tab is "stale" when its max is >= 2 days behind real-world
-  // yesterday-EST; 1 day behind is normal cron lag and not flagged.
+  // Per-source staleness: a source is "stale" when its max(spend_date)
+  // is >= 2 days behind real-world yesterday-EST; 1 day behind is
+  // normal cron lag and not flagged.
   //
   // Threshold is REAL-WORLD yesterday (server clock), not the user's
   // selected end-date — staleness is about whether the pipeline is
   // healthy now, not whether the user's historical window has data.
   // (A user looking at 5/15 still wants to know "the feed has been
   // broken for 3 days" so they don't trust today's report either.)
-  const maxDateByTab = await getAdSpendMaxDateByTab();
+  const maxBySource = await getSpendSourceMaxDates();
   const realYesterdayEst = toEstDate(new Date(Date.now() - MS_PER_DAY));
   const STALE_DAYS = 2;
+  const stalenessFor = (source: SpendSource): AdSpendStalenessSummary | undefined => {
+    const latestDate = maxBySource[source];
+    const behind = daysBehind(latestDate, realYesterdayEst);
+    return behind >= STALE_DAYS
+      ? { latestDate, daysBehind: behind === Infinity ? -1 : behind }
+      : undefined;
+  };
+  const staleness: Record<SpendSource, AdSpendStalenessSummary | undefined> = {
+    FB: stalenessFor("FB"),
+    AL: stalenessFor("AL"),
+  };
 
-  // 2. Revenue: for each canonical product, find matching SKUs by
-  // productName pattern, then sum daily_sales.netSalesUsd in the
-  // window across all channels.
-  const rows: PerformanceRow[] = [];
-  for (const key of Object.keys(PRODUCT_CONFIG) as ProductKey[]) {
-    const cfg = PRODUCT_CONFIG[key];
-
-    // Resolve SKUs whose productName matches any pattern.
-    const skuMatchClauses = cfg.productNamePatterns.map((p) =>
-      ilike(skus.productName, p),
-    );
-    const skuRows = skuMatchClauses.length > 0
-      ? await db
-          .select({ sku: skus.sku })
-          .from(skus)
-          .where(or(...skuMatchClauses))
-      : [];
-    const matchedSkus = skuRows.map((r) => r.sku);
-
-    let revenueUsd = 0;
-    if (matchedSkus.length > 0) {
-      const baseConditions = [
-        inArray(dailySales.sku, matchedSkus),
-        gte(dailySales.salesDate, rangeStart),
-        lte(dailySales.salesDate, rangeEnd),
-      ];
-      const conditions = opts.channel
-        ? [...baseConditions, eq(dailySales.channel, opts.channel)]
-        : baseConditions;
-      const [rev] = await db
-        .select({
-          total: sql<string>`coalesce(sum(${dailySales.netSalesUsd}), 0)`,
-        })
-        .from(dailySales)
-        .where(and(...conditions));
-      revenueUsd = Number(rev?.total ?? 0);
-    }
-
-    const spendBreakdown = cfg.spendTabs.map((tab) => {
-      const spendUsdForTab = spendByTab.get(tab) ?? 0;
-      const sourceError = errorByTab.get(tab);
-      const latestDate = maxDateByTab.get(tab) ?? null;
-      const behind = daysBehind(latestDate, realYesterdayEst);
-      // A newly-wired tab with no data yet (null latestDate) is exempt from
-      // the stale badge until its first dated row — don't flag HRS AppLovin
-      // as stale just because it hasn't spent its first dollar.
-      const exemptEmpty =
-        latestDate === null &&
-        AD_SPEND_TABS_STALE_EXEMPT_UNTIL_FIRST_DATA.has(tab);
-      const staleness =
-        behind >= STALE_DAYS && !exemptEmpty
-          ? { latestDate, daysBehind: behind === Infinity ? -1 : behind }
-          : undefined;
-      const entry: PerformanceRow["spendByTab"][number] = { tab, spendUsd: spendUsdForTab };
-      if (sourceError) entry.sourceError = sourceError;
-      if (staleness) entry.staleness = staleness;
-      return entry;
-    });
-    const spendUsd = spendBreakdown.reduce((s, b) => s + b.spendUsd, 0);
-    const roas = spendUsd > 0 ? revenueUsd / spendUsd : null;
-
-    rows.push({
-      key,
-      label: cfg.label,
-      revenueUsd,
-      spendUsd,
-      roas,
-      spendByTab: spendBreakdown,
-    });
-  }
+  const rows: PerformanceRow[] = (Object.keys(PRODUCT_CONFIG) as ProductKey[]).map(
+    (key) => {
+      const cfg = PRODUCT_CONFIG[key];
+      const stats = statsByLine.get(cfg.line);
+      const spendBySource = (["FB", "AL"] as const).map((source) => {
+        const entry: PerformanceRow["spendBySource"][number] = {
+          source,
+          spendUsd: source === "FB" ? stats?.fbSpendUsd ?? 0 : stats?.alSpendUsd ?? 0,
+        };
+        if (staleness[source]) entry.staleness = staleness[source];
+        return entry;
+      });
+      return {
+        key,
+        label: cfg.label,
+        revenueUsd: stats?.revenueNetUsd ?? 0,
+        spendUsd: stats?.spendUsd ?? 0,
+        roas: stats?.roas ?? null,
+        spendBySource,
+      };
+    },
+  );
 
   const productsWithoutData = rows.filter(
     (r) => r.revenueUsd === 0 && r.spendUsd === 0,
   ).length;
   const warnEmpty = productsWithoutData >= rows.length / 2;
-
-  const sourceErrors = Array.from(errorByTab.entries()).map(([tab, sum]) => ({
-    tab,
-    signature: sum.signature,
-    reason: sum.reason,
-  }));
 
   // Infotainment spend-only box (owner request 2026-07-03): sum every FB ad
   // with "infotainment" anywhere in its raw name over the same window. FB
@@ -370,7 +212,6 @@ export async function getPerformanceRollup(opts: {
     rangeEnd,
     rows,
     warnEmpty,
-    sourceErrors,
     infotainment: { spendUsd: Number(info?.total ?? 0) },
   };
 }
@@ -387,7 +228,12 @@ export async function getPerformanceRollup(opts: {
 export type PerformanceDataFreshness = {
   /** Latest day with revenue data across any Shopify channel. */
   revenueMaxDate: string | null;
-  /** Latest day with ad-spend data from Supermetrics. */
+  /** Latest day with FB ad-spend data (fb_ad_spend_daily — the primary
+   * spend feed behind both /performance views since the unified-math
+   * change; the Supermetrics name-tabs are no longer read). AppLovin is
+   * deliberately excluded from the picker default: it's the secondary
+   * feed and a quiet AL day shouldn't drag the whole page back — its
+   * staleness surfaces on the per-card breakdown instead. */
   adSpendMaxDate: string | null;
 };
 
@@ -396,8 +242,8 @@ export async function getPerformanceDataFreshness(): Promise<PerformanceDataFres
     .select({ max: sql<string | null>`max(${dailySales.salesDate})` })
     .from(dailySales);
   const [spRow] = await db
-    .select({ max: sql<string | null>`max(${adSpendDaily.spendDate})` })
-    .from(adSpendDaily);
+    .select({ max: sql<string | null>`max(${fbAdSpendDaily.spendDate})` })
+    .from(fbAdSpendDaily);
   return {
     revenueMaxDate: revRow?.max ?? null,
     adSpendMaxDate: spRow?.max ?? null,
@@ -405,13 +251,18 @@ export async function getPerformanceDataFreshness(): Promise<PerformanceDataFres
 }
 
 // ============================================================================
-// All-products rollup (the /performance "All products" toggle)
+// Shared per-product-line computation (feeds BOTH /performance views)
 // ============================================================================
-// Unlike the focus view (4 hand-configured products), this rolls up EVERY
-// product: revenue grouped by product family (from skus.product_name) using the
-// EXACT product revenue column. Spend that isn't a product (HOME / Clearance /
-// Unmapped) surfaces as its own buckets; shipping/tax/tips (ancillary) is a
-// single separate line so product revenue ties to Shopify's by-product figure.
+// One computation, two views: `computeProductLineStats` rolls up EVERY product
+// line's revenue + spend; the All-products table shows all lines (+ non-product
+// spend buckets) and the Focus cards are a filter down to their 4 lines. The
+// two views can't drift because neither runs its own revenue/spend SQL.
+//
+// Revenue per line is NET: product revenue + the line's pro-rated shipping/
+// tax/tips share. daily_sales rows already carry a per-SKU ancillary_usd
+// pro-rated at ingest, so per-line net = sum(net_sales_usd) over the line's
+// SKUs — exact, no read-time pro-ration, and the page grand total equals the
+// old "products + one ancillary bucket" total.
 //
 // Spend = combined FB + AppLovin per family. FB is attributed URL-FIRST
 // (2026-06-27): the fb_ad_url_map snapshot maps each ad's destination URL ->
@@ -457,10 +308,36 @@ function normalizeStoredFamily(label: string): string {
   return label === "Boyshort HF" ? "Boyshort" : label;
 }
 
+/** One product line (or non-product spend bucket) from the shared
+ * computation. Focus cards and All-products rows are both views of
+ * exactly these numbers. */
+export type ProductLineStats = {
+  /** Canonical family label, e.g. "Mens", "Super High-Waist". */
+  line: string;
+  /** "product" lines have revenue; brand/clearance/unmapped are spend-only. */
+  kind: FbBucket;
+  /** Net revenue = product revenue + the line's pro-rated shipping/tax
+   * share (sum of daily_sales.net_sales_usd over the line's SKUs). */
+  revenueNetUsd: number;
+  /** URL-first attributed Facebook spend. */
+  fbSpendUsd: number;
+  /** AppLovin spend (attributed at ingest). */
+  alSpendUsd: number;
+  /** fb + al. */
+  spendUsd: number;
+  /** US vs non-US split of total ad spend (FB geo fraction + AppLovin country).
+   * us + nonUs = spendUsd. */
+  usSpendUsd: number;
+  nonUsSpendUsd: number;
+  /** revenueNetUsd / spendUsd; null when spend is 0 (product lines only). */
+  roas: number | null;
+};
+
 export type AllProductsRow = {
   product: string;
   /** "product" rows have revenue; brand/clearance/unmapped are spend-only. */
   kind: FbBucket;
+  /** Net revenue (product + pro-rated shipping/tax share). */
   revenueUsd: number;
   /** Combined ad spend = FB + AppLovin. */
   spendUsd: number;
@@ -481,10 +358,8 @@ export type AllProductsResult = {
   rangeEnd: string;
   /** Product families (revenue desc) first, then spend-only buckets (spend desc). */
   rows: AllProductsRow[];
-  /** Shipping + tax + tips total — its own line so product revenue stays exact. */
-  ancillaryUsd: number;
-  totalProductRevenueUsd: number;
-  /** product revenue + ancillary = full Shopify revenue. */
+  /** Sum of per-line net revenue = full Shopify revenue (products +
+   * their pro-rated shipping/tax shares — no separate ancillary line). */
   totalRevenueUsd: number;
   /** Combined FB + AppLovin. */
   totalSpendUsd: number;
@@ -497,15 +372,24 @@ export type AllProductsResult = {
 
 const round4 = (n: number): number => Number(n.toFixed(4));
 
-export async function getAllProductsRollup(opts: {
+/** THE shared computation. Returns every product line's net revenue +
+ * attributed spend (plus the non-product spend buckets) for the
+ * trailing `rangeDays` ending the day before `today`. Both
+ * `getPerformanceRollup` (Focus areas) and `getAllProductsRollup`
+ * (All products) consume this — neither runs its own revenue/spend
+ * SQL, so the two /performance views agree by construction. */
+export async function computeProductLineStats(opts: {
   today: string;
   rangeDays: number;
+  /** Optional channel filter on the REVENUE side only (ad spend isn't
+   * channel-tagged; US/INTL is a separate spend dimension). */
   channel?: SalesChannel;
-}): Promise<AllProductsResult> {
+}): Promise<{ rangeStart: string; rangeEnd: string; lines: ProductLineStats[] }> {
   const rangeEnd = addDays(opts.today, -1);
   const rangeStart = addDays(opts.today, -opts.rangeDays);
 
-  // --- Revenue: exact product revenue + ancillary, grouped by product_name ---
+  // --- Revenue: NET per product_name (product + pro-rated ancillary,
+  // already summed per-row at ingest into net_sales_usd) ---
   const revConds = [
     gte(dailySales.salesDate, rangeStart),
     lte(dailySales.salesDate, rangeEnd),
@@ -514,8 +398,7 @@ export async function getAllProductsRollup(opts: {
   const revRows = await db
     .select({
       productName: skus.productName,
-      prod: sql<string>`coalesce(sum(${dailySales.productSalesUsd}), 0)`,
-      anc: sql<string>`coalesce(sum(${dailySales.ancillaryUsd}), 0)`,
+      net: sql<string>`coalesce(sum(${dailySales.netSalesUsd}), 0)`,
     })
     .from(dailySales)
     .leftJoin(skus, eq(skus.sku, dailySales.sku))
@@ -523,11 +406,9 @@ export async function getAllProductsRollup(opts: {
     .groupBy(skus.productName);
 
   const revByFamily = new Map<string, number>();
-  let ancillaryUsd = 0;
   for (const r of revRows) {
     const fam = revenueFamilyFromProductName(r.productName ?? "");
-    revByFamily.set(fam, (revByFamily.get(fam) ?? 0) + Number(r.prod));
-    ancillaryUsd += Number(r.anc);
+    revByFamily.set(fam, (revByFamily.get(fam) ?? 0) + Number(r.net));
   }
 
   // --- Product + region overlay from the Jasper-maintained fb_product_map sheet.
@@ -705,30 +586,52 @@ export async function getAllProductsRollup(opts: {
     ...fbSpendByFamily.keys(),
     ...appLovinSpendByFamily.keys(),
   ]);
-  const rows: AllProductsRow[] = [];
+  const lines: ProductLineStats[] = [];
   for (const fam of families) {
-    const revenueUsd = round4(revByFamily.get(fam) ?? 0);
+    const revenueNetUsd = round4(revByFamily.get(fam) ?? 0);
     const fbSpendUsd = round4(fbSpendByFamily.get(fam) ?? 0);
-    const appLovinSpendUsd = round4(appLovinSpendByFamily.get(fam) ?? 0);
-    const spendUsd = round4(fbSpendUsd + appLovinSpendUsd);
+    const alSpendUsd = round4(appLovinSpendByFamily.get(fam) ?? 0);
+    const spendUsd = round4(fbSpendUsd + alSpendUsd);
     // A family with revenue is a product; otherwise it's the spend bucket's kind.
     const kind: FbBucket = revByFamily.has(fam)
       ? "product"
       : bucketForFamilyLabel(fam);
-    rows.push({
-      product: fam,
+    lines.push({
+      line: fam,
       kind,
-      revenueUsd,
+      revenueNetUsd,
       spendUsd,
       fbSpendUsd,
-      appLovinSpendUsd,
+      alSpendUsd,
       usSpendUsd: round4(usByFamily.get(fam) ?? 0),
       nonUsSpendUsd: round4(nonUsByFamily.get(fam) ?? 0),
-      // ROAS only meaningful for product rows; spend-only buckets
+      // ROAS only meaningful for product lines; spend-only buckets
       // (brand/clearance/unmapped) have no attributed revenue by design.
-      roas: kind === "product" && spendUsd > 0 ? revenueUsd / spendUsd : null,
+      roas: kind === "product" && spendUsd > 0 ? revenueNetUsd / spendUsd : null,
     });
   }
+
+  return { rangeStart, rangeEnd, lines };
+}
+
+export async function getAllProductsRollup(opts: {
+  today: string;
+  rangeDays: number;
+  channel?: SalesChannel;
+}): Promise<AllProductsResult> {
+  const { rangeStart, rangeEnd, lines } = await computeProductLineStats(opts);
+
+  const rows: AllProductsRow[] = lines.map((l) => ({
+    product: l.line,
+    kind: l.kind,
+    revenueUsd: l.revenueNetUsd,
+    spendUsd: l.spendUsd,
+    fbSpendUsd: l.fbSpendUsd,
+    appLovinSpendUsd: l.alSpendUsd,
+    usSpendUsd: l.usSpendUsd,
+    nonUsSpendUsd: l.nonUsSpendUsd,
+    roas: l.roas,
+  }));
   // Products (revenue desc) first, then spend-only buckets (spend desc).
   rows.sort((a, b) => {
     const aProd = a.kind === "product";
@@ -737,22 +640,15 @@ export async function getAllProductsRollup(opts: {
     return aProd ? b.revenueUsd - a.revenueUsd : b.spendUsd - a.spendUsd;
   });
 
-  const totalProductRevenueUsd = round4(
-    [...revByFamily.values()].reduce((s, v) => s + v, 0),
-  );
-  ancillaryUsd = round4(ancillaryUsd);
-  const totalFbSpendUsd = round4(
-    [...fbSpendByFamily.values()].reduce((s, v) => s + v, 0),
-  );
+  const totalRevenueUsd = round4(rows.reduce((s, r) => s + r.revenueUsd, 0));
+  const totalFbSpendUsd = round4(rows.reduce((s, r) => s + r.fbSpendUsd, 0));
   const totalAppLovinSpendUsd = round4(
-    [...appLovinSpendByFamily.values()].reduce((s, v) => s + v, 0),
+    rows.reduce((s, r) => s + r.appLovinSpendUsd, 0),
   );
   const totalSpendUsd = round4(totalFbSpendUsd + totalAppLovinSpendUsd);
-  const totalUsSpendUsd = round4(
-    [...usByFamily.values()].reduce((s, v) => s + v, 0),
-  );
+  const totalUsSpendUsd = round4(rows.reduce((s, r) => s + r.usSpendUsd, 0));
   const totalNonUsSpendUsd = round4(
-    [...nonUsByFamily.values()].reduce((s, v) => s + v, 0),
+    rows.reduce((s, r) => s + r.nonUsSpendUsd, 0),
   );
 
   return {
@@ -760,9 +656,7 @@ export async function getAllProductsRollup(opts: {
     rangeStart,
     rangeEnd,
     rows,
-    ancillaryUsd,
-    totalProductRevenueUsd,
-    totalRevenueUsd: round4(totalProductRevenueUsd + ancillaryUsd),
+    totalRevenueUsd,
     totalSpendUsd,
     totalFbSpendUsd,
     totalAppLovinSpendUsd,
