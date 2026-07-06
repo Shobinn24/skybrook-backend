@@ -388,9 +388,9 @@ export const inventoryRouter = router({
     }),
 
   // /performance "All products" toggle. Same input + date math as
-  // getPerformance, but rolls up EVERY product (revenue from
-  // product_sales_usd + FB-only spend attributed by ad-name prefix)
-  // instead of the 4 focus products. AppLovin excluded pending client sign-off.
+  // getPerformance, and the SAME shared per-line computation (net revenue;
+  // URL-first FB + AppLovin spend) — this one returns every line plus the
+  // non-product spend buckets instead of just the 4 focus lines.
   getAllProducts: marketingProcedure
     .input(
       z.object({
