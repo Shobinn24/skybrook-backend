@@ -12,6 +12,7 @@ import {
   skus,
 } from "@/lib/db/schema";
 import { getAllProductsRollup, getPerformanceRollup } from "@/lib/queries/performance";
+import { toEstDate } from "@/lib/tz";
 import { resetDb } from "@/tests/fixtures/seed";
 
 // Unified performance math (owner direction 2026-07): the Focus areas cards
@@ -185,5 +186,53 @@ describe("unified performance math — Focus areas === All products", () => {
     const mens = intlOnly.rows.find((r) => r.key === "men")!;
     expect(mens.revenueUsd).toBe(220);
     expect(mens.spendUsd).toBe(550); // spend unaffected by channel
+  });
+
+  // --- Per-source staleness on the focus-card breakdown. The threshold is
+  // REAL-WORLD yesterday-EST (wall clock, like the code under test), so all
+  // expected values are computed relative to Date.now() the same way —
+  // never against a fixed date, or the test would rot. ---
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const addDaysYmd = (ymd: string, days: number): string => {
+    const [y, m, d] = ymd.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+  };
+  const realYesterdayEst = () => toEstDate(new Date(Date.now() - MS_PER_DAY));
+
+  it("flags a silently-frozen FB feed (>= 2 days behind) and a never-landed AppLovin feed on spendBySource", async () => {
+    const pull = await seedPull();
+    const staleDate = addDaysYmd(realYesterdayEst(), -3);
+    // FB's max(spend_date) is 3 days behind real yesterday-EST; the
+    // AppLovin table stays EMPTY (never landed any data).
+    await db.insert(fbAdSpendDaily).values([
+      { adNumber: "1", adName: "m", adNameRaw: "(Mens CC) Ad 1 - m", adPrefix: "Mens CC", adLink: null, marketers: [], spendDate: staleDate, costUsd: "400", sourcePullId: pull },
+    ]);
+
+    const res = await getPerformanceRollup({ today: TODAY, rangeDays: 30 });
+    // Staleness is per-source (table-wide max date), identical on every card.
+    for (const row of res.rows) {
+      const fb = row.spendBySource.find((b) => b.source === "FB")!;
+      expect(fb.staleness).toEqual({ latestDate: staleDate, daysBehind: 3 });
+      const al = row.spendBySource.find((b) => b.source === "AL")!;
+      // -1 encodes "never landed any data" (max date null).
+      expect(al.staleness).toEqual({ latestDate: null, daysBehind: -1 });
+    }
+  });
+
+  it("does not flag sources within normal cron lag (0–1 days behind)", async () => {
+    const pull = await seedPull();
+    const freshFb = realYesterdayEst(); // 0 days behind
+    const lagAl = addDaysYmd(realYesterdayEst(), -1); // 1 day = normal lag
+    await db.insert(fbAdSpendDaily).values([
+      { adNumber: "1", adName: "m", adNameRaw: "(Mens CC) Ad 1 - m", adPrefix: "Mens CC", adLink: null, marketers: [], spendDate: freshFb, costUsd: "400", sourcePullId: pull },
+    ]);
+    await db.insert(applovinAdSpendDaily).values([
+      { product: "Mens", spendDate: lagAl, costUsd: "150", sourcePullId: pull },
+    ]);
+
+    const res = await getPerformanceRollup({ today: TODAY, rangeDays: 30 });
+    const mens = res.rows.find((r) => r.key === "men")!;
+    expect(mens.spendBySource.find((b) => b.source === "FB")!.staleness).toBeUndefined();
+    expect(mens.spendBySource.find((b) => b.source === "AL")!.staleness).toBeUndefined();
   });
 });

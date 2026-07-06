@@ -16,6 +16,11 @@ import { buildSheetsClient } from "./client";
 // Tab list is intentionally hardcoded so a typo / renamed tab fails
 // loud instead of silently dropping a product. Update here when Scott
 // adds a new tab.
+//
+// 2026-07-05: /performance no longer reads ad_spend_daily (unified on
+// URL-first FB + AppLovin). Ingest + freshness alerts kept deliberately
+// for reconciliation until the owner decides to retire the Supermetrics
+// per-product tabs — do not remove without that decision.
 // ============================================================================
 export const AD_SPEND_TABS = [
   "Men",

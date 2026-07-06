@@ -338,37 +338,39 @@ export default function PerformancePage() {
                       {fmtRoas(r.roas)}
                     </div>
                   </div>
-                  {r.spendBySource.length > 0 && (
-                    <div className="mt-4 border-t border-neutral-100 pt-2 space-y-0.5 text-[11px]">
-                      <div className="text-neutral-500">Spend breakdown:</div>
-                      {r.spendBySource.map((b) => {
-                        const rowColor = b.staleness
-                          ? "text-amber-700"
-                          : "text-neutral-600";
-                        return (
-                          <div key={b.source} className={"flex justify-between " + rowColor}>
-                            <span className="inline-flex items-center gap-1">
-                              {b.source === "AL" ? "AppLovin" : "FB"}
-                              {b.staleness && (
-                                <span
-                                  aria-hidden="true"
-                                  title={
-                                    b.staleness.latestDate
-                                      ? `Last data ${b.staleness.latestDate} (${b.staleness.daysBehind} days behind)`
-                                      : "Never received any data"
-                                  }
-                                  className="cursor-help"
-                                >
-                                  ⏰
-                                </span>
-                              )}
-                            </span>
-                            <span className="tabular-nums">{fmtMoney(b.spendUsd)}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                  {/* Per-source silent-staleness badges only: the loud-error
+                      banner went away with the Supermetrics name-tabs; loud
+                      failures on the FB/AppLovin feeds are covered by the
+                      freshness cron's Slack alerts. */}
+                  <div className="mt-4 border-t border-neutral-100 pt-2 space-y-0.5 text-[11px]">
+                    <div className="text-neutral-500">Spend breakdown:</div>
+                    {r.spendBySource.map((b) => {
+                      const rowColor = b.staleness
+                        ? "text-amber-700"
+                        : "text-neutral-600";
+                      return (
+                        <div key={b.source} className={"flex justify-between " + rowColor}>
+                          <span className="inline-flex items-center gap-1">
+                            {b.source === "AL" ? "AppLovin" : "FB"}
+                            {b.staleness && (
+                              <span
+                                aria-hidden="true"
+                                title={
+                                  b.staleness.latestDate
+                                    ? `Last data ${b.staleness.latestDate} (${b.staleness.daysBehind} days behind)`
+                                    : "Never received any data"
+                                }
+                                className="cursor-help"
+                              >
+                                ⏰
+                              </span>
+                            )}
+                          </span>
+                          <span className="tabular-nums">{fmtMoney(b.spendUsd)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               ))}
               {/* Owner request 2026-07-03: spend-only box for ads with
