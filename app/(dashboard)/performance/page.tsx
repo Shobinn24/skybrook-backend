@@ -421,6 +421,31 @@ export default function PerformancePage() {
                   )}
                 </div>
               ))}
+              {/* Owner request 2026-07-03: spend-only box for ads with
+                  "infotainment" in the name, appended after the product
+                  cards. These ads carry no attributable revenue, so Revenue
+                  and ROAS are intentionally absent (rollup exposes spend
+                  only). */}
+              {data?.infotainment && (
+                <div className="rounded-lg border border-neutral-200 bg-white p-5">
+                  <div className="text-xs uppercase tracking-wide text-neutral-500">
+                    Infotainment
+                  </div>
+                  <div className="mt-3">
+                    <div className="text-[10px] uppercase tracking-wide text-neutral-400">
+                      Spend
+                    </div>
+                    <div className="text-lg font-semibold text-neutral-900 tabular-nums">
+                      {fmtMoney(data.infotainment.spendUsd)}
+                    </div>
+                  </div>
+                  <div className="mt-4 border-t border-neutral-100 pt-3 text-[11px] text-neutral-500">
+                    All ads with &ldquo;infotainment&rdquo; in the name. Spend
+                    only: revenue is not attributable to these ads, so no
+                    ROAS.
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">

@@ -121,6 +121,10 @@ export type PerformanceResult = {
   /** Distinct tabs with an upstream error in the latest pull. Drives
    * the red page-level banner. */
   sourceErrors: Array<{ tab: string; signature: string; reason: AdSpendSourceErrorSummary["reason"] }>;
+  /** Owner request 2026-07-03: spend-only box for ads with "infotainment"
+   * in the name. FB only (AppLovin carries no ad names). No revenue can be
+   * attributed to these ads, so the box exposes spend without revenue/ROAS. */
+  infotainment: { spendUsd: number };
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -346,6 +350,20 @@ export async function getPerformanceRollup(opts: {
     reason: sum.reason,
   }));
 
+  // Infotainment spend-only box (owner request 2026-07-03): sum every FB ad
+  // with "infotainment" anywhere in its raw name over the same window. FB
+  // only — AppLovin rows carry no ad names, so nothing to match there.
+  const [info] = await db
+    .select({ total: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}), 0)` })
+    .from(fbAdSpendDaily)
+    .where(
+      and(
+        ilike(fbAdSpendDaily.adNameRaw, "%infotainment%"),
+        gte(fbAdSpendDaily.spendDate, rangeStart),
+        lte(fbAdSpendDaily.spendDate, rangeEnd),
+      ),
+    );
+
   return {
     rangeDays: opts.rangeDays,
     rangeStart,
@@ -353,6 +371,7 @@ export async function getPerformanceRollup(opts: {
     rows,
     warnEmpty,
     sourceErrors,
+    infotainment: { spendUsd: Number(info?.total ?? 0) },
   };
 }
 
