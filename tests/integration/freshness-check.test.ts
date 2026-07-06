@@ -10,6 +10,7 @@ import {
   factoryOrderLines,
   factoryOrders,
   fbAdSpendDaily,
+  fbCampaignDaily,
   rawPulls,
   shippingStatsDaily,
   skus,
@@ -47,7 +48,7 @@ async function seedRawPull() {
 
 async function truncate() {
   await db.execute(
-    sql`TRUNCATE TABLE ad_spend_daily, fb_ad_spend_daily, daily_sales, stock_snapshots, shipping_stats_daily, factory_order_lines, factory_orders, factory_order_inputs, skus, alert_events, raw_pulls CASCADE`,
+    sql`TRUNCATE TABLE ad_spend_daily, fb_ad_spend_daily, fb_campaign_daily, daily_sales, stock_snapshots, shipping_stats_daily, factory_order_lines, factory_orders, factory_order_inputs, skus, alert_events, raw_pulls CASCADE`,
   );
 }
 
@@ -116,6 +117,36 @@ describe("runFreshnessCheck", () => {
     const fbCheck = result.checks.find((c) => c.name === FB_CHECK_NAME);
     expect(fbCheck?.status).toBe("fail");
     expect(fbCheck?.maxDate).toBe(TWO_DAYS_AGO_EST);
+  });
+
+  it("passes fb_campaign_daily freshness when max(spend_date) is yesterday EST", async () => {
+    await db.insert(fbCampaignDaily).values({
+      campaignName: "Cost Cap Campaign",
+      spendDate: YESTERDAY_EST,
+      costUsd: "10.0",
+      purchaseValueUsd: "20.0",
+      sourcePullId: seededRawPullId,
+    });
+    const result = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
+    const check = result.checks.find((c) => c.name === "fb_campaign_daily");
+    expect(check?.status).toBe("pass");
+  });
+
+  it("fails fb_campaign_daily freshness when the table is stale or empty", async () => {
+    const empty = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
+    expect(empty.checks.find((c) => c.name === "fb_campaign_daily")?.status).toBe("fail");
+
+    await db.insert(fbCampaignDaily).values({
+      campaignName: "Cost Cap Campaign",
+      spendDate: TWO_DAYS_AGO_EST,
+      costUsd: "10.0",
+      purchaseValueUsd: "20.0",
+      sourcePullId: seededRawPullId,
+    });
+    const stale = await runFreshnessCheck({ now: fixedNow, includeReferenceTabs: false });
+    const check = stale.checks.find((c) => c.name === "fb_campaign_daily");
+    expect(check?.status).toBe("fail");
+    expect(check?.maxDate).toBe(TWO_DAYS_AGO_EST);
   });
 
   // This is the 2026-05-22 incident reproduced: AppLovin license lapsed

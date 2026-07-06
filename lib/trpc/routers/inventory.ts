@@ -38,6 +38,10 @@ import {
   getAllProductsRollup,
   getPerformanceDataFreshness,
 } from "@/lib/queries/performance";
+import {
+  getCampaignTracker,
+  upsertCampaignTrackerNote,
+} from "@/lib/queries/campaign-tracker";
 import { unmappedFbUrlSpend } from "@/lib/jobs/fb-url-coverage-check";
 import { getInventoryRows } from "@/lib/queries/inventory";
 import { getVelocityForRange } from "@/lib/queries/velocity-range";
@@ -239,6 +243,25 @@ export const inventoryRouter = router({
   // stock value, full trace) filtered to flag === "overstocked", sorted
   // by stock-value descending — biggest-leverage marketing candidates
   // first. Plus a summary block for the KPI strip at the top of the page.
+  // Campaign Tracker (ops request 2026-07-06): campaign-bucket daily
+  // spend/ROAS with Mon–Sun weekly rollups + free-text weekly notes.
+  getCampaignTracker: marketingProcedure.query(() => getCampaignTracker()),
+  upsertCampaignTrackerNote: marketingProcedure
+    .input(
+      z.object({
+        weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        note: z.string().max(20000),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      await upsertCampaignTrackerNote({
+        weekStart: input.weekStart,
+        note: input.note,
+        updatedBy: ctx.email ?? "unknown",
+      });
+      return { ok: true };
+    }),
+
   getOverstockView: opsProcedure.query(() => getOverstockRows()),
 
   // Page-feeding endpoint for /incoming (SPEC §5.7 q3). Forward-looking

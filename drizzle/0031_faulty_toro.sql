@@ -1,0 +1,1 @@
+ALTER TYPE "public"."source" ADD VALUE 'sheets_fb_campaigns' BEFORE 'sheets_applovin';

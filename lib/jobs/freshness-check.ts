@@ -40,6 +40,7 @@ import {
   factoryOrderLines,
   factoryOrders,
   fbAdSpendDaily,
+  fbCampaignDaily,
   shippingStatsDaily,
   skus,
   stockSnapshots,
@@ -206,6 +207,27 @@ export async function evaluateFreshness(opts?: {
       title: "applovin_ad_spend_daily is stale",
       severity: "p2",
       fields: { table: "applovin_ad_spend_daily", maxDate: maxDate ?? "<null>", threshold },
+    });
+  }
+
+  // Campaign-level FB feed ("Campaign Daily" tab, added 2026-07-06). p2 →
+  // digest, not a page, while the scheduled refresh proves itself out —
+  // same probation the AppLovin feed got. Raise to p1 after a steady week.
+  const [campaignRow] = await db
+    .select({ max: max(fbCampaignDaily.spendDate) })
+    .from(fbCampaignDaily);
+  {
+    const maxDate = campaignRow?.max ?? null;
+    const stale = maxDate === null || maxDate < threshold;
+    checks.push({
+      name: "fb_campaign_daily",
+      status: stale ? "fail" : "pass",
+      maxDate,
+      threshold,
+      dedupKey: "freshness:fb_campaign_daily",
+      title: "fb_campaign_daily is stale",
+      severity: "p2",
+      fields: { table: "fb_campaign_daily", maxDate: maxDate ?? "<null>", threshold },
     });
   }
 

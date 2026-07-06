@@ -11,6 +11,7 @@ export type SourceKey =
   | "sheets_incoming"
   | "sheets_ad_spend"
   | "sheets_fb_ads"
+  | "sheets_fb_campaigns"
   | "sheets_applovin"
   | "sheets_fb_geo"
   | "sheets_fb_url_map"

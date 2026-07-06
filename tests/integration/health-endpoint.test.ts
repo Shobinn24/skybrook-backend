@@ -88,6 +88,10 @@ async function seedFreshData() {
       VALUES ('9055', ${yesterday}, '1', ${rawPullId})
     `);
   await db.execute(sql`
+      INSERT INTO fb_campaign_daily (campaign_name, spend_date, cost_usd, purchase_value_usd, source_pull_id)
+      VALUES ('Cost Cap Campaign', ${yesterday}, '1', '2', ${rawPullId})
+    `);
+  await db.execute(sql`
       INSERT INTO stock_snapshots (sku, location, snapshot_date, on_hand, source_pull_id)
       VALUES ('s', 'US', ${yesterday}, 1, ${rawPullId})
     `);
@@ -115,7 +119,7 @@ describe("GET /api/health", () => {
 
   beforeEach(async () => {
     await db.execute(
-      sql`TRUNCATE TABLE alert_events, data_pulls, ad_spend_daily, fb_ad_spend_daily, daily_sales, stock_snapshots, shipping_stats_daily, factory_order_lines, factory_orders, factory_order_inputs, skus, raw_pulls CASCADE`,
+      sql`TRUNCATE TABLE alert_events, data_pulls, ad_spend_daily, fb_ad_spend_daily, fb_campaign_daily, daily_sales, stock_snapshots, shipping_stats_daily, factory_order_lines, factory_orders, factory_order_inputs, skus, raw_pulls CASCADE`,
     );
     await seedRawPull();
     stubAppFetch();

@@ -355,6 +355,7 @@ const MARKETING_ALLOWED_PREFIXES: ReadonlyArray<string> = [
   "/fb-ads",
   "/bonus-tracker",
   "/performance",
+  "/campaign-tracker",
 ];
 
 export const MARKETING_LANDING_PATH = "/performance";

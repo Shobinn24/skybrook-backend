@@ -39,6 +39,7 @@ import {
   sheetsAdSpendRunner,
   sheetsApplovinRunner,
   sheetsFbAdsRunner,
+  sheetsFbCampaignsRunner,
   sheetsFbGeoRunner,
   sheetsFbProductMapRunner,
   sheetsFbUrlMapRunner,
@@ -53,6 +54,7 @@ export const dynamic = "force-dynamic";
 const AD_SPEND_SOURCES: Partial<Record<SourceKey, SourceRunner>> = {
   sheets_ad_spend: sheetsAdSpendRunner,
   sheets_fb_ads: sheetsFbAdsRunner,
+  sheets_fb_campaigns: sheetsFbCampaignsRunner,
   sheets_applovin: sheetsApplovinRunner,
   sheets_fb_geo: sheetsFbGeoRunner,
   sheets_fb_url_map: sheetsFbUrlMapRunner,

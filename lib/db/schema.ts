@@ -21,6 +21,7 @@ export const sourceEnum = pgEnum("source", [
   "sheets_incoming",
   "sheets_ad_spend",
   "sheets_fb_ads",
+  "sheets_fb_campaigns",
   "sheets_applovin",
   "sheets_fb_geo",
   "sheets_fb_url_map",
@@ -786,6 +787,40 @@ export const cashflowWeekly = pgTable("cashflow_weekly", {
   varianceNote: text("variance_note"),
   recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
   recordedBy: text("recorded_by").notNull().default("system"),
+});
+
+// Campaign-level daily FB spend + FB-attributed purchase value, sourced from
+// the "Campaign Daily" Supermetrics tab of the FB Ads Tracker sheet (long
+// format: Date | Campaign name | Cost | Website purchases conversion value).
+// Built 2026-07-06 for the ops-tool Campaign Tracker page: daily spend + ROAS
+// per campaign bucket with Mon–Sun 7D rollups. ROAS is DERIVED
+// (purchase_value / cost) — website purchase conversion value was verified
+// identical to Ads Manager "Purchase ROAS" numerator to 4dp on settled days.
+// FB restates the trailing ~2 days, so the source query pulls a rolling
+// 14-day window and ingest does a windowed delete-replace (same pattern as
+// applovin_ad_spend_daily); history older than the window is frozen.
+// Campaign names are ingested VERBATIM — bucket mapping to the tracker's
+// columns lives in lib/domain/campaign-buckets.ts, so re-bucketing never
+// needs a re-pull.
+export const fbCampaignDaily = pgTable(
+  "fb_campaign_daily",
+  {
+    campaignName: text("campaign_name").notNull(),
+    spendDate: date("spend_date").notNull(),
+    costUsd: numeric("cost_usd", { precision: 14, scale: 4 }).notNull(),
+    purchaseValueUsd: numeric("purchase_value_usd", { precision: 14, scale: 4 }).notNull(),
+    sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.campaignName, t.spendDate] }) }),
+);
+
+// Free-text weekly notes column on the Campaign Tracker page. One row per
+// Mon-anchored week; the ops team pastes a chunk of commentary in weekly.
+export const campaignTrackerNotes = pgTable("campaign_tracker_notes", {
+  weekStart: date("week_start").primaryKey(),
+  note: text("note").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: text("updated_by").notNull().default("system"),
 });
 
 // Near-real-time sheet sync (Todo #36): one row per sheet-fed source. The
