@@ -137,6 +137,11 @@ export async function evaluateFreshness(opts?: {
   // Per-product max(date) flags a partial freeze immediately. Each
   // product carries its own dedup key so a single dead source pages
   // once and resolves independently when it recovers.
+  //
+  // 2026-07-05: /performance no longer reads ad_spend_daily (unified on
+  // URL-first FB + AppLovin). Ingest + freshness alerts kept deliberately
+  // for reconciliation until the owner decides to retire the Supermetrics
+  // per-product tabs — do not remove without that decision.
   const adSpendProductRows = await db
     .select({
       product: adSpendDaily.product,

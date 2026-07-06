@@ -46,12 +46,6 @@ function SpendSplit({
   );
 }
 
-// Shorten Supermetrics tab names for the spend breakdown — operators just
-// want to see "FB" vs "AL", not the full per-product tab title.
-function shortTabLabel(tab: string): string {
-  return / AL$/i.test(tab) ? "AL" : "FB";
-}
-
 function fmtDate(ymd: string): string {
   const [y, m, d] = ymd.split("-").map(Number);
   if (!y || !m || !d) return ymd;
@@ -103,8 +97,9 @@ export default function PerformancePage() {
   // to the chosen end date; the From/To inputs allow any explicit window.
   const [rangeStart, setRangeStart] = useState<string>("");
   const [rangeEnd, setRangeEnd] = useState<string>("");
-  // Focus areas (4 hand-configured products) vs All products (every product,
-  // revenue from product_sales_usd + FB spend attributed by ad-name prefix).
+  // Focus areas (4 hand-picked lines) vs All products (every line). Both are
+  // views of the SAME per-product-line computation (net revenue; URL-first FB
+  // + AppLovin spend) — a focus card and its All-products row always agree.
   const [view, setView] = useState<"focus" | "all">("focus");
   // All-products spend column: combined (FB + AppLovin) by default; toggle
   // reveals the per-row FB / AppLovin split (Scott 2026-06-26).
@@ -183,8 +178,8 @@ export default function PerformancePage() {
           <h1 className="text-2xl font-semibold text-neutral-900">Performance</h1>
           <p className="text-sm text-neutral-500">
             {data
-              ? `Revenue from Shopify · spend from Supermetrics FB · ${fmtDate(data.rangeStart)} – ${fmtDate(data.rangeEnd)}`
-              : "Revenue from Shopify · spend from Supermetrics FB"}
+              ? `Net revenue from Shopify · spend from FB (link-based) + AppLovin · ${fmtDate(data.rangeStart)} – ${fmtDate(data.rangeEnd)}`
+              : "Net revenue from Shopify · spend from FB (link-based) + AppLovin"}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -308,40 +303,6 @@ export default function PerformancePage() {
                 cron picks up new spend daily.
               </div>
             )}
-            {data && data.sourceErrors.length > 0 && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
-                <div className="flex items-start gap-2">
-                  <span aria-hidden="true">⚠</span>
-                  <div>
-                    <div className="font-semibold">
-                      Upstream ad-spend feed broken — ROAS values below may be
-                      understated for affected products.
-                    </div>
-                    <div className="mt-1 text-red-800">
-                      Latest Supermetrics pull returned an error for:{" "}
-                      {data.sourceErrors.map((e, i) => (
-                        <span key={e.tab}>
-                          {i > 0 && ", "}
-                          <code className="rounded bg-red-100 px-1">{e.tab}</code>
-                        </span>
-                      ))}
-                      . Reason:{" "}
-                      {data.sourceErrors[0].reason === "license"
-                        ? "Supermetrics license / trial issue — check hub.supermetrics.com → Data sources."
-                        : data.sourceErrors[0].reason === "quota"
-                        ? "Daily API quota exceeded — wait for reset or upgrade tier."
-                        : data.sourceErrors[0].reason === "auth"
-                        ? "Connector auth expired — re-authorize the data source."
-                        : "Unknown upstream error — see Slack alert details."}
-                    </div>
-                    <div className="mt-1 text-[11px] text-red-700">
-                      Full error: {data.sourceErrors[0].signature}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               {rows.map((r) => (
                 <div
@@ -377,48 +338,39 @@ export default function PerformancePage() {
                       {fmtRoas(r.roas)}
                     </div>
                   </div>
-                  {r.spendByTab.length > 1 && (
-                    <div className="mt-4 border-t border-neutral-100 pt-2 space-y-0.5 text-[11px]">
-                      <div className="text-neutral-500">Spend breakdown:</div>
-                      {r.spendByTab.map((b) => {
-                        const rowColor = b.sourceError
-                          ? "text-red-700"
-                          : b.staleness
-                          ? "text-amber-700"
-                          : "text-neutral-600";
-                        return (
-                          <div key={b.tab} className={"flex justify-between " + rowColor}>
-                            <span className="inline-flex items-center gap-1">
-                              {shortTabLabel(b.tab)}
-                              {b.sourceError && (
-                                <span
-                                  aria-hidden="true"
-                                  title={b.sourceError.signature}
-                                  className="cursor-help"
-                                >
-                                  ⚠
-                                </span>
-                              )}
-                              {!b.sourceError && b.staleness && (
-                                <span
-                                  aria-hidden="true"
-                                  title={
-                                    b.staleness.latestDate
-                                      ? `Last data ${b.staleness.latestDate} (${b.staleness.daysBehind} days behind)`
-                                      : "Never received any data"
-                                  }
-                                  className="cursor-help"
-                                >
-                                  ⏰
-                                </span>
-                              )}
-                            </span>
-                            <span className="tabular-nums">{fmtMoney(b.spendUsd)}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                  {/* Per-source silent-staleness badges only: the loud-error
+                      banner went away with the Supermetrics name-tabs; loud
+                      failures on the FB/AppLovin feeds are covered by the
+                      freshness cron's Slack alerts. */}
+                  <div className="mt-4 border-t border-neutral-100 pt-2 space-y-0.5 text-[11px]">
+                    <div className="text-neutral-500">Spend breakdown:</div>
+                    {r.spendBySource.map((b) => {
+                      const rowColor = b.staleness
+                        ? "text-amber-700"
+                        : "text-neutral-600";
+                      return (
+                        <div key={b.source} className={"flex justify-between " + rowColor}>
+                          <span className="inline-flex items-center gap-1">
+                            {b.source === "AL" ? "AppLovin" : "FB"}
+                            {b.staleness && (
+                              <span
+                                aria-hidden="true"
+                                title={
+                                  b.staleness.latestDate
+                                    ? `Last data ${b.staleness.latestDate} (${b.staleness.daysBehind} days behind)`
+                                    : "Never received any data"
+                                }
+                                className="cursor-help"
+                              >
+                                ⏰
+                              </span>
+                            )}
+                          </span>
+                          <span className="tabular-nums">{fmtMoney(b.spendUsd)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               ))}
               {/* Owner request 2026-07-03: spend-only box for ads with
@@ -449,15 +401,16 @@ export default function PerformancePage() {
             </div>
 
             <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
-              <strong>Notes:</strong> Spend ingested daily from the
-              Supermetrics sheet (refreshes 4am Asuncion = 3am EDT, our
-              cron pulls at 09:00 UTC). Each product rolls Facebook +
-              AppLovin spend
-              into one combined ROAS. Revenue summed from{" "}
-              <code>daily_sales</code> across all Shopify channels.
-              Product mapping: <code>Mens%</code> → Men&apos;s,{" "}
-              <code>Shapewear%</code> → Shapewear,{" "}
-              <code>Super High-Waist%</code> → SupHW.
+              <strong>Notes:</strong> Each card shows the same product line
+              (identical revenue / spend / ROAS) as the All products table.
+              Revenue is net, summed from <code>daily_sales</code> across all
+              Shopify channels — product sales plus each product&apos;s
+              pro-rated shipping &amp; tax share. Spend combines link-based
+              Facebook attribution (each ad&apos;s destination URL via the
+              product-map sheet, ad-name fallback) + AppLovin into one
+              combined ROAS. Cards map to the lines <em>Mens</em>,{" "}
+              <em>Shapewear</em>, <em>Super High-Waist</em> and{" "}
+              <em>High Rise Short</em>.
             </div>
           </>
         )
@@ -512,15 +465,6 @@ export default function PerformancePage() {
                       </td>
                     </tr>
                   ))}
-                {/* Shipping & tax — revenue not attributed to any product */}
-                <tr className="border-b border-neutral-100 bg-neutral-50 text-neutral-600">
-                  <td className="px-4 py-2 italic">Shipping &amp; tax</td>
-                  <td className="px-4 py-2 text-right tabular-nums">
-                    {fmtMoney(allQ.data.ancillaryUsd)}
-                  </td>
-                  <td className="px-4 py-2 text-right text-neutral-400">—</td>
-                  <td className="px-4 py-2 text-right text-neutral-400">—</td>
-                </tr>
                 {/* Non-product spend buckets (brand / clearance / unmapped) */}
                 {allQ.data.rows
                   .filter((r) => r.kind !== "product")
@@ -573,13 +517,15 @@ export default function PerformancePage() {
             </table>
           </div>
           <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
-            <strong>All products:</strong> revenue is exact product sales
-            (shipping &amp; tax broken out as its own line) summed from{" "}
-            <code>daily_sales</code>; ad spend is Facebook + AppLovin combined
+            <strong>All products:</strong> revenue is net, summed from{" "}
+            <code>daily_sales</code> — each product&apos;s sales plus its
+            pro-rated shipping &amp; tax share (no separate shipping &amp; tax
+            line); ad spend is Facebook + AppLovin combined
             (use &ldquo;Show spend breakdown&rdquo; for the FB/AppLovin and
             US/INTL splits). FB product &amp; US/INTL come from the product-map
             sheet, matched on each ad&apos;s <strong>destination URL</strong>,
-            falling back to the ad name when a URL is not in the sheet.{" "}
+            falling back to the ad name when a URL is not in the sheet. The
+            Focus areas cards show these same numbers for their four lines.{" "}
             <em>Brand / Homepage</em> and <em>Clearance / Mixed</em> are spend
             not tied to one product; <em>Unmapped</em> / <em>Other (NA)</em> =
             ads with no recognized product page or name tag.
