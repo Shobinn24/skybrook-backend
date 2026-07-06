@@ -539,6 +539,25 @@ export async function runFreshnessCheck(opts?: {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+
+    // Feeder-query freshness (Sheets API) — reads each backend-feeding
+    // Supermetrics query's `updated` timestamp from its SupermetricsQueries
+    // metadata tab. Catches the silent-skip failure mode (2026-07-06: the
+    // FB Ad URL Map query stopped refreshing for 2 days with every other
+    // signal green). p2 → digest.
+    try {
+      const { evaluateSupermetricsQueryFreshness } = await import(
+        "./supermetrics-query-freshness"
+      );
+      evaluatedRefTabs = [
+        ...evaluatedRefTabs,
+        ...(await evaluateSupermetricsQueryFreshness({ now: opts?.now })),
+      ];
+    } catch (err) {
+      logger.warn("freshness.supermetrics_queries.skipped", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   const evaluated = [...evaluatedBase, ...evaluatedRefTabs];
