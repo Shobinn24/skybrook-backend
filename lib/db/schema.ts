@@ -310,6 +310,15 @@ export const productLaunches = pgTable(
     usSiteLive: date("us_site_live"),
     usLaunchDate: date("us_launch_date"),
     note: text("note"),
+    // Manual launch-prep fields (owner request 2026-07-07): selling price,
+    // the customer-facing product name, and Drive links to launch content
+    // (factory-shot vs image-tool renders). All optional, filled in as the
+    // launch approaches. Landed COGS is NOT stored here — it's derived at
+    // read time from skus.unit_cost_usd so it stays live with the cost sheet.
+    sellingPriceUsd: numeric("selling_price_usd", { precision: 10, scale: 2 }),
+    externalProductName: text("external_product_name"),
+    factoryContentUrl: text("factory_content_url"),
+    imageToolContentUrl: text("image_tool_content_url"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

@@ -14,6 +14,8 @@ import {
   collapseMultiShipmentAutoLaunches,
   runLaunchAutoPopulate,
 } from "@/lib/jobs/launches";
+import { getLaunches } from "@/lib/queries/launches";
+import { deriveLaunchName } from "@/lib/domain/sku-naming";
 import { resetDb } from "@/tests/fixtures/seed";
 
 async function seedRawPull(): Promise<string> {
@@ -485,5 +487,70 @@ describe("runLaunchAutoPopulate", () => {
 
     // Idempotent: second run is a no-op.
     expect(await collapseMultiShipmentAutoLaunches()).toBe(0);
+  });
+});
+
+// --- Launch-prep fields + landed COGS (owner request 2026-07-07) ---------
+
+describe("getLaunches launch-prep fields + landed COGS", () => {
+  beforeAll(() => {
+    if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL not set in test env");
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  it("returns manual prep fields and computes landed COGS as bucket averages with INTL fallback", async () => {
+    await db.insert(skus).values([
+      // costed both markets
+      { sku: "ev-newprod-5x-l", productName: "Brand New Product", productLine: "Core", firstSeenAt: "2026-05-06", active: true, unitCostUsd: "2.00", unitCostIntlUsd: "1.50" },
+      // costed US only — INTL falls back to the US cost
+      { sku: "ev-newprod-5x-m", productName: "Brand New Product", productLine: "Core", firstSeenAt: "2026-05-06", active: true, unitCostUsd: "4.00" },
+      // not costed yet — excluded from the average, counted as missing
+      { sku: "ev-newprod-5x-s", productName: "Brand New Product", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
+    ]);
+    const launchName = deriveLaunchName("ev-newprod-5x-l", "Brand New Product");
+    await db.insert(productLaunches).values({
+      productName: launchName,
+      shipmentName: "KAI New 1",
+      sellingPriceUsd: "24.99",
+      externalProductName: "Everdries Comfort Brief",
+      factoryContentUrl: "https://drive.google.com/drive/folders/factory123",
+      imageToolContentUrl: "https://drive.google.com/drive/folders/renders456",
+    });
+
+    const rows = await getLaunches();
+    expect(rows).toHaveLength(1);
+    const r = rows[0];
+    expect(r.sellingPriceUsd).toBe("24.99");
+    expect(r.externalProductName).toBe("Everdries Comfort Brief");
+    expect(r.factoryContentUrl).toBe("https://drive.google.com/drive/folders/factory123");
+    expect(r.imageToolContentUrl).toBe("https://drive.google.com/drive/folders/renders456");
+    // avg over the two costed SKUs: US (2.00 + 4.00) / 2; INTL (1.50 + 4.00) / 2
+    expect(r.landedCogsUsd).toBeCloseTo(3.0, 6);
+    expect(r.landedCogsIntlUsd).toBeCloseTo(2.75, 6);
+    expect(r.cogsSkuCount).toBe(3);
+    expect(r.cogsMissingCount).toBe(1);
+  });
+
+  it("landed COGS is null (not zero) when no bucket SKU has a cost yet", async () => {
+    await db.insert(skus).values([
+      { sku: "ev-newprod-5x-l", productName: "Brand New Product", productLine: "Core", firstSeenAt: "2026-05-06", active: true },
+    ]);
+    const launchName = deriveLaunchName("ev-newprod-5x-l", "Brand New Product");
+    await db.insert(productLaunches).values({
+      productName: launchName,
+      shipmentName: "KAI New 1",
+    });
+
+    const rows = await getLaunches();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].landedCogsUsd).toBeNull();
+    expect(rows[0].landedCogsIntlUsd).toBeNull();
+    expect(rows[0].cogsMissingCount).toBe(1);
+    // manual fields default null
+    expect(rows[0].sellingPriceUsd).toBeNull();
+    expect(rows[0].externalProductName).toBeNull();
   });
 });

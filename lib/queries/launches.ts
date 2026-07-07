@@ -24,6 +24,19 @@ export type LaunchRow = {
   usLaunchDate: string | null;
   note: string | null;
   createdAt: string;
+  // Manual launch-prep fields (owner request 2026-07-07).
+  sellingPriceUsd: string | null;
+  externalProductName: string | null;
+  factoryContentUrl: string | null;
+  imageToolContentUrl: string | null;
+  // Landed COGS — derived live from skus.unit_cost_usd (EVSKUmap) as the
+  // average over the launch's SKU bucket. INTL falls back per-SKU to the
+  // US cost when unit_cost_intl_usd is null (same convention as the rest
+  // of the app). Null when no bucket SKU has a cost yet.
+  landedCogsUsd: number | null;
+  landedCogsIntlUsd: number | null;
+  cogsSkuCount: number;
+  cogsMissingCount: number;
 };
 
 export async function getLaunches(): Promise<LaunchRow[]> {
@@ -42,16 +55,41 @@ export async function getLaunches(): Promise<LaunchRow[]> {
   // own deriveLaunchName output. Bulk resolution avoids N+1.
   const launchNames = new Set(launchRows.map((r) => r.productName));
   const skuRows = await db
-    .select({ sku: skus.sku, productName: skus.productName })
+    .select({
+      sku: skus.sku,
+      productName: skus.productName,
+      unitCostUsd: skus.unitCostUsd,
+      unitCostIntlUsd: skus.unitCostIntlUsd,
+    })
     .from(skus);
   const skusByProduct = new Map<string, string[]>();
+  // Per-launch landed-COGS accumulation (avg over the SKU bucket).
+  const costsByProduct = new Map<
+    string,
+    { us: number[]; intl: number[]; missing: number; total: number }
+  >();
   for (const r of skuRows) {
     const derived = deriveLaunchName(r.sku, r.productName);
     if (!launchNames.has(derived)) continue;
     const bucket = skusByProduct.get(derived) ?? [];
     bucket.push(r.sku);
     skusByProduct.set(derived, bucket);
+
+    const acc = costsByProduct.get(derived) ?? { us: [], intl: [], missing: 0, total: 0 };
+    acc.total += 1;
+    const us = r.unitCostUsd === null ? null : Number(r.unitCostUsd);
+    if (us === null || Number.isNaN(us) || us <= 0) {
+      acc.missing += 1;
+    } else {
+      acc.us.push(us);
+      // INTL falls back per-SKU to the US cost when not separately priced.
+      const intl = r.unitCostIntlUsd === null ? us : Number(r.unitCostIntlUsd);
+      acc.intl.push(Number.isNaN(intl) || intl <= 0 ? us : intl);
+    }
+    costsByProduct.set(derived, acc);
   }
+  const avg = (xs: number[]): number | null =>
+    xs.length === 0 ? null : xs.reduce((a, b) => a + b, 0) / xs.length;
 
   const shipmentNames = Array.from(new Set(launchRows.map((r) => r.shipmentName)));
   const allSkuList = Array.from(new Set(skuRows.map((r) => r.sku)));
@@ -96,6 +134,7 @@ export async function getLaunches(): Promise<LaunchRow[]> {
         etaPd = eta;
       }
     }
+    const costs = costsByProduct.get(r.productName);
     return {
       id: r.id,
       productName: r.productName,
@@ -108,6 +147,14 @@ export async function getLaunches(): Promise<LaunchRow[]> {
       usLaunchDate: r.usLaunchDate,
       note: r.note,
       createdAt: r.createdAt.toISOString(),
+      sellingPriceUsd: r.sellingPriceUsd,
+      externalProductName: r.externalProductName,
+      factoryContentUrl: r.factoryContentUrl,
+      imageToolContentUrl: r.imageToolContentUrl,
+      landedCogsUsd: costs ? avg(costs.us) : null,
+      landedCogsIntlUsd: costs ? avg(costs.intl) : null,
+      cogsSkuCount: costs?.total ?? 0,
+      cogsMissingCount: costs?.missing ?? 0,
     };
   });
 

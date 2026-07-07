@@ -453,7 +453,10 @@ export const inventoryRouter = router({
   ),
 
   // /launches page — returns all launch rows with derived ETA Ant/PD.
-  getLaunches: marketingProcedure.query(() => getLaunches()),
+  // Read opened to fb_ads_only (owner request 2026-07-07: "share that page
+  // with all the marketers") — mutations below stay marketing/ops and the
+  // page hides edit controls for the fb_ads_only tier.
+  getLaunches: fbAdsProcedure.query(() => getLaunches()),
 
   // Dropdowns powering the "Add launch" form.
   getLaunchFormOptions: marketingProcedure.query(async () => {
@@ -485,8 +488,8 @@ export const inventoryRouter = router({
       return { id: row?.id ?? null };
     }),
 
-  // Patch one or more of the four manual launch dates. Pass null to
-  // clear a previously-set date.
+  // Patch one or more of the manual launch fields (dates + launch-prep
+  // fields, owner request 2026-07-07). Pass null to clear a value.
   updateLaunchDates: marketingProcedure
     .input(
       z.object({
@@ -496,6 +499,10 @@ export const inventoryRouter = router({
         usSiteLive: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
         usLaunchDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
         note: z.string().max(500).nullable().optional(),
+        sellingPriceUsd: z.string().regex(/^\d{1,8}(\.\d{1,2})?$/).nullable().optional(),
+        externalProductName: z.string().max(200).nullable().optional(),
+        factoryContentUrl: z.string().url().max(1000).nullable().optional(),
+        imageToolContentUrl: z.string().url().max(1000).nullable().optional(),
       }),
     )
     .mutation(async ({ input }) => {

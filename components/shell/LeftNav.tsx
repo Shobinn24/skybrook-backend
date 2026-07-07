@@ -20,7 +20,7 @@ const NAV_ITEMS: ReadonlyArray<{
   { href: "/stock-value",    label: "Stock value",    roles: ["ops"] },
   { href: "/performance",    label: "Performance",    roles: ["ops", "marketing"] },
   { href: "/campaign-tracker", label: "Campaign Tracker", roles: ["ops", "marketing"] },
-  { href: "/launches",       label: "Launches",       roles: ["ops", "marketing"] },
+  { href: "/launches",       label: "Launches",       roles: ["ops", "marketing"], fbAdsOnly: true },
   { href: "/fb-ads",         label: "FB Ads Tracker", roles: ["ops", "marketing"], fbAdsOnly: true },
   { href: "/bonus-tracker",  label: "Bonus Tracker",  roles: ["ops", "marketing"], fbAdsOnly: true },
   { href: "/shipping-performance", label: "Shipping",   roles: ["ops"] },

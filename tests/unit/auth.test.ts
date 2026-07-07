@@ -382,12 +382,15 @@ describe("isFbAdsOnlyAllowedPath", () => {
     expect(isFbAdsOnlyAllowedPath("/bonus-tracker")).toBe(true);
     expect(isFbAdsOnlyAllowedPath("/bonus-tracker/anything")).toBe(true);
   });
+  it("allows the Launches page + its subpaths (client request 2026-07-07: share with all marketers)", () => {
+    expect(isFbAdsOnlyAllowedPath("/launches")).toBe(true);
+    expect(isFbAdsOnlyAllowedPath("/launches/anything")).toBe(true);
+  });
   it("allows tRPC paths (Phase 1, same as marketing)", () => {
     expect(isFbAdsOnlyAllowedPath("/api/trpc/inventory.getFbAds")).toBe(true);
   });
   it("blocks every other page, including the other marketing pages and cashflow", () => {
     expect(isFbAdsOnlyAllowedPath("/performance")).toBe(false);
-    expect(isFbAdsOnlyAllowedPath("/launches")).toBe(false);
     expect(isFbAdsOnlyAllowedPath("/cashflow")).toBe(false);
     expect(isFbAdsOnlyAllowedPath("/inventory")).toBe(false);
     expect(isFbAdsOnlyAllowedPath("/")).toBe(false);
@@ -395,5 +398,6 @@ describe("isFbAdsOnlyAllowedPath", () => {
   it("no false positive on similarly-prefixed paths", () => {
     expect(isFbAdsOnlyAllowedPath("/fb-ads-history")).toBe(false);
     expect(isFbAdsOnlyAllowedPath("/bonus-tracker-old")).toBe(false);
+    expect(isFbAdsOnlyAllowedPath("/launches-history")).toBe(false);
   });
 });

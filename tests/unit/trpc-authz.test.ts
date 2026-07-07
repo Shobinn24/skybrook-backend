@@ -52,13 +52,36 @@ describe("tRPC tier gating", () => {
 
   it("fb_ads_only cannot reach marketing or ops surfaces", async () => {
     const c = caller({ tier: "fb_ads_only" });
-    await expectCode(c.inventory.getLaunches(), "FORBIDDEN");
     await expectCode(c.inventory.getInventoryRows({ location: "US" }), "FORBIDDEN");
     await expectCode(c.inventory.bulkApprovePending(), "FORBIDDEN");
     await expectCode(c.factoryOrder.list(), "FORBIDDEN");
     await expectCode(c.admin.listKnownFamilies(), "FORBIDDEN");
     await expectCode(c.shippingAudit.getView(), "FORBIDDEN");
     await expectCode(c.pipeline.getPullHistoryAllSources(), "FORBIDDEN");
+  });
+
+  it("fb_ads_only can read launches but NOT add/update/remove them (client 2026-07-07)", async () => {
+    const c = caller({ tier: "fb_ads_only" });
+    // Deny paths throw in the tier middleware BEFORE any resolver runs, so
+    // no DB is needed. (The allow path for getLaunches hits the DB and is
+    // covered in tests/integration/launches-auto.test.ts.)
+    await expectCode(
+      c.inventory.addLaunch({ productName: "X", shipmentName: "Y" }),
+      "FORBIDDEN",
+    );
+    await expectCode(
+      c.inventory.updateLaunchDates({
+        id: "00000000-0000-0000-0000-000000000000",
+        sellingPriceUsd: "24.99",
+      }),
+      "FORBIDDEN",
+    );
+    await expectCode(
+      c.inventory.removeLaunch({ id: "00000000-0000-0000-0000-000000000000" }),
+      "FORBIDDEN",
+    );
+    // getLaunchFormOptions feeds the add form — marketing-tier as well.
+    await expectCode(c.inventory.getLaunchFormOptions(), "FORBIDDEN");
   });
 
   it("fb_ads_only can read the bonus tracker but NOT touch approval/notification surfaces (client 2026-07-02)", async () => {

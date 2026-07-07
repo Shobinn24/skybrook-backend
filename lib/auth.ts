@@ -400,7 +400,10 @@ export function isFbAdsOnly(
 /** Paths an fb-ads-only user may load: the FB Ads Tracker (+ subpaths),
  * the Bonus Tracker (+ subpaths — READ access, client-approved
  * 2026-07-02; the approval/notification procedures stay marketing-tier
- * in the tRPC layer and the page hides those controls), and tRPC
+ * in the tRPC layer and the page hides those controls), the Launches
+ * page (+ subpaths — READ access, client request 2026-07-07 "share that
+ * page with all the marketers"; add/update/remove mutations stay
+ * marketing-tier and the page hides those controls), and tRPC
  * (per-procedure tiers are enforced inside the tRPC layer — an
  * fb-ads-only session can only invoke fbAdsProcedure procedures).
  * Everything else redirects to FB_ADS_ONLY_LANDING_PATH. */
@@ -408,6 +411,7 @@ export function isFbAdsOnlyAllowedPath(pathname: string): boolean {
   if (pathname === "/fb-ads" || pathname.startsWith("/fb-ads/")) return true;
   if (pathname === "/bonus-tracker" || pathname.startsWith("/bonus-tracker/"))
     return true;
+  if (pathname === "/launches" || pathname.startsWith("/launches/")) return true;
   if (pathname.startsWith("/api/trpc/")) return true;
   return false;
 }
