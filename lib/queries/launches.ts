@@ -25,10 +25,12 @@ export type LaunchRow = {
   usLaunchDate: string | null;
   note: string | null;
   createdAt: string;
-  // Launch-prep facts. Since 2026-07-08 these come from the "Launch
-  // Info" sheet tab (source of truth — the team edits the SHEET, the
-  // tool displays read-only). The 2026-07-07 manual columns remain as a
-  // fallback for launches the sheet doesn't list yet.
+  // Launch-prep facts. Since 2026-07-08 price/name/colours/composition
+  // come from the "Launch Info" sheet tab (source of truth — the team
+  // edits the SHEET, the tool displays read-only), with the 2026-07-07
+  // manual columns as fallback. Content LINKS are the exception: the
+  // tool edit wins and the sheet only fills blanks (Scott 2026-07-08
+  // wants to add them himself in the tool).
   sellingPriceUsd: string | null;
   externalProductName: string | null;
   factoryContentUrl: string | null;
@@ -39,13 +41,16 @@ export type LaunchRow = {
   /** True when a Launch Info sheet row backs this launch's prep facts. */
   prepFromSheet: boolean;
   // Landed COGS — derived live from skus.unit_cost_usd (EVSKUmap) as the
-  // average over the launch's SKU bucket. INTL falls back per-SKU to the
-  // US cost when unit_cost_intl_usd is null (same convention as the rest
-  // of the app). Null when no bucket SKU has a cost yet.
+  // average over the launch's SKU bucket. landedCogsIntlUsd is null when
+  // no bucket SKU carries its own unit_cost_intl_usd (rendering a dash
+  // beats echoing the US number); partially-priced buckets blend real
+  // INTL prices with per-SKU US fallbacks.
   landedCogsUsd: number | null;
   landedCogsIntlUsd: number | null;
   cogsSkuCount: number;
   cogsMissingCount: number;
+  /** How many bucket SKUs have their own INTL price on the cost sheet. */
+  cogsIntlPricedCount: number;
 };
 
 export async function getLaunches(): Promise<LaunchRow[]> {
@@ -81,7 +86,7 @@ export async function getLaunches(): Promise<LaunchRow[]> {
   // Per-launch landed-COGS accumulation (avg over the SKU bucket).
   const costsByProduct = new Map<
     string,
-    { us: number[]; intl: number[]; missing: number; total: number }
+    { us: number[]; intl: number[]; missing: number; total: number; intlPriced: number }
   >();
   for (const r of skuRows) {
     const derived = deriveLaunchName(r.sku, r.productName);
@@ -90,16 +95,21 @@ export async function getLaunches(): Promise<LaunchRow[]> {
     bucket.push(r.sku);
     skusByProduct.set(derived, bucket);
 
-    const acc = costsByProduct.get(derived) ?? { us: [], intl: [], missing: 0, total: 0 };
+    const acc = costsByProduct.get(derived) ?? { us: [], intl: [], missing: 0, total: 0, intlPriced: 0 };
     acc.total += 1;
     const us = r.unitCostUsd === null ? null : Number(r.unitCostUsd);
     if (us === null || Number.isNaN(us) || us <= 0) {
       acc.missing += 1;
     } else {
       acc.us.push(us);
-      // INTL falls back per-SKU to the US cost when not separately priced.
-      const intl = r.unitCostIntlUsd === null ? us : Number(r.unitCostIntlUsd);
-      acc.intl.push(Number.isNaN(intl) || intl <= 0 ? us : intl);
+      // INTL falls back per-SKU to the US cost when not separately priced,
+      // and we COUNT how many SKUs carry a real INTL price: a bucket where
+      // none do renders as "no INTL cost yet" instead of silently echoing
+      // the US number (Scott 2026-07-08: "they shouldn't be the same").
+      const intlRaw = r.unitCostIntlUsd === null ? null : Number(r.unitCostIntlUsd);
+      const intlIsPriced = intlRaw !== null && !Number.isNaN(intlRaw) && intlRaw > 0;
+      if (intlIsPriced) acc.intlPriced += 1;
+      acc.intl.push(intlIsPriced ? intlRaw : us);
     }
     costsByProduct.set(derived, acc);
   }
@@ -165,16 +175,21 @@ export async function getLaunches(): Promise<LaunchRow[]> {
       createdAt: r.createdAt.toISOString(),
       sellingPriceUsd: info?.packPriceUsd ?? r.sellingPriceUsd,
       externalProductName: info?.externalName ?? r.externalProductName,
-      factoryContentUrl: info?.chinaPhotoshootUrl ?? r.factoryContentUrl,
-      imageToolContentUrl: info?.imageToolUrl ?? r.imageToolContentUrl,
+      // Tool edit WINS, sheet fills blanks — Scott adds/edits these links
+      // in the tool (2026-07-08); the sheet is only a fallback source.
+      factoryContentUrl: r.factoryContentUrl ?? info?.chinaPhotoshootUrl ?? null,
+      imageToolContentUrl: r.imageToolContentUrl ?? info?.imageToolUrl ?? null,
       colours: info?.colours ?? null,
       mainComposition: info?.mainComposition ?? null,
       linerComposition: info?.linerComposition ?? null,
       prepFromSheet: info !== undefined,
       landedCogsUsd: costs ? avg(costs.us) : null,
-      landedCogsIntlUsd: costs ? avg(costs.intl) : null,
+      // null when NO SKU in the bucket has its own INTL price — the UI
+      // shows a dash instead of a misleading copy of the US number.
+      landedCogsIntlUsd: costs && costs.intlPriced > 0 ? avg(costs.intl) : null,
       cogsSkuCount: costs?.total ?? 0,
       cogsMissingCount: costs?.missing ?? 0,
+      cogsIntlPricedCount: costs?.intlPriced ?? 0,
     };
   });
 

@@ -78,6 +78,19 @@ export default function LaunchesPage() {
     });
   };
 
+  // Content links are the one prep field edited IN THE TOOL (Scott
+  // 2026-07-08); the Launch Info sheet only fills blanks.
+  const handleLinkChange = (
+    id: string,
+    field: "factoryContentUrl" | "imageToolContentUrl",
+    value: string,
+  ) => {
+    updateMutation.mutate({
+      id,
+      [field]: value.trim() || null,
+    });
+  };
+
   const rows = launches.data ?? [];
 
   return (
@@ -86,11 +99,11 @@ export default function LaunchesPage() {
         <div>
           <h1 className="text-2xl font-semibold text-neutral-900">Product launches</h1>
           <p className="text-sm text-neutral-500">
-            ETAs auto-derive from incoming shipments; landed COGS from the
-            cost sheet; price, external name, colours, composition and
-            content links from the Launch Info sheet (edit the sheet, not
-            the tool). Site Live / Launch dates are manual. New colorway =
-            new launch row.
+            ETAs auto-derive from incoming shipments; landed COGS (US / INTL)
+            from the cost sheet; price, external name, colours and
+            composition from the Launch Info sheet (edit the sheet, not the
+            tool). Content links are editable right here. Site Live / Launch
+            dates are manual. New colorway = new launch row.
           </p>
         </div>
         {isAdmin && !adding && (
@@ -237,13 +250,18 @@ export default function LaunchesPage() {
                       />
                     </td>
                     {/* Prep facts are sheet-fed (Launch Info tab) and
-                        read-only here — the team updates the SHEET. A row
-                        with no sheet entry shows an em dash + hint. */}
+                        read-only here — the team updates the SHEET. Long
+                        sheet names ("NEW: Leakproof High Waisted ...")
+                        truncate to ONE line so row heights stay uniform
+                        (Scott 2026-07-08); full text on hover. */}
                     <td
-                      className="border-l-2 border-neutral-300 px-3 py-1.5 text-xs text-neutral-700"
-                      title={r.prepFromSheet ? "from the Launch Info sheet" : "no Launch Info sheet row for this product yet"}
+                      className="max-w-[13rem] whitespace-nowrap border-l-2 border-neutral-300 px-3 py-1.5 text-xs text-neutral-700"
+                      title={
+                        (r.externalProductName ? `${r.externalProductName}\n` : "") +
+                        (r.prepFromSheet ? "from the Launch Info sheet" : "no Launch Info sheet row for this product yet")
+                      }
                     >
-                      {r.externalProductName ?? "—"}
+                      <span className="block truncate">{r.externalProductName ?? "—"}</span>
                     </td>
                     <td className="whitespace-nowrap px-3 py-1.5 text-xs tabular-nums text-neutral-700">
                       {fmtMoney(r.sellingPriceUsd)}
@@ -253,14 +271,21 @@ export default function LaunchesPage() {
                         cost so a low-looking number is explainable. */}
                     <td
                       className="whitespace-nowrap px-3 py-1.5 tabular-nums text-neutral-700"
-                      title={`avg over ${r.cogsSkuCount - r.cogsMissingCount}/${r.cogsSkuCount} costed SKUs (US / INTL)`}
+                      title={
+                        r.landedCogsIntlUsd === null
+                          ? `US avg over ${r.cogsSkuCount - r.cogsMissingCount}/${r.cogsSkuCount} costed SKUs — no INTL cost on the cost sheet for these SKUs yet`
+                          : `US / INTL avg over ${r.cogsSkuCount - r.cogsMissingCount}/${r.cogsSkuCount} costed SKUs (${r.cogsIntlPricedCount} with their own INTL price)`
+                      }
                     >
                       {r.landedCogsUsd === null ? (
                         "—"
                       ) : (
                         <>
                           {fmtMoney(r.landedCogsUsd)}
-                          <span className="text-neutral-400"> / {fmtMoney(r.landedCogsIntlUsd)}</span>
+                          <span className="text-neutral-400">
+                            {" / "}
+                            {r.landedCogsIntlUsd === null ? "—" : fmtMoney(r.landedCogsIntlUsd)}
+                          </span>
                           {r.cogsMissingCount > 0 && (
                             <span className="ml-1 text-[10px] text-amber-600" title={`${r.cogsMissingCount} SKU(s) missing cost on the cost sheet`}>
                               *
@@ -269,26 +294,43 @@ export default function LaunchesPage() {
                         </>
                       )}
                     </td>
-                    <td className="max-w-[10rem] px-3 py-1.5 text-xs text-neutral-700" title={r.colours ?? undefined}>
-                      <span className="line-clamp-2">{r.colours ?? "—"}</span>
+                    <td className="max-w-[10rem] whitespace-nowrap px-3 py-1.5 text-xs text-neutral-700" title={r.colours ?? undefined}>
+                      <span className="block truncate">{r.colours ?? "—"}</span>
                     </td>
-                    <td className="whitespace-nowrap px-3 py-1.5 text-xs text-neutral-700">
-                      {r.mainComposition ? (
-                        <>
-                          {r.mainComposition}
-                          {r.linerComposition && (
-                            <div className="text-[10px] text-neutral-400">liner {r.linerComposition}</div>
-                          )}
-                        </>
-                      ) : (
-                        "—"
-                      )}
+                    <td
+                      className="max-w-[13rem] whitespace-nowrap px-3 py-1.5 text-xs text-neutral-700"
+                      title={
+                        r.mainComposition
+                          ? r.mainComposition + (r.linerComposition ? ` (liner ${r.linerComposition})` : "")
+                          : undefined
+                      }
+                    >
+                      <span className="block truncate">
+                        {r.mainComposition ? (
+                          <>
+                            {r.mainComposition}
+                            {r.linerComposition && (
+                              <span className="text-neutral-400"> (liner {r.linerComposition})</span>
+                            )}
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </span>
                     </td>
                     <td className="whitespace-nowrap px-3 py-1.5">
-                      <LinkCell value={r.factoryContentUrl} readOnly />
+                      <LinkCell
+                        value={r.factoryContentUrl}
+                        readOnly={!isAdmin}
+                        onChange={(v) => handleLinkChange(r.id, "factoryContentUrl", v)}
+                      />
                     </td>
                     <td className="whitespace-nowrap px-3 py-1.5">
-                      <LinkCell value={r.imageToolContentUrl} readOnly />
+                      <LinkCell
+                        value={r.imageToolContentUrl}
+                        readOnly={!isAdmin}
+                        onChange={(v) => handleLinkChange(r.id, "imageToolContentUrl", v)}
+                      />
                     </td>
                     {isAdmin && (
                       <td className="whitespace-nowrap px-3 py-1.5 text-right">
