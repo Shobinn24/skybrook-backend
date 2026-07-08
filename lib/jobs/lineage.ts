@@ -54,6 +54,7 @@ const TABLE_DASHBOARDS: Record<string, DashboardRoute[]> = {
   // and US/non-US split (getAllProductsRollup).
   fb_ad_url_map: ["/performance"],
   fb_geo_spend: ["/performance"],
+  launch_info: ["/launches"],
   // velocity-range (queries/velocity-range.ts) reads daily_sales and is
   // pulled into inventory.ts (→ /inventory, /overstock), plus direct
   // reads in performance / sku-detail / sustainability / factory-order-calc.
@@ -80,6 +81,7 @@ const SOURCE_TABLES: Record<string, string[]> = {
   sheets_fb_ads: ["fb_ad_spend_daily"],
   sheets_applovin: ["applovin_ad_spend_daily"],
   sheets_fb_geo: ["fb_geo_spend"],
+  sheets_launch_info: ["launch_info"],
   sheets_fb_url_map: ["fb_ad_url_map"],
   shopify_us: ["daily_sales"],
   shopify_intl: ["daily_sales"],

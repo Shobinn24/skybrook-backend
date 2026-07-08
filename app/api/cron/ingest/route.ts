@@ -26,6 +26,7 @@ import {
   sheetsFbUrlMapRunner,
   sheetsIncomingRunner,
   sheetsInventoryRunner,
+  sheetsLaunchInfoRunner,
 } from "@/lib/sources/sheets";
 import { shopifyIntlRunner, shopifyUsRunner } from "@/lib/sources/shopify";
 import { toEstDate } from "@/lib/tz";
@@ -48,6 +49,7 @@ const SOURCES: Partial<Record<SourceKey, SourceRunner>> = {
   sheets_fb_geo: sheetsFbGeoRunner,
   sheets_fb_url_map: sheetsFbUrlMapRunner,
   sheets_fb_product_map: sheetsFbProductMapRunner,
+  sheets_launch_info: sheetsLaunchInfoRunner,
   shopify_us: shopifyUsRunner,
   shopify_intl: shopifyIntlRunner,
 };

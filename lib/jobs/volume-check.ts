@@ -36,6 +36,7 @@ type Source =
   | "sheets_fb_geo"
   | "sheets_fb_url_map"
   | "sheets_fb_product_map"
+  | "sheets_launch_info"
   | "shopify_us"
   | "shopify_intl";
 
@@ -80,6 +81,7 @@ export const VOLUME_MONITORS: ReadonlyArray<VolumeMonitor> = [
   // funnels are added; loose floor catches an empty/broken pull (which would
   // zero the lookup table and drop all FB attribution to ad-name fallback).
   { source: "sheets_fb_product_map", floorFraction: 0.5, minHistory: 5 },
+  { source: "sheets_launch_info", floorFraction: 0.5, minHistory: 5 },
 ];
 
 // How many prior successful pulls to fold into the baseline median.

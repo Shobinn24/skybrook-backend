@@ -26,6 +26,7 @@ export const sourceEnum = pgEnum("source", [
   "sheets_fb_geo",
   "sheets_fb_url_map",
   "sheets_fb_product_map",
+  "sheets_launch_info",
   "shopify_us",
   "shopify_intl",
 ]);
@@ -237,6 +238,28 @@ export const fbProductMap = pgTable(
     sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
   },
   (t) => ({ pk: primaryKey({ columns: [t.normalizedUrl] }) })
+);
+
+// "Launch Info" tab of the same workbook — launch-prep facts the team
+// maintains IN THE SHEET (owner decision 2026-07-08): external name,
+// 5-pack price, colours, main/liner composition, Drive links for the
+// China photoshoot + image-tool content. /launches displays these
+// read-only via the launch-info-mapping alias table. Small snapshot,
+// full delete-replace each ingest, keyed by trimmed Product name.
+export const launchInfo = pgTable(
+  "launch_info",
+  {
+    product: text("product").notNull(),
+    externalName: text("external_name"),
+    packPriceUsd: numeric("pack_price_usd", { precision: 10, scale: 2 }),
+    colours: text("colours"),
+    mainComposition: text("main_composition"),
+    linerComposition: text("liner_composition"),
+    chinaPhotoshootUrl: text("china_photoshoot_url"),
+    imageToolUrl: text("image_tool_url"),
+    sourcePullId: uuid("source_pull_id").notNull().references(() => rawPulls.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.product] }) })
 );
 
 // Per-ad daily spend from the standalone "FB Ads Tracker" sheet (Sheet7

@@ -1,6 +1,7 @@
 import { and, asc, inArray, min } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { incomingShipments, productLaunches, skus } from "@/lib/db/schema";
+import { incomingShipments, launchInfo, productLaunches, skus } from "@/lib/db/schema";
+import { launchInfoKeyFor, normalizeLaunchInfoName } from "@/lib/domain/launch-info-mapping";
 import { deriveLaunchName, isLaunchBlockedFamily } from "@/lib/domain/sku-naming";
 
 /** Single launch row as the /launches page consumes it. ETA Ant + ETA
@@ -24,11 +25,19 @@ export type LaunchRow = {
   usLaunchDate: string | null;
   note: string | null;
   createdAt: string;
-  // Manual launch-prep fields (owner request 2026-07-07).
+  // Launch-prep facts. Since 2026-07-08 these come from the "Launch
+  // Info" sheet tab (source of truth — the team edits the SHEET, the
+  // tool displays read-only). The 2026-07-07 manual columns remain as a
+  // fallback for launches the sheet doesn't list yet.
   sellingPriceUsd: string | null;
   externalProductName: string | null;
   factoryContentUrl: string | null;
   imageToolContentUrl: string | null;
+  colours: string | null;
+  mainComposition: string | null;
+  linerComposition: string | null;
+  /** True when a Launch Info sheet row backs this launch's prep facts. */
+  prepFromSheet: boolean;
   // Landed COGS — derived live from skus.unit_cost_usd (EVSKUmap) as the
   // average over the launch's SKU bucket. INTL falls back per-SKU to the
   // US cost when unit_cost_intl_usd is null (same convention as the rest
@@ -46,6 +55,12 @@ export async function getLaunches(): Promise<LaunchRow[]> {
     .orderBy(asc(productLaunches.createdAt));
 
   if (launchRows.length === 0) return [];
+
+  // Launch Info sheet facts, indexed by normalized sheet-product name.
+  const infoRows = await db.select().from(launchInfo);
+  const infoByKey = new Map(
+    infoRows.map((i) => [normalizeLaunchInfoName(i.product), i]),
+  );
 
   // Resolve ETA Ant + PD per launch. A launch is identified by
   // (productName, shipmentName) where productName is the colorway-
@@ -135,6 +150,7 @@ export async function getLaunches(): Promise<LaunchRow[]> {
       }
     }
     const costs = costsByProduct.get(r.productName);
+    const info = infoByKey.get(launchInfoKeyFor(r.productName));
     return {
       id: r.id,
       productName: r.productName,
@@ -147,10 +163,14 @@ export async function getLaunches(): Promise<LaunchRow[]> {
       usLaunchDate: r.usLaunchDate,
       note: r.note,
       createdAt: r.createdAt.toISOString(),
-      sellingPriceUsd: r.sellingPriceUsd,
-      externalProductName: r.externalProductName,
-      factoryContentUrl: r.factoryContentUrl,
-      imageToolContentUrl: r.imageToolContentUrl,
+      sellingPriceUsd: info?.packPriceUsd ?? r.sellingPriceUsd,
+      externalProductName: info?.externalName ?? r.externalProductName,
+      factoryContentUrl: info?.chinaPhotoshootUrl ?? r.factoryContentUrl,
+      imageToolContentUrl: info?.imageToolUrl ?? r.imageToolContentUrl,
+      colours: info?.colours ?? null,
+      mainComposition: info?.mainComposition ?? null,
+      linerComposition: info?.linerComposition ?? null,
+      prepFromSheet: info !== undefined,
       landedCogsUsd: costs ? avg(costs.us) : null,
       landedCogsIntlUsd: costs ? avg(costs.intl) : null,
       cogsSkuCount: costs?.total ?? 0,

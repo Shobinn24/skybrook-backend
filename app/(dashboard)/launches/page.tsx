@@ -29,12 +29,6 @@ type ManualField =
   | "usSiteLive"
   | "usLaunchDate";
 
-type PrepField =
-  | "sellingPriceUsd"
-  | "externalProductName"
-  | "factoryContentUrl"
-  | "imageToolContentUrl";
-
 export default function LaunchesPage() {
   const utils = trpc.useUtils();
   // fb_ads_only gets a read-only view (client 2026-07-07 "share that page
@@ -84,13 +78,6 @@ export default function LaunchesPage() {
     });
   };
 
-  const handlePrepChange = (id: string, field: PrepField, value: string) => {
-    updateMutation.mutate({
-      id,
-      [field]: value.trim() || null,
-    });
-  };
-
   const rows = launches.data ?? [];
 
   return (
@@ -100,9 +87,10 @@ export default function LaunchesPage() {
           <h1 className="text-2xl font-semibold text-neutral-900">Product launches</h1>
           <p className="text-sm text-neutral-500">
             ETAs auto-derive from incoming shipments; landed COGS from the
-            cost sheet. Site Live / Launch dates, price, external name and
-            content links are manual — enter as you commit them. New
-            colorway = new launch row.
+            cost sheet; price, external name, colours, composition and
+            content links from the Launch Info sheet (edit the sheet, not
+            the tool). Site Live / Launch dates are manual. New colorway =
+            new launch row.
           </p>
         </div>
         {isAdmin && !adding && (
@@ -185,6 +173,8 @@ export default function LaunchesPage() {
                 <th className="px-3 py-2 border-l-2 border-neutral-300">Ext. name</th>
                 <th className="px-3 py-2">Price</th>
                 <th className="px-3 py-2">Landed COGS</th>
+                <th className="px-3 py-2">Colours</th>
+                <th className="px-3 py-2">Composition</th>
                 <th className="px-3 py-2">Factory content</th>
                 <th className="px-3 py-2">Image tool content</th>
                 {isAdmin && <th className="px-3 py-2"></th>}
@@ -193,13 +183,13 @@ export default function LaunchesPage() {
             <tbody className="divide-y divide-neutral-100">
               {launches.isLoading ? (
                 <tr>
-                  <td colSpan={14} className="px-4 py-6 text-center text-sm text-neutral-500">
+                  <td colSpan={16} className="px-4 py-6 text-center text-sm text-neutral-500">
                     Loading…
                   </td>
                 </tr>
               ) : rows.length === 0 ? (
                 <tr>
-                  <td colSpan={14} className="px-4 py-6 text-center text-sm text-neutral-500">
+                  <td colSpan={16} className="px-4 py-6 text-center text-sm text-neutral-500">
                     No launches yet. Click <strong>Add launch</strong> to log one.
                   </td>
                 </tr>
@@ -246,22 +236,17 @@ export default function LaunchesPage() {
                         onChange={(v) => handleDateChange(r.id, "usLaunchDate", v)}
                       />
                     </td>
-                    <td className="border-l-2 border-neutral-300 px-3 py-1.5">
-                      <TextCell
-                        value={r.externalProductName}
-                        placeholder="external name"
-                        readOnly={!isAdmin}
-                        onChange={(v) => handlePrepChange(r.id, "externalProductName", v)}
-                      />
+                    {/* Prep facts are sheet-fed (Launch Info tab) and
+                        read-only here — the team updates the SHEET. A row
+                        with no sheet entry shows an em dash + hint. */}
+                    <td
+                      className="border-l-2 border-neutral-300 px-3 py-1.5 text-xs text-neutral-700"
+                      title={r.prepFromSheet ? "from the Launch Info sheet" : "no Launch Info sheet row for this product yet"}
+                    >
+                      {r.externalProductName ?? "—"}
                     </td>
-                    <td className="whitespace-nowrap px-3 py-1.5">
-                      <TextCell
-                        value={r.sellingPriceUsd}
-                        placeholder="0.00"
-                        display={fmtMoney(r.sellingPriceUsd)}
-                        readOnly={!isAdmin}
-                        onChange={(v) => handlePrepChange(r.id, "sellingPriceUsd", v.replace(/^\$/, ""))}
-                      />
+                    <td className="whitespace-nowrap px-3 py-1.5 text-xs tabular-nums text-neutral-700">
+                      {fmtMoney(r.sellingPriceUsd)}
                     </td>
                     {/* Landed COGS — read-only, derived from the cost sheet.
                         Title shows bucket size + how many SKUs still lack a
@@ -284,19 +269,26 @@ export default function LaunchesPage() {
                         </>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-3 py-1.5">
-                      <LinkCell
-                        value={r.factoryContentUrl}
-                        readOnly={!isAdmin}
-                        onChange={(v) => handlePrepChange(r.id, "factoryContentUrl", v)}
-                      />
+                    <td className="max-w-[10rem] px-3 py-1.5 text-xs text-neutral-700" title={r.colours ?? undefined}>
+                      <span className="line-clamp-2">{r.colours ?? "—"}</span>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-xs text-neutral-700">
+                      {r.mainComposition ? (
+                        <>
+                          {r.mainComposition}
+                          {r.linerComposition && (
+                            <div className="text-[10px] text-neutral-400">liner {r.linerComposition}</div>
+                          )}
+                        </>
+                      ) : (
+                        "—"
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-3 py-1.5">
-                      <LinkCell
-                        value={r.imageToolContentUrl}
-                        readOnly={!isAdmin}
-                        onChange={(v) => handlePrepChange(r.id, "imageToolContentUrl", v)}
-                      />
+                      <LinkCell value={r.factoryContentUrl} readOnly />
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5">
+                      <LinkCell value={r.imageToolContentUrl} readOnly />
                     </td>
                     {isAdmin && (
                       <td className="whitespace-nowrap px-3 py-1.5 text-right">
@@ -378,61 +370,6 @@ function DateCell({
   );
 }
 
-// Click-to-edit text cell — same interaction pattern as DateCell.
-function TextCell({
-  value,
-  onChange,
-  placeholder,
-  display,
-  readOnly = false,
-}: {
-  value: string | null;
-  onChange: (next: string) => void;
-  placeholder?: string;
-  /** Optional formatted display (e.g. "$24.99") shown when not editing. */
-  display?: string;
-  readOnly?: boolean;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<string | null>(null);
-  const shown = display ?? (value || "—");
-  if (readOnly) {
-    return <span className="text-xs text-neutral-700">{shown}</span>;
-  }
-  if (!editing) {
-    return (
-      <button
-        type="button"
-        onClick={() => setEditing(true)}
-        className="max-w-[14rem] truncate rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-left text-xs hover:border-neutral-400 focus:border-neutral-500 focus:outline-none"
-        title={value ?? undefined}
-      >
-        {shown}
-      </button>
-    );
-  }
-  return (
-    <input
-      type="text"
-      autoFocus
-      placeholder={placeholder}
-      value={draft ?? value ?? ""}
-      onChange={(e) => setDraft(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-      }}
-      onBlur={() => {
-        if (draft !== null && draft !== (value ?? "")) {
-          onChange(draft);
-        }
-        setDraft(null);
-        setEditing(false);
-      }}
-      className="w-40 rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-xs hover:border-neutral-400 focus:border-neutral-500 focus:outline-none"
-    />
-  );
-}
-
 // Drive-link cell: shows "Open ↗" when a link is set (plus an Edit
 // affordance for admins); empty state is the same click-to-edit input.
 function LinkCell({
@@ -441,7 +378,7 @@ function LinkCell({
   readOnly = false,
 }: {
   value: string | null;
-  onChange: (next: string) => void;
+  onChange?: (next: string) => void;
   readOnly?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
@@ -486,7 +423,7 @@ function LinkCell({
       }}
       onBlur={() => {
         if (draft !== null && draft !== (value ?? "")) {
-          onChange(draft);
+          onChange?.(draft);
         }
         setDraft(null);
         setEditing(false);

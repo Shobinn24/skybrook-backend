@@ -232,6 +232,13 @@
       "when": 1783438512732,
       "tag": "0032_launch_prep_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1783516242619,
+      "tag": "0033_launch_info",
+      "breakpoints": true
     }
   ]
 }

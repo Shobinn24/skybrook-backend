@@ -16,6 +16,7 @@ export type SourceKey =
   | "sheets_fb_geo"
   | "sheets_fb_url_map"
   | "sheets_fb_product_map"
+  | "sheets_launch_info"
   | "shopify_us"
   | "shopify_intl";
 
