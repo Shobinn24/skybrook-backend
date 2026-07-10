@@ -24,6 +24,11 @@ const PRODUCT_CONFIG = {
   shapewear: { label: "Shapewear", line: "Shapewear" },
   suphw: { label: "SupHW", line: "Super High-Waist" },
   hrshort: { label: "High Rise Short", line: "High Rise Short" },
+  // Intl launch 2026-07-10 (owner request): Cotton 9055 = ev-cottonhip
+  // "Cotton Hipster" revenue + "(Cotton ...)" FB ads; Men's Brief =
+  // ev-flybrief "Mens Brief with Fly" revenue + "(Men Brief ...)" FB ads.
+  cotton9055: { label: "Cotton 9055", line: "Cotton 9055" },
+  mensbrief: { label: "Men's Brief", line: "Mens Brief" },
 } as const;
 
 type ProductKey = keyof typeof PRODUCT_CONFIG;
@@ -280,6 +285,18 @@ export async function getPerformanceDataFreshness(): Promise<PerformanceDataFres
 export function revenueFamilyFromProductName(name: string): string {
   const n = (name ?? "").toLowerCase();
   const hf = /\bhf\b/.test(n);
+  // Intl launch 2026-07-10: the cotton lines are their own families and must
+  // be carved out BEFORE the generic 9055/hipster/hw matches below. "Cotton
+  // Hipster" (ev-cottonhip) IS the Cotton 9055 line — that's the owner's name
+  // for it, mirrored on the spend side by the "(Cotton ...)" ad prefix.
+  if (n.includes("cotton")) {
+    if (n.includes("9055") || n.includes("hipster") || n.includes("comfort")) return "Cotton 9055";
+    if (n.includes("high waisted") || /\bhw\b/.test(n)) return "Cotton HW";
+  }
+  // Men's Brief with Fly (ev-flybrief) is its own line — carved out before
+  // the generic "mens" match so it doesn't lump into Mens. Boxer w/ Fly
+  // (ev-flyboxer, no "brief" in its name) is not affected.
+  if (n.includes("brief")) return "Mens Brief";
   if (n.includes("9055")) return hf ? "9055 HF" : "9055";
   // Boyshort lumps regular + HF into one family (2026-06-26): the landing URL
   // offers both as purchase options, so spend/revenue can't be split by name.

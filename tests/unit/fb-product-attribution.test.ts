@@ -42,6 +42,13 @@ describe("canonicalProductLabel", () => {
     expect(canonicalProductLabel("OG ")).toEqual({ label: "OG", kind: "product" });
     expect(canonicalProductLabel("HW ")).toEqual({ label: "HW", kind: "product" });
   });
+  it("pins the 2026-07-10 launch lines onto one canonical label each", () => {
+    expect(canonicalProductLabel("Cotton")).toEqual({ label: "Cotton 9055", kind: "product" });
+    expect(canonicalProductLabel("Cotton Hipster")).toEqual({ label: "Cotton 9055", kind: "product" });
+    expect(canonicalProductLabel("CHW")).toEqual({ label: "Cotton HW", kind: "product" });
+    expect(canonicalProductLabel("Men Brief")).toEqual({ label: "Mens Brief", kind: "product" });
+    expect(canonicalProductLabel("Men's Brief")).toEqual({ label: "Mens Brief", kind: "product" });
+  });
   it("passes through known + unknown product labels as kind product", () => {
     expect(canonicalProductLabel("9055")).toEqual({ label: "9055", kind: "product" });
     expect(canonicalProductLabel("9055 HF")).toEqual({ label: "9055 HF", kind: "product" });
@@ -76,6 +83,15 @@ describe("attributeFbAd", () => {
     ["(HWHF CC) Ad 893 - Nate", "HW HF", "product"],
     ["(OGHF ICC) Ad 648 - Raul", "OG HF", "product"],
     ["(OG Gifts CC) Ad 1 - x", "OG", "product"],
+    // Intl launch 2026-07-10: Cotton = Cotton 9055 (ev-cottonhip), Men Brief
+    // is a two-word product token, CHW reserved for Cotton HW so "Cotton"
+    // stays unambiguous.
+    ["(Cotton INTL) Ad 3001 - launch", "Cotton 9055", "product"],
+    ["(Cotton) Ad 3002 - launch", "Cotton 9055", "product"],
+    ["(CHW INTL) Ad 3050 - future", "Cotton HW", "product"],
+    ["(Men Brief INTL) Ad 3003 - launch", "Mens Brief", "product"],
+    ["(Mens Brief CC) Ad 3004 - variant spelling", "Mens Brief", "product"],
+    ["(Mens) Ad 3005 - still plain Mens", "Mens", "product"],
     ["(HOME US BAU) Ad 1616 - Dan", "Brand / Homepage", "brand"],
     ["(Clearance US BAU) Ad 1586 - Raul", "Clearance / Mixed", "clearance"],
     ["(Botshort CC) Ad 1 - typo", "Unmapped", "unmapped"], // typo -> alert, no auto-correct

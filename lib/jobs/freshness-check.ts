@@ -565,8 +565,13 @@ export async function runFreshnessCheck(opts?: {
   let alertsResolved = 0;
 
   for (const c of evaluated) {
-    if (!c.dedupKey || !c.title) continue;
+    // Resolution needs only the dedup key. Requiring a title here too kept
+    // evaluators that emit `title: null` on pass (supermetrics_query.*) from
+    // ever auto-resolving their open alerts (found 2026-07-10: geo-spend
+    // freshness stayed open across passing sweeps).
+    if (!c.dedupKey) continue;
     if (c.status === "fail") {
+      if (!c.title) continue;
       // Lineage enrichment: name the downstream dashboards this break
       // affects so a triager knows where to look (or what to warn Scott
       // off) without tracing the dependency by hand.

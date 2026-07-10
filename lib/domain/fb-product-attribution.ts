@@ -28,6 +28,10 @@ export function extractFbPrefix(adNameRaw: string): string {
 export function attributeFbPrefix(prefixInner: string): FbAttribution {
   const raw = (prefixInner ?? "").trim();
   if (!raw) return { product: "Unmapped", bucket: "unmapped" };
+  // Intl launch 2026-07-10: Men's Brief ads open with a two-word product
+  // token ("Men Brief ..."), so it's matched on the full prefix text before
+  // the first-token dispatch below ("men"/"mens" alone still means Mens).
+  if (/^mens? brief(\s|$)/i.test(raw)) return { product: "Mens Brief", bucket: "product" };
   const p = raw.split(/\s+/)[0]?.toLowerCase() ?? "";
   const hf = /(^|\s)hf(\s|$)/i.test(raw) || p === "oghf" || p === "hwhf";
   const v = (base: string): FbAttribution => ({
@@ -48,6 +52,11 @@ export function attributeFbPrefix(prefixInner: string): FbAttribution {
   if (p === "shape") return v("Shapewear");
   if (p === "hrs") return { product: "High Rise Short", bucket: "product" };
   if (p === "og" || p === "oghf") return v("OG");
+  // Intl launch 2026-07-10: "Cotton" = the Cotton 9055 line (ev-cottonhip
+  // "Cotton Hipster"). Cotton HW deliberately gets its own "CHW" token so
+  // "Cotton" stays unambiguous (marketer decision 2026-07-10).
+  if (p === "cotton") return { product: "Cotton 9055", bucket: "product" };
+  if (p === "chw") return { product: "Cotton HW", bucket: "product" };
   return { product: "Unmapped", bucket: "unmapped" };
 }
 
@@ -107,6 +116,15 @@ export function canonicalProductLabel(
   if (key === "home") return { label: "Brand / Homepage", kind: "brand" };
   if (key === "clearance") return { label: "Clearance / Mixed", kind: "clearance" };
   if (key === "super hw") return { label: "Super High-Waist", kind: "product" };
+  // Intl launch 2026-07-10: pin the plausible sheet spellings of the two new
+  // lines (+ future Cotton HW) onto one canonical label each, so the sheet
+  // and the ad-name fallback can never split one product into near-duplicate
+  // rows ("Men Brief" vs "Mens Brief").
+  if (key === "cotton" || key === "cotton 9055" || key === "cotton hipster")
+    return { label: "Cotton 9055", kind: "product" };
+  if (key === "chw" || key === "cotton hw") return { label: "Cotton HW", kind: "product" };
+  if (key === "men brief" || key === "mens brief" || key === "men's brief")
+    return { label: "Mens Brief", kind: "product" };
   return { label: raw, kind: "product" };
 }
 
