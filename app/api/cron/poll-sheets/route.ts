@@ -92,12 +92,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
-  // Self-trigger against the same origin we were called on (the public URL),
-  // overridable for non-standard deploys.
-  const baseUrl = (process.env.SKYBROOK_PUBLIC_URL?.trim() || new URL(req.url).origin).replace(
-    /\/$/,
-    "",
-  );
+  // Self-trigger over loopback: the ingest runs in THIS process, and the
+  // Railway container cannot reliably reach its own public domain (observed
+  // "fetch failed" 2026-07-10 through 07-12, which silently swallowed the
+  // detected re-ingests while every OTHER container reached the same URL
+  // fine). SKYBROOK_PUBLIC_URL stays as an override for non-standard deploys.
+  const baseUrl = (
+    process.env.SKYBROOK_PUBLIC_URL?.trim() ||
+    `http://localhost:${process.env.PORT ?? 3000}`
+  ).replace(/\/$/, "");
 
   let result;
   try {
