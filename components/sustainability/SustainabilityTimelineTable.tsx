@@ -72,7 +72,6 @@ export function SustainabilityTimelineTable({
   const rawRows = data?.rows ?? [];
   const shipmentCols = data?.shipmentColumns ?? [];
 
-  const filterActive = searchQuery.trim() !== "" || productLineFilter !== "";
 
   const rows = useMemo(() => {
     const dir = sort.direction === "asc" ? 1 : -1;
@@ -106,12 +105,17 @@ export function SustainabilityTimelineTable({
     return [...filtered].sort(cmp);
   }, [rawRows, sort, searchQuery, productLineFilter]);
 
-  // Totals only when a filter narrows the table — Scott wants a quick "what
-  // does the current view add up to?" while searching. Forecast columns stay
-  // blank (per Scott: actuals only, summing future projections is meaningless).
+  // Totals row always shows (Scott 2026-07-13): at a glance, how many units
+  // arrive in each shipment and how much stock we'll have after it lands.
+  // Per-shipment sums cover Qty (actual PO units) and After (post-receipt
+  // stock) — the two columns Scott asked for. The other forecast cells
+  // (Sales / Stock Left / Run Out) stay blank per his earlier "actuals only,
+  // summing those projections is meaningless" direction, which the 07-13 ask
+  // supersedes only for Qty + After. Filtering still narrows the sums to the
+  // visible rows.
   const totals = useMemo(() => {
-    if (!filterActive || rows.length === 0) return null;
-    return rows.reduce(
+    if (rows.length === 0) return null;
+    const base = rows.reduce(
       (acc, r) => ({
         sales: acc.sales + r.salesInWindow,
         salesDollars: acc.salesDollars + r.salesDollarsInWindow,
@@ -120,7 +124,20 @@ export function SustainabilityTimelineTable({
       }),
       { sales: 0, salesDollars: 0, prorated: 0, stock: 0 },
     );
-  }, [rows, filterActive]);
+    const perShipment = shipmentCols.map((_, i) =>
+      rows.reduce(
+        (acc, r) => {
+          const p = r.projections[i];
+          return {
+            qty: acc.qty + (p?.shipmentQty ?? 0),
+            after: acc.after + (p?.afterReceiptStock ?? 0),
+          };
+        },
+        { qty: 0, after: 0 },
+      ),
+    );
+    return { ...base, perShipment };
+  }, [rows, shipmentCols]);
 
   return (
     <section className="space-y-2">
@@ -408,17 +425,24 @@ export function SustainabilityTimelineTable({
                   <td className="border-r border-neutral-200 px-3 py-1.5 text-right tabular-nums">
                     {fmtNum(totals.stock)}
                   </td>
-                  {/* Forecast columns intentionally blank — summing future
-                      projections (especially stock-after-receipt) would mix
-                      cumulative arithmetic with projected ones, which Scott
-                      explicitly didn't want. */}
-                  {shipmentCols.map((col) => (
+                  {/* Sales / Stock Left / Run Out stay blank (summing those
+                      projections is meaningless — Scott 2026-05). Qty and
+                      After total up per shipment (Scott 2026-07-13): units
+                      arriving in that delivery and stock across all visible
+                      SKUs once it lands. */}
+                  {shipmentCols.map((col, i) => (
                     <Fragment key={`total|${col.eta}|${col.shipmentName}`}>
                       <td className="border-l-2 border-neutral-300 px-2 py-1.5 text-right text-neutral-400">—</td>
                       <td className="border-l border-neutral-200 px-2 py-1.5 text-right text-neutral-400">—</td>
                       <td className="border-l border-neutral-200 px-2 py-1.5 text-right text-neutral-400">—</td>
-                      <td className="border-l border-neutral-200 px-2 py-1.5 text-right text-neutral-400">—</td>
-                      <td className="border-l border-neutral-200 px-2 py-1.5 text-right text-neutral-400">—</td>
+                      <td className="border-l border-neutral-200 px-2 py-1.5 text-right tabular-nums">
+                        {totals.perShipment[i] && totals.perShipment[i].qty > 0
+                          ? fmtNum(totals.perShipment[i].qty)
+                          : "—"}
+                      </td>
+                      <td className="border-l border-neutral-200 px-2 py-1.5 text-right tabular-nums font-medium">
+                        {totals.perShipment[i] ? fmtNum(totals.perShipment[i].after) : "—"}
+                      </td>
                     </Fragment>
                   ))}
                 </tr>
