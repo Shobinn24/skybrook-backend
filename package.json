@@ -19,6 +19,7 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
     "@tanstack/react-query": "^5.59.0",
     "@trpc/client": "^11.0.0-rc.648",
     "@trpc/react-query": "^11.0.0-rc.648",
@@ -30,6 +31,8 @@
     "drizzle-orm": "^0.36.0",
     "exceljs": "^4.4.0",
     "googleapis": "^144.0.0",
+    "imapflow": "^1.4.7",
+    "mailparser": "^3.9.14",
     "next": "^15.0.3",
     "postgres": "^3.4.4",
     "react": "^19.0.0",
@@ -39,6 +42,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^22.8.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

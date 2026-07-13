@@ -7,6 +7,8 @@ import {
   detectAndInsertVideoEditorCrossings,
 } from "@/lib/jobs/bonus-crossings";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
+import { runLooxAnalysis } from "@/lib/jobs/loox-analysis";
+import { runLooxIngest } from "@/lib/jobs/loox-ingest";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { runLaunchAutoPopulate } from "@/lib/jobs/launches";
 import { runOrphanSkuSweep } from "@/lib/jobs/orphan-sku-sweep";
@@ -270,6 +272,18 @@ export async function POST(req: Request) {
     ? null
     : await stage("freshness_check", () => runFreshnessCheck());
 
+  // Loox reviews: poll the forwarding inbox + re-analyze anything new.
+  // Dormant until LOOX_IMAP_* is set; best-effort — a Gmail hiccup must
+  // never fail the data cron.
+  let loox: { configured: boolean; inserted: number } | null = null;
+  try {
+    const looxIngest = await runLooxIngest();
+    if (looxIngest.configured) await runLooxAnalysis();
+    loox = { configured: looxIngest.configured, inserted: looxIngest.inserted };
+  } catch (e) {
+    logger.error("loox.cron.failed", { error: e instanceof Error ? e.message : String(e) });
+  }
+
   // Dead-man ping to healthchecks.io — confirms the cron itself ran, no
   // matter what the freshness sweep found. Substantive failures
   // (per-source / per-table / skew) fire their own Slack alerts above.
@@ -306,6 +320,7 @@ export async function POST(req: Request) {
       : null,
     freshnessAlertsFired: freshness?.alertsFired ?? null,
     freshnessAlertsResolved: freshness?.alertsResolved ?? null,
+    looxInserted: loox?.configured ? loox.inserted : null,
   });
   return NextResponse.json({
     ok: true,

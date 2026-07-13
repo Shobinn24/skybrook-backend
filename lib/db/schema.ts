@@ -868,3 +868,40 @@ export const sheetPollState = pgTable("sheet_poll_state", {
   lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
   lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
 });
+
+// ── Loox reviews (Scott 2026-07-13, upgrading the 2026-05-23 ask) ─────────────
+// Loox has no API, so review notification emails forward to a dedicated
+// Gmail inbox; the ingest polls it over IMAP and lands one row per review
+// email. `emailMessageId` makes re-polls idempotent. Parsing is best-effort:
+// rows the parser can't fully extract keep `parsed=false` with the raw text
+// preserved, so format drift is visible in the UI instead of silently lost.
+export const looxReviews = pgTable(
+  "loox_reviews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    emailMessageId: text("email_message_id").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
+    productTitle: text("product_title"),
+    rating: integer("rating"),
+    reviewerName: text("reviewer_name"),
+    reviewText: text("review_text"),
+    rawText: text("raw_text").notNull(),
+    parsed: boolean("parsed").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("loox_reviews_email_message_id_uq").on(t.emailMessageId)],
+);
+
+// One row per (product, analysis run): Claude's read of that product's
+// reviews — summary, themes, complaints, improvement ideas — plus the
+// KPIs computed in SQL (count / average) frozen at generation time so the
+// display never mixes an old analysis with new numbers.
+export const looxReviewAnalyses = pgTable("loox_review_analyses", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  productTitle: text("product_title").notNull(),
+  reviewCount: integer("review_count").notNull(),
+  avgRating: numeric("avg_rating", { precision: 3, scale: 2 }),
+  analysis: jsonb("analysis").notNull(),
+  model: text("model").notNull(),
+  generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+});

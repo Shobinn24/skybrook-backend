@@ -33,6 +33,8 @@ import {
 } from "@/lib/jobs/bonus-crossings";
 import { runFbTracker2Append } from "@/lib/jobs/fb-tracker2-append";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
+import { runLooxAnalysis } from "@/lib/jobs/loox-analysis";
+import { runLooxIngest } from "@/lib/jobs/loox-ingest";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { postAlert, resolveAlert } from "@/lib/notifications/slack";
 import {
@@ -154,6 +156,15 @@ export async function POST(req: Request) {
         alertsResolved: freshness.alertsResolved,
       }
     : null;
+
+  // Loox reviews ride the afternoon sweep too (see cron/ingest) — reviews
+  // trickle all day and Scott reads them same-day. Best-effort.
+  try {
+    const looxIngest = await runLooxIngest();
+    if (looxIngest.configured) await runLooxAnalysis();
+  } catch (e) {
+    logger.error("loox.cron.failed", { error: e instanceof Error ? e.message : String(e) });
+  }
 
   const elapsedMs = Date.now() - startedAt;
   logger.info("cron.refresh-ad-spend.complete", {

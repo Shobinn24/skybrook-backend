@@ -239,6 +239,13 @@
       "when": 1783516242619,
       "tag": "0033_launch_info",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1783956262989,
+      "tag": "0034_loox_reviews",
+      "breakpoints": true
     }
   ]
 }
