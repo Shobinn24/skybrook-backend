@@ -68,3 +68,17 @@ describe("parseLooxReviewEmail", () => {
     expect(r.reviewText).not.toContain("Unsubscribe");
   });
 });
+
+import { isHousekeepingSender } from "@/lib/jobs/loox-ingest";
+
+describe("isHousekeepingSender", () => {
+  it("skips Google account/security mail, keeps everything else", () => {
+    expect(isHousekeepingSender("no-reply@accounts.google.com")).toBe(true);
+    expect(isHousekeepingSender("mail-noreply@google.com")).toBe(true);
+    expect(isHousekeepingSender("notifications@loox.io")).toBe(false);
+    expect(isHousekeepingSender("scott@everdries.com")).toBe(false);
+    expect(isHousekeepingSender(undefined)).toBe(false);
+    // a forwarded review FROM a gmail user must not be skipped
+    expect(isHousekeepingSender("somecustomer@gmail.com")).toBe(false);
+  });
+});

@@ -19,6 +19,15 @@ import { parseLooxReviewEmail } from "@/lib/sources/loox/parse-review-email";
 // minus a day, so a crashed run can't strand mail in a "seen but not
 // stored" state.
 
+// Google's own housekeeping mail (security alerts, welcome, 2FA/app-password
+// notices) can never be a review — skip it entirely instead of cluttering the
+// unparsed bucket. Everything else is stored, parsed or not.
+export function isHousekeepingSender(address: string | undefined): boolean {
+  if (!address) return false;
+  return /@(accounts\.google\.com|google\.com|gmail\.com)$/i.test(address.trim()) &&
+    /no-?reply|accounts|mail-noreply|gmail-noreply/i.test(address);
+}
+
 export type LooxIngestResult = {
   configured: boolean;
   fetched: number;
@@ -65,6 +74,8 @@ export async function runLooxIngest(): Promise<LooxIngestResult> {
         fetched += 1;
         if (!msg.source) continue;
         const mail: ParsedMail = await simpleParser(msg.source);
+        const fromAddress = mail.from?.value?.[0]?.address;
+        if (isHousekeepingSender(fromAddress)) continue;
         const messageId = mail.messageId ?? `no-id:${msg.uid}@${user}`;
         const text = mail.text ?? "";
         const subject = mail.subject ?? "";
