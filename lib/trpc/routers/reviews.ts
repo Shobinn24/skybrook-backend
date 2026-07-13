@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, lte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { looxProducts, looxReviews } from "@/lib/db/schema";
@@ -150,16 +151,23 @@ export const reviewsRouter = router({
           .max(40),
       }),
     )
-    .mutation(({ input }) =>
-      runLooxChat({
+    .mutation(async ({ input }) => {
+      const result = await runLooxChat({
         displayName: input.displayName,
         line: input.line,
         mode: input.mode,
         messages: input.messages,
         from: input.from ? new Date(`${input.from}T00:00:00.000Z`) : undefined,
         to: input.to ? new Date(`${input.to}T23:59:59.999Z`) : undefined,
-      }),
-    ),
+      });
+      if (!result.configured) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Chat is not configured — ANTHROPIC_API_KEY is not set on the server.",
+        });
+      }
+      return result;
+    }),
 
   unparsed: opsProcedure.query(() =>
     db
