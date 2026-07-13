@@ -1,6 +1,6 @@
 // Parse a Loox review-notification email into a structured review.
 //
-// Loox has no API (Scott 2026-07-13), so the pipeline is: Loox notification
+// Fallback pipeline (the Merchant API sync is primary): Loox notification
 // email -> forwarded to the dedicated reviews inbox -> IMAP poll -> this
 // parser. Pure function over (subject, text) so unit tests can pin the
 // format; TOLERANT by design — anything it can't extract stays null and the

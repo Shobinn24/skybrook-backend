@@ -6,8 +6,9 @@ import { logger } from "@/lib/logger";
 import { parseLooxReviewEmail } from "@/lib/sources/loox/parse-review-email";
 
 // Poll the dedicated Loox-reviews inbox over IMAP and land one row per
-// review email. Loox has no API (Scott 2026-07-13); notification emails
-// forward to this inbox instead.
+// review email. FALLBACK path: the Merchant API sync (loox-api-sync.ts) is
+// primary since 2026-07-13; this inbox covers any window where API access
+// lapses (plan downgrade, revoked key).
 //
 // Dormant until configured: without LOOX_IMAP_USER / LOOX_IMAP_PASSWORD the
 // job returns {configured: false} and touches nothing — same pattern as the

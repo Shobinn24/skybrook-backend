@@ -870,27 +870,70 @@ export const sheetPollState = pgTable("sheet_poll_state", {
 });
 
 // ── Loox reviews (Scott 2026-07-13, upgrading the 2026-05-23 ask) ─────────────
-// Loox has no API, so review notification emails forward to a dedicated
-// Gmail inbox; the ingest polls it over IMAP and lands one row per review
-// email. `emailMessageId` makes re-polls idempotent. Parsing is best-effort:
-// rows the parser can't fully extract keep `parsed=false` with the raw text
+// One row per customer review, from either source: `api` (Loox Merchant API
+// poller over both stores, the primary path) or `email` (forwarded
+// notification emails, the pre-API fallback). Scott bulk-imports main-store
+// reviews into the intl store, and Loox assigns the copies NEW review ids —
+// verified 2026-07-13 (305/305 recent cross-store matches shared email+date
+// with identical rating and body, zero id overlap). So cross-store dedup
+// keys on `dedupKey` = "email|date" (falling back to name|date|text-hash
+// when email is missing); the main store syncs first so its copy wins.
+// `externalId` (the Loox review id) is unique per store. Email rows dedup
+// on `emailMessageId`. Parsing is best-effort for email rows: rows the
+// parser can't fully extract keep `parsed=false` with the raw text
 // preserved, so format drift is visible in the UI instead of silently lost.
 export const looxReviews = pgTable(
   "loox_reviews",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    emailMessageId: text("email_message_id").notNull(),
+    emailMessageId: text("email_message_id"),
+    externalId: text("external_id"),
+    source: text("source").notNull().default("email"), // 'api' | 'email'
+    store: text("store"), // 'main' | 'intl' | null (email rows)
+    dedupKey: text("dedup_key"),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
+    // When the customer actually left the review (Loox's own timestamp);
+    // email rows fall back to receivedAt for date-range queries.
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     productTitle: text("product_title"),
+    productHandle: text("product_handle"),
+    productId: text("product_id"), // Shopify product id (per store)
     rating: integer("rating"),
     reviewerName: text("reviewer_name"),
+    reviewerEmail: text("reviewer_email"),
     reviewText: text("review_text"),
-    rawText: text("raw_text").notNull(),
+    verified: boolean("verified"),
+    // Loox moderation status: 'published' | 'unpublished' | 'pending'.
+    // KPIs count published plus legacy email rows where status is unknown.
+    status: text("status"),
+    rawText: text("raw_text"),
     parsed: boolean("parsed").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("loox_reviews_email_message_id_uq").on(t.emailMessageId)],
+  (t) => [
+    uniqueIndex("loox_reviews_email_message_id_uq").on(t.emailMessageId),
+    uniqueIndex("loox_reviews_store_external_id_uq").on(t.store, t.externalId),
+    uniqueIndex("loox_reviews_dedup_key_uq").on(t.dedupKey),
+    index("loox_reviews_product_handle_idx").on(t.productHandle),
+    index("loox_reviews_reviewed_at_idx").on(t.reviewedAt),
+  ],
 );
+
+// One row per Shopify product handle seen in the review data: the display
+// name Scott sees in the KPI table, which line it belongs to (std | heavy),
+// and whether it's included in the table at all. Seeded automatically by
+// the API sync from distinct handles (line guessed from the product name);
+// edits are data-only so the mapping can be corrected without a deploy.
+// Main and intl handles for the same product both get rows; `displayName`
+// is the grouping key in the KPI table, so pointing two handles at the
+// same display name merges them into one line.
+export const looxProducts = pgTable("loox_products", {
+  handle: text("handle").primaryKey(),
+  displayName: text("display_name").notNull(),
+  line: text("line"), // 'std' | 'heavy' | null (unclassified)
+  include: boolean("include").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 // One row per (product, analysis run): Claude's read of that product's
 // reviews — summary, themes, complaints, improvement ideas — plus the

@@ -1,15 +1,22 @@
 import { NextResponse } from "next/server";
-import { runLooxAnalysis } from "@/lib/jobs/loox-analysis";
+import { runLooxApiSync } from "@/lib/jobs/loox-api-sync";
 import { runLooxIngest } from "@/lib/jobs/loox-ingest";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
-// Loox reviews pipeline: poll the forwarding inbox, then re-analyze any
-// product with new reviews. Dormant until LOOX_IMAP_* / ANTHROPIC_API_KEY
-// are set, so this route is safe to schedule ahead of the inbox existing.
-// Also invoked at the end of the two scheduled cron sweeps.
+// Loox reviews pipeline. Primary path is the Merchant API sync over both
+// stores (main + intl, cross-store dedup); the forwarding-inbox ingest runs
+// after it as a fallback for any window where API access lapses. Both jobs
+// are dormant until their env vars exist, so this route is safe to schedule
+// ahead of configuration. Also invoked at the end of the two scheduled cron
+// sweeps. Pass ?full=1 to re-walk all Loox history (catches moderation
+// changes on old reviews that the incremental window can't see).
+//
+// No scheduled Claude analysis by design (Scott 2026-07-13): reviews are
+// stored and aggregated in SQL for free; Claude only runs when someone asks
+// a question in the reviews chat.
 export async function POST(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
   const expected = process.env.CRON_SECRET;
@@ -19,9 +26,10 @@ export async function POST(req: Request) {
   if (auth !== `Bearer ${expected}`) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
+  const full = new URL(req.url).searchParams.get("full") === "1";
+  const apiSync = await runLooxApiSync({ full });
   const ingest = await runLooxIngest();
-  const analysis = ingest.configured ? await runLooxAnalysis() : null;
-  return NextResponse.json({ ok: true, ingest, analysis });
+  return NextResponse.json({ ok: true, apiSync, ingest });
 }
 
 // Railway native cron invokes via GET.

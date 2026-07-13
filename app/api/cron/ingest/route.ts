@@ -7,7 +7,7 @@ import {
   detectAndInsertVideoEditorCrossings,
 } from "@/lib/jobs/bonus-crossings";
 import { runFreshnessCheck } from "@/lib/jobs/freshness-check";
-import { runLooxAnalysis } from "@/lib/jobs/loox-analysis";
+import { runLooxApiSync } from "@/lib/jobs/loox-api-sync";
 import { runLooxIngest } from "@/lib/jobs/loox-ingest";
 import { runIngest, type SourceKey, type SourceRunner } from "@/lib/jobs/ingest";
 import { runLaunchAutoPopulate } from "@/lib/jobs/launches";
@@ -272,14 +272,19 @@ export async function POST(req: Request) {
     ? null
     : await stage("freshness_check", () => runFreshnessCheck());
 
-  // Loox reviews: poll the forwarding inbox + re-analyze anything new.
-  // Dormant until LOOX_IMAP_* is set; best-effort — a Gmail hiccup must
-  // never fail the data cron.
+  // Loox reviews: Merchant API sync (both stores) with the forwarding-inbox
+  // ingest as fallback. Dormant until LOOX_* env vars are set; best-effort —
+  // a Loox or Gmail hiccup must never fail the data cron. No scheduled
+  // Claude analysis by design (Scott 2026-07-13): Claude only runs on chat.
   let loox: { configured: boolean; inserted: number } | null = null;
   try {
+    const apiSync = await runLooxApiSync();
     const looxIngest = await runLooxIngest();
-    if (looxIngest.configured) await runLooxAnalysis();
-    loox = { configured: looxIngest.configured, inserted: looxIngest.inserted };
+    loox = {
+      configured: apiSync.configured || looxIngest.configured,
+      inserted:
+        apiSync.stores.reduce((acc, s) => acc + s.inserted, 0) + looxIngest.inserted,
+    };
   } catch (e) {
     logger.error("loox.cron.failed", { error: e instanceof Error ? e.message : String(e) });
   }
