@@ -218,14 +218,14 @@ export default function LaunchesPage() {
                     <td className="whitespace-nowrap border-l-2 border-neutral-300 bg-neutral-50/40 px-3 py-1.5 tabular-nums text-neutral-700">
                       {fmtDate(r.etaAnt)}
                     </td>
-                    <td className="px-3 py-1.5">
+                    <td className="whitespace-nowrap px-3 py-1.5">
                       <DateCell
                         value={r.intlSiteLive}
                         readOnly={!isAdmin}
                         onChange={(v) => handleDateChange(r.id, "intlSiteLive", v)}
                       />
                     </td>
-                    <td className="px-3 py-1.5">
+                    <td className="whitespace-nowrap px-3 py-1.5">
                       <DateCell
                         value={r.intlLaunchDate}
                         readOnly={!isAdmin}
@@ -235,14 +235,14 @@ export default function LaunchesPage() {
                     <td className="whitespace-nowrap border-l-2 border-neutral-300 bg-neutral-50/40 px-3 py-1.5 tabular-nums text-neutral-700">
                       {fmtDate(r.etaPd)}
                     </td>
-                    <td className="px-3 py-1.5">
+                    <td className="whitespace-nowrap px-3 py-1.5">
                       <DateCell
                         value={r.usSiteLive}
                         readOnly={!isAdmin}
                         onChange={(v) => handleDateChange(r.id, "usSiteLive", v)}
                       />
                     </td>
-                    <td className="px-3 py-1.5">
+                    <td className="whitespace-nowrap px-3 py-1.5">
                       <DateCell
                         value={r.usLaunchDate}
                         readOnly={!isAdmin}
@@ -255,13 +255,13 @@ export default function LaunchesPage() {
                         truncate to ONE line so row heights stay uniform
                         (Scott 2026-07-08); full text on hover. */}
                     <td
-                      className="max-w-[13rem] whitespace-nowrap border-l-2 border-neutral-300 px-3 py-1.5 text-xs text-neutral-700"
+                      className="whitespace-nowrap border-l-2 border-neutral-300 px-3 py-1.5 text-xs text-neutral-700"
                       title={
                         (r.externalProductName ? `${r.externalProductName}\n` : "") +
                         (r.prepFromSheet ? "from the Launch Info sheet" : "no Launch Info sheet row for this product yet")
                       }
                     >
-                      <span className="block truncate">{r.externalProductName ?? "—"}</span>
+                      <span className="block max-w-[13rem] truncate">{r.externalProductName ?? "—"}</span>
                     </td>
                     <td className="whitespace-nowrap px-3 py-1.5 text-xs tabular-nums text-neutral-700">
                       {fmtMoney(r.sellingPriceUsd)}
@@ -294,18 +294,18 @@ export default function LaunchesPage() {
                         </>
                       )}
                     </td>
-                    <td className="max-w-[10rem] whitespace-nowrap px-3 py-1.5 text-xs text-neutral-700" title={r.colours ?? undefined}>
-                      <span className="block truncate">{r.colours ?? "—"}</span>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-xs text-neutral-700" title={r.colours ?? undefined}>
+                      <span className="block max-w-[10rem] truncate">{r.colours ?? "—"}</span>
                     </td>
                     <td
-                      className="max-w-[13rem] whitespace-nowrap px-3 py-1.5 text-xs text-neutral-700"
+                      className="whitespace-nowrap px-3 py-1.5 text-xs text-neutral-700"
                       title={
                         r.mainComposition
                           ? r.mainComposition + (r.linerComposition ? ` (liner ${r.linerComposition})` : "")
                           : undefined
                       }
                     >
-                      <span className="block truncate">
+                      <span className="block max-w-[13rem] truncate">
                         {r.mainComposition ? (
                           <>
                             {r.mainComposition}
@@ -381,14 +381,14 @@ function DateCell({
   // when the parent re-renders from the mutation invalidation.
   const [draft, setDraft] = useState<string | null>(null);
   if (readOnly) {
-    return <span className="text-xs tabular-nums text-neutral-700">{fmtDate(value)}</span>;
+    return <span className="whitespace-nowrap text-xs tabular-nums text-neutral-700">{fmtDate(value)}</span>;
   }
   if (!editing) {
     return (
       <button
         type="button"
         onClick={() => setEditing(true)}
-        className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-xs tabular-nums hover:border-neutral-400 focus:border-neutral-500 focus:outline-none"
+        className="whitespace-nowrap rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-xs tabular-nums hover:border-neutral-400 focus:border-neutral-500 focus:outline-none"
       >
         {fmtDate(value)}
       </button>
