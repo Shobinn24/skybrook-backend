@@ -137,13 +137,23 @@ export async function POST(req: Request) {
   // freshness state is reflected on /api/health alongside 30D Check —
   // the divergence between them is now the structural alarm if the
   // append above silently breaks again.
-  const freshness = await runFreshnessCheck({ includeReferenceTabs: true });
-  const checkSummary = {
-    pass: freshness.checks.filter((c) => c.status === "pass").length,
-    fail: freshness.checks.filter((c) => c.status === "fail").length,
-    alertsFired: freshness.alertsFired,
-    alertsResolved: freshness.alertsResolved,
-  };
+  //
+  // Skipped on poller-triggered runs (?freshness=skip) — the poller syncs
+  // data at arbitrary hours and the thresholds assume scheduled-cron
+  // timing (see the same gate in cron/ingest, added after the 2026-07-13
+  // 2am false P1 storm). Alerting stays with the scheduled crons.
+  const skipFreshness = new URL(req.url).searchParams.get("freshness") === "skip";
+  const freshness = skipFreshness
+    ? null
+    : await runFreshnessCheck({ includeReferenceTabs: true });
+  const checkSummary = freshness
+    ? {
+        pass: freshness.checks.filter((c) => c.status === "pass").length,
+        fail: freshness.checks.filter((c) => c.status === "fail").length,
+        alertsFired: freshness.alertsFired,
+        alertsResolved: freshness.alertsResolved,
+      }
+    : null;
 
   const elapsedMs = Date.now() - startedAt;
   logger.info("cron.refresh-ad-spend.complete", {
@@ -157,8 +167,9 @@ export async function POST(req: Request) {
     tracker2NewAds: tracker2Append?.newAdsCount ?? null,
     tracker2Skipped: tracker2Append?.skipped ?? null,
     tracker2Failed: tracker2Append === null,
-    freshnessPass: checkSummary.pass,
-    freshnessFail: checkSummary.fail,
+    freshnessPass: checkSummary?.pass ?? null,
+    freshnessFail: checkSummary?.fail ?? null,
+    freshnessSkipped: skipFreshness,
   });
 
   return NextResponse.json({

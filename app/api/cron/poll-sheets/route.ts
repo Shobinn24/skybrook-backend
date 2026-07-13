@@ -66,14 +66,25 @@ function makeTrigger(baseUrl: string, cronSecret: string): (kind: TriggerKind) =
   const path = (kind: TriggerKind) =>
     kind === "full" ? "/api/cron/ingest" : "/api/cron/refresh-ad-spend";
   return async (kind: TriggerKind) => {
-    const url = `${baseUrl}${path(kind)}`;
+    // ?freshness=skip: poller triggers sync DATA at arbitrary hours; the
+    // freshness/alerting sweep stays with the scheduled crons (first night
+    // the poller ran overnight it fired 14 false P1s at 2am EST).
+    const url = `${baseUrl}${path(kind)}?freshness=skip`;
     // Fire-and-forget: the ingest does its work before responding and can run
-    // well past this poll's lifetime. On Railway (long-lived process) the
-    // request keeps running after we return. We only need it accepted.
+    // well past this poll's lifetime — we only need the request ACCEPTED.
+    // The 8s abort exists to classify outcomes: a timeout means the server
+    // took the request and is processing (aborting the fetch does not abort
+    // the route handler); anything else is a real trigger failure.
     void fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${cronSecret}` },
+      signal: AbortSignal.timeout(8000),
     }).catch((e) => {
+      const name = e instanceof Error ? e.name : "";
+      if (name === "TimeoutError" || name === "AbortError") {
+        logger.info("poll_sheets.trigger.accepted", { kind });
+        return;
+      }
       logger.error("poll_sheets.trigger.failed", {
         kind,
         error: e instanceof Error ? e.message : String(e),

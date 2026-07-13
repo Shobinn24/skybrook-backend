@@ -258,7 +258,17 @@ export async function POST(req: Request) {
   // Stage-guarded like everything above, so it ALWAYS executes even when
   // an earlier stage failed — staleness detection is most valuable on
   // exactly those runs.
-  const freshness = await stage("freshness_check", () => runFreshnessCheck());
+  //
+  // EXCEPT on poller-triggered runs (?freshness=skip): the sheet poller
+  // fires this route at arbitrary hours for near-real-time DATA sync, and
+  // the freshness thresholds assume post-morning-cron timing. First night
+  // the poller worked (2026-07-13 ~02:00 EST) it fired 14 false P1s to
+  // Slack before the day's spend data could possibly exist. Alerting
+  // stays with the scheduled crons, which never pass the skip flag.
+  const skipFreshness = new URL(req.url).searchParams.get("freshness") === "skip";
+  const freshness = skipFreshness
+    ? null
+    : await stage("freshness_check", () => runFreshnessCheck());
 
   // Dead-man ping to healthchecks.io — confirms the cron itself ran, no
   // matter what the freshness sweep found. Substantive failures
