@@ -98,6 +98,7 @@ export async function runLooxChat(input: {
   displayName: string;
   line?: "std" | "heavy";
   mode: LooxChatMode;
+  status?: "published" | "pending" | "all";
   messages: { role: "user" | "assistant"; content: string }[];
   from?: Date;
   to?: Date;
@@ -108,12 +109,15 @@ export async function runLooxChat(input: {
     return { configured: false, answer: "", reviewCount: 0, verbatim: [] };
   }
 
+  const status = input.status ?? "published";
   const conds = [
     sql`coalesce(${looxProducts.displayName}, ${looxReviews.productTitle}) = ${input.displayName}`,
     sql`coalesce(${looxProducts.line}, 'std') = ${input.line ?? "std"}`,
-    or(eq(looxReviews.status, "published"), sql`${looxReviews.status} is null`),
     eq(looxReviews.parsed, true),
   ];
+  if (status === "published")
+    conds.push(or(eq(looxReviews.status, "published"), sql`${looxReviews.status} is null`)!);
+  else if (status === "pending") conds.push(eq(looxReviews.status, "pending"));
   // ISO strings, not Date objects: inside a raw sql`` fragment the driver
   // can't infer the param type and refuses to serialize a Date.
   if (input.from)

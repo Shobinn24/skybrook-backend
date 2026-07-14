@@ -21,10 +21,21 @@ const dateRange = z.object({
   // YYYY-MM-DD, inclusive; `to` is treated as end-of-day UTC.
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  // Loox moderation filter. Default matches what Loox shows customers;
+  // `pending` previews reviews awaiting moderation (Scott 2026-07-14);
+  // `all` additionally includes unpublished.
+  status: z.enum(["published", "pending", "all"]).default("published"),
 });
 
-// Published reviews only (email-fallback rows have no status and count).
-const published = or(eq(looxReviews.status, "published"), sql`${looxReviews.status} is null`);
+export type LooxStatusFilter = z.infer<typeof dateRange>["status"];
+
+// Email-fallback rows have no status and count as published.
+export function statusCond(status: LooxStatusFilter) {
+  if (status === "published")
+    return or(eq(looxReviews.status, "published"), sql`${looxReviews.status} is null`);
+  if (status === "pending") return eq(looxReviews.status, "pending");
+  return undefined; // 'all' — drizzle's and() drops undefined conditions
+}
 const reviewedAt = sql`coalesce(${looxReviews.reviewedAt}, ${looxReviews.receivedAt})`;
 const groupName = sql<string>`coalesce(${looxProducts.displayName}, ${looxReviews.productTitle}, 'Unknown product')`;
 // The same base product exists in Std and Heavy variants with the same
@@ -58,7 +69,9 @@ export const reviewsRouter = router({
       })
       .from(looxReviews)
       .leftJoin(looxProducts, eq(looxProducts.handle, looxReviews.productHandle))
-      .where(and(eq(looxReviews.parsed, true), published, included, ...rangeConds(input)))
+      .where(
+        and(eq(looxReviews.parsed, true), statusCond(input.status), included, ...rangeConds(input)),
+      )
       .groupBy(groupName, groupLine)
       .orderBy(desc(sql`count(*)`));
 
@@ -92,7 +105,7 @@ export const reviewsRouter = router({
       const PAGE = 100;
       const conds = and(
         eq(looxReviews.parsed, true),
-        published,
+        statusCond(input.status),
         sql`${groupName} = ${input.displayName}`,
         sql`${groupLine} = ${input.line}`,
         ...rangeConds(input),
@@ -156,6 +169,7 @@ export const reviewsRouter = router({
         displayName: input.displayName,
         line: input.line,
         mode: input.mode,
+        status: input.status,
         messages: input.messages,
         from: input.from ? new Date(`${input.from}T00:00:00.000Z`) : undefined,
         to: input.to ? new Date(`${input.to}T23:59:59.999Z`) : undefined,

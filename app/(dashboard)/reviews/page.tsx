@@ -10,6 +10,13 @@ import { trpc } from "@/lib/trpc/client";
 // analysis — Claude only runs, and only costs, when a question is asked.
 
 type Range = { from?: string; to?: string };
+type StatusFilter = "published" | "pending" | "all";
+
+const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
+  { value: "published", label: "Published" },
+  { value: "pending", label: "Pending" },
+  { value: "all", label: "All" },
+];
 
 const PRESETS: { label: string; days: number | null }[] = [
   { label: "All time", days: null },
@@ -144,7 +151,7 @@ function TotalRow({ label, products }: { label: string; products: OverviewProduc
   );
 }
 
-function ChatPanel({ sel, range }: { sel: Selection; range: Range }) {
+function ChatPanel({ sel, range, status }: { sel: Selection; range: Range; status: StatusFilter }) {
   const [mode, setMode] = useState<"marketing" | "product">("marketing");
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
@@ -176,6 +183,7 @@ function ChatPanel({ sel, range }: { sel: Selection; range: Range }) {
       displayName: sel.displayName,
       line: sel.line,
       mode,
+      status,
       messages: next,
       from: range.from,
       to: range.to,
@@ -284,6 +292,7 @@ export default function ReviewsPage() {
   const [selected, setSelected] = useState<Selection | null>(null);
   const [preset, setPreset] = useState<number | null>(null);
   const [custom, setCustom] = useState<Range>({});
+  const [status, setStatus] = useState<StatusFilter>("published");
   const [page, setPage] = useState(1);
 
   const range = useMemo<Range>(() => {
@@ -294,9 +303,12 @@ export default function ReviewsPage() {
   }, [preset, custom]);
 
   const utils = trpc.useUtils();
-  const overview = trpc.reviews.overview.useQuery(range, { refetchOnWindowFocus: false });
+  const overview = trpc.reviews.overview.useQuery(
+    { ...range, status },
+    { refetchOnWindowFocus: false },
+  );
   const product = trpc.reviews.product.useQuery(
-    { displayName: selected?.displayName ?? "", line: selected?.line ?? "std", page, ...range },
+    { displayName: selected?.displayName ?? "", line: selected?.line ?? "std", page, status, ...range },
     { enabled: !!selected, refetchOnWindowFocus: false },
   );
   const refresh = trpc.reviews.refresh.useMutation({
@@ -397,6 +409,35 @@ export default function ReviewsPage() {
           }}
           className="rounded-md border border-neutral-300 px-2 py-1 text-xs"
         />
+        <span className="ml-2 h-4 w-px bg-neutral-200" />
+        <div className="flex overflow-hidden rounded-md border border-neutral-300">
+          {STATUS_OPTIONS.map((s) => (
+            <button
+              key={s.value}
+              onClick={() => {
+                setStatus(s.value);
+                setPage(1);
+              }}
+              className={
+                "px-2.5 py-1 text-xs " +
+                (status === s.value
+                  ? s.value === "pending"
+                    ? "bg-amber-500 text-white"
+                    : "bg-neutral-800 text-white"
+                  : "bg-white text-neutral-600 hover:bg-neutral-50")
+              }
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        {status !== "published" && (
+          <span className="text-[11px] text-amber-700">
+            {status === "pending"
+              ? "showing reviews awaiting moderation, not visible to customers"
+              : "including pending and unpublished reviews"}
+          </span>
+        )}
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(420px,5fr)_4fr]">
@@ -469,9 +510,10 @@ export default function ReviewsPage() {
               </div>
 
               <ChatPanel
-                key={`${selected.displayName}|${selected.line}|${range.from}|${range.to}`}
+                key={`${selected.displayName}|${selected.line}|${range.from}|${range.to}|${status}`}
                 sel={selected}
                 range={range}
+                status={status}
               />
 
               <div className="rounded-md border border-neutral-200 bg-white">
