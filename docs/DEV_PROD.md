@@ -42,6 +42,34 @@ Check the host before destructive work: prod is `*.rlwy.net`, local is
   a fresh migrated postgres on every push to main. Enable "Wait for CI" on
   the Railway service so deploys hold until the check passes.
 
+## Backups + restore drill
+
+Railway keeps its own Postgres backups (check status in the dashboard:
+Postgres service, Backups tab — the CLI has no backup command). Belt and
+braces: an off-platform logical dump lives in
+`~/Desktop/Active/Everdries/Skybrook/db-backups/`.
+
+Drill (verified 2026-07-14 — full dump + restore + row-count parity on
+loox_reviews / bonus_awards / fb_ad_spend_daily / stock_snapshots /
+alert_events / product_launches):
+
+```bash
+# Server is Postgres 18; Homebrew's default pg_dump is 14 and refuses.
+# Use libpq's client tools (brew install libpq):
+/opt/homebrew/opt/libpq/bin/pg_dump "$PROD_URL" -Fc \
+  -f ~/Desktop/Active/Everdries/Skybrook/db-backups/skybrook_prod_$(date +%F).dump
+
+# Restore drill into a scratch local DB (the transaction_timeout SET fails
+# against local PG14 — one ignorable error):
+createdb skybrook_restore_drill
+/opt/homebrew/opt/libpq/bin/pg_restore --no-owner --no-privileges \
+  -d skybrook_restore_drill <dump file>
+# spot-check counts vs prod, then: dropdb skybrook_restore_drill
+```
+
+Dump takes ~2 min, ~50 MB. Worth re-running before risky migrations and
+monthly-ish otherwise.
+
 ## Which database for what
 
 | Operation | Database |
