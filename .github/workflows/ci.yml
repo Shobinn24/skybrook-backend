@@ -1,0 +1,49 @@
+# CI gate: typecheck + full test suite on every push/PR to main.
+# Recipe validated locally 2026-07-14: fresh postgres + drizzle migrations +
+# DATABASE_URL + dummy SESSION_SECRET is everything the 1,175-test suite
+# needs (tests/setup.ts blanks the Slack/healthcheck vars itself).
+#
+# To make deploys actually WAIT on this: Railway dashboard -> skybrook-backend
+# service -> Settings -> enable "Wait for CI" (uses GitHub check status).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: skybrook
+          POSTGRES_PASSWORD: skybrook
+          POSTGRES_DB: skybrook_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U skybrook"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://skybrook:skybrook@localhost:5432/skybrook_ci
+      SESSION_SECRET: ci-dummy-session-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+      - name: Migrate CI database
+        run: pnpm db:migrate
+      - name: Tests
+        run: pnpm test

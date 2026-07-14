@@ -17,6 +17,8 @@
 // p2 → #skybrook-digest (data degrades gracefully: URL-map misses fall
 // back to ad-name + geo attribution; spend tables have their own date-
 // based checks that escalate independently if the DB actually goes stale).
+import { db } from "@/lib/db";
+import { supermetricsQueryState } from "@/lib/db/schema";
 import { buildSheetsClient } from "@/lib/sources/sheets";
 import { logger } from "@/lib/logger";
 import type { EvaluatedCheck } from "@/lib/jobs/freshness-check";
@@ -42,6 +44,18 @@ export const MONITORED_SUPERMETRICS_QUERIES: ReadonlyArray<MonitoredSupermetrics
   { label: "applovin_live.applovin", sheetIdEnv: "APPLOVIN_ADS_SHEET_ID", tabName: "AppLovin", maxAgeHours: 48 },
   { label: "applovin_live.fb_geo_spend", sheetIdEnv: "APPLOVIN_ADS_SHEET_ID", tabName: "FB Geo Spend", maxAgeHours: 48 },
   { label: "applovin_live.fb_ad_url_map", sheetIdEnv: "APPLOVIN_ADS_SHEET_ID", tabName: "FB Ad URL Map", maxAgeHours: 48 },
+  // Ad-spend sheet per-product tabs (added 2026-07-14 — these feed the
+  // ad_spend_daily tables but had no query-level coverage; a silent-skip
+  // there looked identical to "no spend yet"). Same tab list as
+  // AD_SPEND_TABS in the ingest.
+  { label: "ad_spend.men", sheetIdEnv: "AD_SPEND_SHEET_ID", tabName: "Men", maxAgeHours: 48 },
+  { label: "ad_spend.shapewear", sheetIdEnv: "AD_SPEND_SHEET_ID", tabName: "Shapewear", maxAgeHours: 48 },
+  { label: "ad_spend.superhw", sheetIdEnv: "AD_SPEND_SHEET_ID", tabName: "SuperHW", maxAgeHours: 48 },
+  { label: "ad_spend.hrs", sheetIdEnv: "AD_SPEND_SHEET_ID", tabName: "HRS", maxAgeHours: 48 },
+  { label: "ad_spend.men_al", sheetIdEnv: "AD_SPEND_SHEET_ID", tabName: "Men AL", maxAgeHours: 48 },
+  { label: "ad_spend.shapewear_al", sheetIdEnv: "AD_SPEND_SHEET_ID", tabName: "Shapewear AL", maxAgeHours: 48 },
+  { label: "ad_spend.super_hw_al", sheetIdEnv: "AD_SPEND_SHEET_ID", tabName: "Super HW AL", maxAgeHours: 48 },
+  { label: "ad_spend.hrs_al", sheetIdEnv: "AD_SPEND_SHEET_ID", tabName: "HRS AL", maxAgeHours: 48 },
 ];
 
 const SHEETS_SERIAL_EPOCH_MS = Date.UTC(1899, 11, 30);
@@ -198,5 +212,38 @@ export async function evaluateSupermetricsQueryFreshness(opts?: {
       }
     }
   }
+
+  // Persist last-seen state so /api/health (DB-only, no Sheets budget) can
+  // answer "did Supermetrics run, and when?" on demand. Best-effort — a DB
+  // hiccup here must not fail the sweep the checks are for.
+  try {
+    for (const c of checks) {
+      const lastRefreshed =
+        typeof c.fields.lastRefreshed === "string" ? new Date(c.fields.lastRefreshed) : null;
+      await db
+        .insert(supermetricsQueryState)
+        .values({
+          label: String(c.fields.label),
+          tabName: String(c.fields.tabName),
+          lastRefreshedAt: lastRefreshed,
+          status: c.status,
+          checkedAt: new Date(nowMs),
+        })
+        .onConflictDoUpdate({
+          target: supermetricsQueryState.label,
+          set: {
+            tabName: String(c.fields.tabName),
+            lastRefreshedAt: lastRefreshed,
+            status: c.status,
+            checkedAt: new Date(nowMs),
+          },
+        });
+    }
+  } catch (e) {
+    logger.warn("freshness.supermetrics_queries.state_persist_failed", {
+      error: e instanceof Error ? e.message.slice(0, 200) : String(e),
+    });
+  }
+
   return checks;
 }

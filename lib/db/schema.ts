@@ -919,6 +919,38 @@ export const looxReviews = pgTable(
   ],
 );
 
+// Last-seen state of every backend-feeding Supermetrics query, upserted by
+// the cron's feeder-query freshness sweep (supermetrics-query-freshness.ts).
+// Exists so /api/health — which is DB-only by design (pinged every minute;
+// no Sheets API budget) — can answer "did Supermetrics actually run, and
+// when?" on demand instead of only when a query trips the 48h staleness
+// alert. This closes the 2026-07-14 diagnostic gap where fb_ad_spend data
+// sat a day stale and the only option was to wait and see.
+export const supermetricsQueryState = pgTable("supermetrics_query_state", {
+  label: text("label").primaryKey(),
+  tabName: text("tab_name").notNull(),
+  lastRefreshedAt: timestamp("last_refreshed_at", { withTimezone: true }),
+  status: text("status").notNull(), // 'pass' | 'fail'
+  checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+});
+
+// Acknowledged health checks: a failing check whose name matches an active
+// row here still reports status=fail in /api/health but no longer flips
+// `overall` (and therefore no longer 503s the endpoint). This keeps "red"
+// meaning NEW problems — known items (a vendor queue, a long-running data
+// gap) stay visible in the payload without training everyone to ignore a
+// permanently red overall. `pattern` is an exact check name, or a prefix
+// when it ends with '*' (e.g. 'fb_url_unmapped.*'); sources ack as
+// 'source:<name>'. `expiresAt` auto-unacks so nothing is muted forever by
+// accident. Manage with scripts/ack_check.ts.
+export const acknowledgedChecks = pgTable("acknowledged_checks", {
+  pattern: text("pattern").primaryKey(),
+  reason: text("reason").notNull(),
+  ackedBy: text("acked_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+});
+
 // One row per Shopify product handle seen in the review data: the display
 // name Scott sees in the KPI table, which line it belongs to (std | heavy),
 // and whether it's included in the table at all. Seeded automatically by

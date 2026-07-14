@@ -253,6 +253,20 @@
       "when": 1783975535020,
       "tag": "0035_loox_reviews_v2",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1784052917428,
+      "tag": "0036_acknowledged_checks",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1784054059861,
+      "tag": "0037_supermetrics_query_state",
+      "breakpoints": true
     }
   ]
 }

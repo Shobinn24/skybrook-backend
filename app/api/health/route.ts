@@ -14,9 +14,10 @@
 import { NextResponse } from "next/server";
 import { desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { alertEvents, dataPulls } from "@/lib/db/schema";
+import { alertEvents, dataPulls, supermetricsQueryState } from "@/lib/db/schema";
 import { evaluateFreshness } from "@/lib/jobs/freshness-check";
 import { checkAuthRoundTrip } from "@/lib/jobs/auth-roundtrip-check";
+import { ackFor, loadAcks } from "@/lib/jobs/health-acks";
 import { affectedLabel } from "@/lib/jobs/lineage";
 
 export const runtime = "nodejs";
@@ -115,18 +116,46 @@ export async function GET() {
   const { asOfDate, threshold, checks } = await evaluateFreshness();
   const bridge = await checkWhatsAppBridge();
   const auth = await checkAuthRoundTrip();
+  const acks = await loadAcks();
+  const now = new Date();
 
   const [{ count: openAlerts = 0 } = { count: 0 }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(alertEvents)
     .where(isNull(alertEvents.resolvedAt));
 
-  const tableFails = checks.filter((c) => c.status === "fail").length;
-  const sourceFails = sources.filter((s) => s.lastStatus === "failed").length;
+  // Upstream refresh visibility: last-seen state of every backend-feeding
+  // Supermetrics query, persisted by the cron sweep. Answers "is stale data
+  // OUR ingest, THEIR refresh, or just platform-side settlement lag?"
+  // without waiting for the 48h staleness alert.
+  const smRows = await db.select().from(supermetricsQueryState);
+  const supermetricsQueries = smRows
+    .map((r) => ({
+      label: r.label,
+      tabName: r.tabName,
+      lastRefreshedAt: r.lastRefreshedAt?.toISOString() ?? null,
+      ageHours: r.lastRefreshedAt
+        ? Math.round(((now.getTime() - r.lastRefreshedAt.getTime()) / 3_600_000) * 10) / 10
+        : null,
+      status: r.status,
+      checkedAt: r.checkedAt.toISOString(),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  // Acknowledged failures stay visible (status stays "fail", flagged
+  // acknowledged) but stop flipping `overall` — red means NEW problems.
+  const checkAck = (name: string) => ackFor(name, acks, now);
+  const tableFails = checks.filter(
+    (c) => c.status === "fail" && !checkAck(c.name),
+  ).length;
+  const sourceFails = sources.filter(
+    (s) => s.lastStatus === "failed" && !checkAck(`source:${s.source}`),
+  ).length;
   // auth_round_trip "fail" is page-worthy (login gate broken = every page
   // unusable or unprotected — the 2026-07-01 outage class), so it flips
   // overall like a data-freshness fail. Its "warn" (probe couldn't run)
-  // does not.
+  // does not. Deliberately NOT ackable — there is no acceptable "known
+  // broken" state for the login gate.
   const authFails = auth.status === "fail" ? 1 : 0;
   const overall: "pass" | "fail" =
     tableFails === 0 && sourceFails === 0 && authFails === 0 ? "pass" : "fail";
@@ -137,19 +166,34 @@ export async function GET() {
     asOfDate,
     threshold,
     openAlerts,
-    sources,
-    tables: [
-      ...checks.map((c) => ({
-        name: c.name,
-        status: c.status as "pass" | "fail" | "warn",
-        maxDate: c.maxDate as string | null,
-        threshold: c.threshold as string | null,
-        detail: c.detail,
-        // Lineage: which dashboard pages render data derived from this
-        // check's subject, so an operator reading /health knows the blast
-        // radius without tracing the dependency by hand.
-        affectedDashboards: affectedLabel(c.name),
+    supermetricsQueries,
+    acknowledged: acks
+      .filter((a) => !a.expiresAt || a.expiresAt.getTime() > now.getTime())
+      .map((a) => ({
+        pattern: a.pattern,
+        reason: a.reason,
+        expiresAt: a.expiresAt?.toISOString() ?? null,
       })),
+    sources: sources.map((s) => {
+      const ack = s.lastStatus === "failed" ? checkAck(`source:${s.source}`) : null;
+      return ack ? { ...s, acknowledged: true, ackReason: ack.reason } : s;
+    }),
+    tables: [
+      ...checks.map((c) => {
+        const ack = c.status === "fail" ? checkAck(c.name) : null;
+        return {
+          name: c.name,
+          status: c.status as "pass" | "fail" | "warn",
+          maxDate: c.maxDate as string | null,
+          threshold: c.threshold as string | null,
+          detail: c.detail,
+          ...(ack ? { acknowledged: true, ackReason: ack.reason } : {}),
+          // Lineage: which dashboard pages render data derived from this
+          // check's subject, so an operator reading /health knows the blast
+          // radius without tracing the dependency by hand.
+          affectedDashboards: affectedLabel(c.name),
+        };
+      }),
       // Bonus-notification delivery bridge. "warn" status never affects
       // `overall` (only "fail" does), so a dropped session is visible in
       // the daily check but does not 503 the endpoint.

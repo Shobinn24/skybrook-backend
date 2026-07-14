@@ -289,6 +289,20 @@ export async function POST(req: Request) {
     logger.error("loox.cron.failed", { error: e instanceof Error ? e.message : String(e) });
   }
 
+  // Morning ops digest — the automated A-to-M checklist sweep, one Slack
+  // message to #skybrook-digest. Scheduled runs only (poller triggers pass
+  // freshness=skip and skip this too): a digest is a daily rhythm, not a
+  // per-sync event. Best-effort.
+  let opsDigest: { posted: boolean; attention: number } | null = null;
+  if (!skipFreshness) {
+    try {
+      const { runOpsDigest } = await import("@/lib/jobs/ops-digest");
+      opsDigest = await runOpsDigest();
+    } catch (e) {
+      logger.error("ops_digest.failed", { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   // Dead-man ping to healthchecks.io — confirms the cron itself ran, no
   // matter what the freshness sweep found. Substantive failures
   // (per-source / per-table / skew) fire their own Slack alerts above.
@@ -326,6 +340,8 @@ export async function POST(req: Request) {
     freshnessAlertsFired: freshness?.alertsFired ?? null,
     freshnessAlertsResolved: freshness?.alertsResolved ?? null,
     looxInserted: loox?.configured ? loox.inserted : null,
+    opsDigestPosted: opsDigest?.posted ?? null,
+    opsDigestAttention: opsDigest?.attention ?? null,
   });
   return NextResponse.json({
     ok: true,

@@ -28,14 +28,35 @@ async function resolveAccessFromCookies(): Promise<{
   };
 }
 
+// Unmissable stripe when a dev server is pointed at a non-local database.
+// Local dev deliberately runs against prod data for realistic pages, which
+// is exactly why it must never be mistaken for a scratch copy — writes and
+// mutations here hit the real thing.
+function devDataBanner(): React.ReactNode {
+  const isDev =
+    process.env.NODE_ENV === "development" || process.env.SKYBROOK_DEV_BYPASS === "1";
+  if (!isDev) return null;
+  const dbUrl = process.env.DATABASE_URL ?? "";
+  const remote = dbUrl.length > 0 && !/@(localhost|127\.0\.0\.1)[:/]/.test(dbUrl);
+  if (!remote) return null;
+  return (
+    <div className="bg-red-600 px-4 py-1 text-center text-xs font-semibold text-white">
+      DEV SERVER ON PRODUCTION DATA — edits and mutations hit the live database
+    </div>
+  );
+}
+
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { role, showCashflow, fbAdsOnly } = await resolveAccessFromCookies();
   return (
-    <div className="flex min-h-screen">
-      <LeftNav role={role} showCashflow={showCashflow} fbAdsOnly={fbAdsOnly} />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <TopBarStatus />
-        <main className="flex-1 p-6">{children}</main>
+    <div className="flex min-h-screen flex-col">
+      {devDataBanner()}
+      <div className="flex flex-1">
+        <LeftNav role={role} showCashflow={showCashflow} fbAdsOnly={fbAdsOnly} />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <TopBarStatus />
+          <main className="flex-1 p-6">{children}</main>
+        </div>
       </div>
     </div>
   );

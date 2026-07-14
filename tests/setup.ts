@@ -12,3 +12,9 @@ process.env.SLACK_WEBHOOK_DIGEST_URL = "";
 process.env.SLACK_WEBHOOK_DEBUG_URL = "";
 process.env.SLACK_MENTION_USER_IDS = "";
 process.env.HEALTHCHECK_PING_URL = "";
+
+// The local .env also carries the dev-server flags; without clearing them
+// the alerting dev-guard (alertingSuppressed) would treat the test run as
+// a dev session and silently skip every postAlert path under test.
+delete process.env.SKYBROOK_DEV_BYPASS;
+delete process.env.SKYBROOK_ALERTS_FORCE;

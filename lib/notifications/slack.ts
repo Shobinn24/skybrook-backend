@@ -38,7 +38,20 @@ export type AlertInput = {
 
 export type PostAlertResult =
   | { fired: true; alertId: string }
-  | { fired: false; reason: "deduped" | "no_webhook" | "post_failed" };
+  | { fired: false; reason: "deduped" | "no_webhook" | "post_failed" | "dev_suppressed" };
+
+// Local dev runs with the PROD .env (real webhooks, often the prod DB), so
+// without this guard a dev-session error pages the real alerts channel and
+// writes alert_events rows into prod — happened 2026-07-13 when a dev
+// server hit a not-yet-migrated table and fired an open P1. Alerting is
+// suppressed whenever the process looks like dev (next dev, or the dev
+// bypass the local server script sets); set SKYBROOK_ALERTS_FORCE=1 to
+// deliberately exercise real alerts from dev. Tests run as NODE_ENV=test
+// and are NOT suppressed — tests/setup.ts blanks the webhook URLs instead.
+export function alertingSuppressed(): boolean {
+  if (process.env.SKYBROOK_ALERTS_FORCE === "1") return false;
+  return process.env.NODE_ENV === "development" || process.env.SKYBROOK_DEV_BYPASS === "1";
+}
 
 const SEVERITY_EMOJI: Record<AlertSeverity, string> = {
   p0: "🔴",
@@ -172,6 +185,15 @@ export async function postAlert(
   const now = opts?.now ?? (() => new Date());
   const fetcher = opts?.fetcher ?? fetch;
 
+  if (alertingSuppressed()) {
+    logger.info("slack.dev_suppressed", {
+      severity: input.severity,
+      dedupKey: input.dedupKey,
+      title: input.title,
+    });
+    return { fired: false, reason: "dev_suppressed" };
+  }
+
   const channel = input.channel ?? channelForSeverity(input.severity);
   const webhookUrl = webhookEnvForChannel(channel);
   if (!webhookUrl) {
@@ -211,6 +233,29 @@ export async function postAlert(
   return { fired: true, alertId: row.id };
 }
 
+// Plain informational post to the digest channel — no alert_events row, no
+// dedup, so it can repeat daily (postAlert would suppress a repeat while
+// "open"). Used by the morning ops digest.
+export async function postDigestMessage(
+  text: string,
+  opts?: { fetcher?: typeof fetch },
+): Promise<boolean> {
+  if (alertingSuppressed()) {
+    logger.info("slack.dev_suppressed", { action: "digest" });
+    return false;
+  }
+  const url = process.env.SLACK_WEBHOOK_DIGEST_URL;
+  if (!url) {
+    logger.warn("slack.no_webhook", { channel: "digest", dedupKey: "ops_digest" });
+    return false;
+  }
+  return postToWebhook(
+    url,
+    { text: text.slice(0, 150), blocks: [{ type: "section", text: { type: "mrkdwn", text } }] },
+    opts?.fetcher ?? fetch,
+  );
+}
+
 export async function resolveAlert(
   dedupKey: string,
   opts?: { now?: () => Date; fetcher?: typeof fetch; resolveMessage?: string },
@@ -218,6 +263,11 @@ export async function resolveAlert(
   const now = opts?.now ?? (() => new Date());
   const fetcher = opts?.fetcher ?? fetch;
   const resolvedAt = now();
+
+  if (alertingSuppressed()) {
+    logger.info("slack.dev_suppressed", { dedupKey, action: "resolve" });
+    return { resolved: 0 };
+  }
 
   // Find any open alerts with this key (typically 0 or 1 — the unique
   // index enforces at-most-one open per key — but tolerate >1 defensively).
