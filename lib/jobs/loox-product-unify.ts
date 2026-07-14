@@ -21,7 +21,10 @@ import { logger } from "@/lib/logger";
 // re-included the moment they reach 3). Pinned rows are never touched, so
 // hand-curated merges and exclusions survive every sync.
 
-const GIFT_PATTERN = /mystery|free gift|\bgift\b/i;
+// Gift/mystery listings, plus display names that are nothing but a pack
+// size ("5-Pack" — a junk listing whose title had no product name left
+// after suffix folding).
+const GIFT_PATTERN = /mystery|free gift|\bgift\b|^\s*\d+[\s-]?packs?\s*$/i;
 const MIN_GROUP_REVIEWS = 3;
 
 export type UnifyResult = {
