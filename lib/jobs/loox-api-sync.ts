@@ -169,7 +169,11 @@ async function syncStore(store: LooxStoreConfig, full: boolean) {
         result.skipped += values.length - inserted.length;
 
         // Rows that already exist for THIS store may have drifted in Loox
-        // (moderation status, edited text). Guarded update, no-op when equal.
+        // (moderation status, edited text) or in Shopify (product renamed —
+        // the API always returns the CURRENT product name/handle, and the
+        // unify pass derives each group's canonical name from its newest
+        // snapshot, so refreshing these here makes a ?full=1 re-walk a
+        // complete rename-refresher). Guarded update, no-op when equal.
         const freshIds = new Set(inserted.map((r) => r.externalId));
         for (const v of values) {
           if (freshIds.has(v.externalId)) continue;
@@ -180,6 +184,9 @@ async function syncStore(store: LooxStoreConfig, full: boolean) {
               reviewText: v.reviewText,
               verified: v.verified,
               status: v.status,
+              productTitle: v.productTitle,
+              productHandle: v.productHandle,
+              productId: v.productId,
             })
             .where(
               and(
@@ -188,7 +195,10 @@ async function syncStore(store: LooxStoreConfig, full: boolean) {
                 sql`(${looxReviews.status} is distinct from ${v.status}
                   or ${looxReviews.rating} is distinct from ${v.rating}
                   or ${looxReviews.reviewText} is distinct from ${v.reviewText}
-                  or ${looxReviews.verified} is distinct from ${v.verified})`,
+                  or ${looxReviews.verified} is distinct from ${v.verified}
+                  or ${looxReviews.productTitle} is distinct from ${v.productTitle}
+                  or ${looxReviews.productHandle} is distinct from ${v.productHandle}
+                  or ${looxReviews.productId} is distinct from ${v.productId})`,
               ),
             )
             .returning({ id: looxReviews.id });
