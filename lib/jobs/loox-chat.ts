@@ -99,6 +99,7 @@ export async function runLooxChat(input: {
   line?: "std" | "heavy";
   mode: LooxChatMode;
   status?: "published" | "pending" | "all";
+  buyers?: "all" | "verified";
   messages: { role: "user" | "assistant"; content: string }[];
   from?: Date;
   to?: Date;
@@ -118,6 +119,7 @@ export async function runLooxChat(input: {
   if (status === "published")
     conds.push(or(eq(looxReviews.status, "published"), sql`${looxReviews.status} is null`)!);
   else if (status === "pending") conds.push(eq(looxReviews.status, "pending"));
+  if (input.buyers === "verified") conds.push(eq(looxReviews.purchaseVerified, "verified"));
   // ISO strings, not Date objects: inside a raw sql`` fragment the driver
   // can't infer the param type and refuses to serialize a Date.
   if (input.from)

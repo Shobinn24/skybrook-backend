@@ -50,13 +50,15 @@ export function looxDedupKey(r: LooxApiReview): string {
 
 // "NEW: Leakproof High Waisted (Heavy Absorbency Bundles)" -> display name
 // the KPI table shows. Every trailing parenthetical is a listing variant of
-// the same garment (bundles, packs, colors, heavy absorbency), so they all
-// fold into the base product name — the Std/Heavy split lives in `line`,
-// not the name. The mapping row stays editable in the DB.
+// the same garment (bundles, packs, colors, heavy absorbency), and so are
+// bare pack-size suffixes ("... 10-Pack" — Scott 2026-07-14: fold those
+// into the base product too). The Std/Heavy split lives in `line`, not the
+// name. The mapping row stays editable in the DB.
 export function displayNameForProduct(name: string): string {
   const stripped = name
     .replace(/^new:\s*/i, "")
     .replace(/\s*\([^)]*\)\s*$/, "")
+    .replace(/[\s-]*\d+[\s-]?packs?(?:[\s-]*\d+)?\s*$/i, "")
     .trim();
   return stripped.length > 0 ? stripped : name.trim();
 }
@@ -93,6 +95,16 @@ export async function runLooxApiSync(opts?: { full?: boolean }): Promise<LooxApi
       break;
     }
   }
+
+  // Rename auto-merge + noise rules over the product mapping. Best-effort:
+  // a unify hiccup must not fail the sync that feeds it.
+  try {
+    const { unifyLooxProducts } = await import("@/lib/jobs/loox-product-unify");
+    await unifyLooxProducts();
+  } catch (e) {
+    logger.error("loox.unify.failed", { error: e instanceof Error ? e.message : String(e) });
+  }
+
   logger.info("loox.api_sync.done", { stores: results });
   return { configured: true, stores: results };
 }

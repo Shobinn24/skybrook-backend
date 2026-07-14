@@ -908,6 +908,13 @@ export const looxReviews = pgTable(
     status: text("status"),
     rawText: text("raw_text"),
     parsed: boolean("parsed").notNull().default(false),
+    // Did this reviewer actually buy this product? Stamped by
+    // verifyReviewPurchases against order_emails:
+    //   'verified'   — email ordered this product family on/before review
+    //   'unverified' — order coverage exists for the period, no match
+    //   'unknown'    — review predates order coverage, or no email
+    // Null = not yet evaluated.
+    purchaseVerified: text("purchase_verified"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -964,8 +971,36 @@ export const looxProducts = pgTable("loox_products", {
   displayName: text("display_name").notNull(),
   line: text("line"), // 'std' | 'heavy' | null (unclassified)
   include: boolean("include").notNull().default(true),
+  // Manually curated row: the post-sync unify pass (rename auto-merge +
+  // noise rules) never touches pinned rows, so a hand-set merge or
+  // include decision survives every future sync.
+  pinned: boolean("pinned").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// One row per (store, buyer email, Shopify product id, order date) pulled
+// from the Shopify Admin API — the purchase side of review verification
+// (Scott 2026-07-14: "cross reference whether a customer has actually
+// bought the specific product they're leaving a review on"; pilot on the
+// cotton launch found 0 of 5 reviewers had bought it). Standard
+// read_orders scope reaches ~60 days of history, so coverage is a rolling
+// window; verifyReviewPurchases treats reviews older than the window's
+// start as 'unknown' rather than 'unverified'.
+export const orderEmails = pgTable(
+  "order_emails",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    store: text("store").notNull(), // 'main' | 'intl' (matches loox_reviews.store)
+    email: text("email").notNull(), // lowercased
+    productId: text("product_id").notNull(),
+    orderDate: date("order_date").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("order_emails_grain_uq").on(t.store, t.email, t.productId, t.orderDate),
+    index("order_emails_email_idx").on(t.email),
+  ],
+);
 
 // One row per (product, analysis run): Claude's read of that product's
 // reviews — summary, themes, complaints, improvement ideas — plus the

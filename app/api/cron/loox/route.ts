@@ -29,7 +29,17 @@ export async function POST(req: Request) {
   const full = new URL(req.url).searchParams.get("full") === "1";
   const apiSync = await runLooxApiSync({ full });
   const ingest = await runLooxIngest();
-  return NextResponse.json({ ok: true, apiSync, ingest });
+  // Purchase verification: pull fresh order emails from both Shopify
+  // stores, then restamp every review's verified/unverified/unknown flag.
+  // Best-effort — a Shopify hiccup must not fail the review sync.
+  let purchase = null;
+  try {
+    const { runPurchaseVerification } = await import("@/lib/jobs/shopify-order-emails");
+    purchase = await runPurchaseVerification();
+  } catch (e) {
+    console.error("purchase verification failed", e);
+  }
+  return NextResponse.json({ ok: true, apiSync, ingest, purchase });
 }
 
 // Railway native cron invokes via GET.

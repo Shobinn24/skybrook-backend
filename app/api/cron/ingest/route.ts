@@ -285,6 +285,9 @@ export async function POST(req: Request) {
       inserted:
         apiSync.stores.reduce((acc, s) => acc + s.inserted, 0) + looxIngest.inserted,
     };
+    // Daily purchase-verification restamp (order-email pull + review flags).
+    const { runPurchaseVerification } = await import("@/lib/jobs/shopify-order-emails");
+    await runPurchaseVerification();
   } catch (e) {
     logger.error("loox.cron.failed", { error: e instanceof Error ? e.message : String(e) });
   }

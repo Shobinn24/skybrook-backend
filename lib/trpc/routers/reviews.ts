@@ -25,6 +25,11 @@ const dateRange = z.object({
   // `pending` previews reviews awaiting moderation (Scott 2026-07-14);
   // `all` additionally includes unpublished.
   status: z.enum(["published", "pending", "all"]).default("published"),
+  // Purchase verification filter (Scott 2026-07-14): `verified` narrows to
+  // reviewers whose email actually ordered this product family before the
+  // review. Order coverage is a rolling ~60 days, so older reviews are
+  // 'unknown' and only show under `all`.
+  buyers: z.enum(["all", "verified"]).default("all"),
 });
 
 export type LooxStatusFilter = z.infer<typeof dateRange>["status"];
@@ -43,12 +48,13 @@ const groupName = sql<string>`coalesce(${looxProducts.displayName}, ${looxReview
 const groupLine = sql<string>`coalesce(${looxProducts.line}, 'std')`;
 const included = sql`coalesce(${looxProducts.include}, true)`;
 
-function rangeConds(input: { from?: string; to?: string }) {
+function rangeConds(input: { from?: string; to?: string; buyers?: "all" | "verified" }) {
   // ISO strings, not Date objects: inside a raw sql`` fragment the driver
   // can't infer the param type and refuses to serialize a Date.
   const conds = [];
   if (input.from) conds.push(gte(reviewedAt, `${input.from}T00:00:00.000Z`));
   if (input.to) conds.push(lte(reviewedAt, `${input.to}T23:59:59.999Z`));
+  if (input.buyers === "verified") conds.push(eq(looxReviews.purchaseVerified, "verified"));
   return conds;
 }
 
@@ -119,6 +125,7 @@ export const reviewsRouter = router({
           reviewerName: looxReviews.reviewerName,
           reviewText: looxReviews.reviewText,
           verified: looxReviews.verified,
+          purchaseVerified: looxReviews.purchaseVerified,
           store: looxReviews.store,
           source: looxReviews.source,
         })
@@ -170,6 +177,7 @@ export const reviewsRouter = router({
         line: input.line,
         mode: input.mode,
         status: input.status,
+        buyers: input.buyers,
         messages: input.messages,
         from: input.from ? new Date(`${input.from}T00:00:00.000Z`) : undefined,
         to: input.to ? new Date(`${input.to}T23:59:59.999Z`) : undefined,
@@ -196,10 +204,13 @@ export const reviewsRouter = router({
       .limit(50),
   ),
 
-  // Manual "check now" — API sync on both stores, then the inbox fallback.
+  // Manual "check now" — API sync on both stores, the inbox fallback, then
+  // a purchase-verification restamp so fresh reviews get their flag.
   refresh: opsProcedure.mutation(async () => {
     const apiSync = await runLooxApiSync();
     const ingest = await runLooxIngest();
-    return { apiSync, ingest };
+    const { runPurchaseVerification } = await import("@/lib/jobs/shopify-order-emails");
+    const purchase = await runPurchaseVerification().catch(() => null);
+    return { apiSync, ingest, purchase };
   }),
 });

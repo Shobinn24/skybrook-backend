@@ -11,6 +11,7 @@ import { trpc } from "@/lib/trpc/client";
 
 type Range = { from?: string; to?: string };
 type StatusFilter = "published" | "pending" | "all";
+type BuyersFilter = "all" | "verified";
 
 const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "published", label: "Published" },
@@ -151,7 +152,17 @@ function TotalRow({ label, products }: { label: string; products: OverviewProduc
   );
 }
 
-function ChatPanel({ sel, range, status }: { sel: Selection; range: Range; status: StatusFilter }) {
+function ChatPanel({
+  sel,
+  range,
+  status,
+  buyers,
+}: {
+  sel: Selection;
+  range: Range;
+  status: StatusFilter;
+  buyers: BuyersFilter;
+}) {
   const [mode, setMode] = useState<"marketing" | "product">("marketing");
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
@@ -184,6 +195,7 @@ function ChatPanel({ sel, range, status }: { sel: Selection; range: Range; statu
       line: sel.line,
       mode,
       status,
+      buyers,
       messages: next,
       from: range.from,
       to: range.to,
@@ -293,6 +305,7 @@ export default function ReviewsPage() {
   const [preset, setPreset] = useState<number | null>(null);
   const [custom, setCustom] = useState<Range>({});
   const [status, setStatus] = useState<StatusFilter>("published");
+  const [buyers, setBuyers] = useState<BuyersFilter>("all");
   const [page, setPage] = useState(1);
 
   const range = useMemo<Range>(() => {
@@ -304,11 +317,11 @@ export default function ReviewsPage() {
 
   const utils = trpc.useUtils();
   const overview = trpc.reviews.overview.useQuery(
-    { ...range, status },
+    { ...range, status, buyers },
     { refetchOnWindowFocus: false },
   );
   const product = trpc.reviews.product.useQuery(
-    { displayName: selected?.displayName ?? "", line: selected?.line ?? "std", page, status, ...range },
+    { displayName: selected?.displayName ?? "", line: selected?.line ?? "std", page, status, buyers, ...range },
     { enabled: !!selected, refetchOnWindowFocus: false },
   );
   const refresh = trpc.reviews.refresh.useMutation({
@@ -431,11 +444,43 @@ export default function ReviewsPage() {
             </button>
           ))}
         </div>
+        <span className="ml-2 h-4 w-px bg-neutral-200" />
+        <div className="flex overflow-hidden rounded-md border border-neutral-300">
+          {(
+            [
+              { value: "all", label: "All reviewers" },
+              { value: "verified", label: "Verified buyers" },
+            ] as const
+          ).map((b) => (
+            <button
+              key={b.value}
+              onClick={() => {
+                setBuyers(b.value);
+                setPage(1);
+              }}
+              className={
+                "px-2.5 py-1 text-xs " +
+                (buyers === b.value
+                  ? b.value === "verified"
+                    ? "bg-emerald-600 text-white"
+                    : "bg-neutral-800 text-white"
+                  : "bg-white text-neutral-600 hover:bg-neutral-50")
+              }
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
         {status !== "published" && (
           <span className="text-[11px] text-amber-700">
             {status === "pending"
               ? "showing reviews awaiting moderation, not visible to customers"
               : "including pending and unpublished reviews"}
+          </span>
+        )}
+        {buyers === "verified" && (
+          <span className="text-[11px] text-emerald-700">
+            only reviewers whose email actually ordered this product (order data covers ~60 days)
           </span>
         )}
       </div>
@@ -510,10 +555,11 @@ export default function ReviewsPage() {
               </div>
 
               <ChatPanel
-                key={`${selected.displayName}|${selected.line}|${range.from}|${range.to}|${status}`}
+                key={`${selected.displayName}|${selected.line}|${range.from}|${range.to}|${status}|${buyers}`}
                 sel={selected}
                 range={range}
                 status={status}
+                buyers={buyers}
               />
 
               <div className="rounded-md border border-neutral-200 bg-white">
@@ -525,9 +571,14 @@ export default function ReviewsPage() {
                         <span className="ml-2 font-medium text-neutral-700">
                           {r.reviewerName ?? "anonymous"}
                         </span>
-                        {r.verified && (
+                        {r.purchaseVerified === "verified" && (
                           <span className="ml-2 rounded bg-emerald-50 px-1 py-0.5 text-[10px] text-emerald-700">
-                            verified
+                            ✓ bought it
+                          </span>
+                        )}
+                        {r.purchaseVerified === "unverified" && (
+                          <span className="ml-2 rounded bg-red-50 px-1 py-0.5 text-[10px] text-red-700">
+                            no matching order
                           </span>
                         )}
                       </span>

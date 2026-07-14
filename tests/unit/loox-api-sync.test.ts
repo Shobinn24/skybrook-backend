@@ -43,6 +43,21 @@ describe("displayNameForProduct", () => {
     expect(displayNameForProduct("Leakproof Boyshorts")).toBe("Leakproof Boyshorts");
   });
 
+  it("folds bare pack-size suffixes too (Scott 2026-07-14)", () => {
+    expect(displayNameForProduct("Comfort Plus Leakproof Underwear 10-Pack")).toBe(
+      "Comfort Plus Leakproof Underwear",
+    );
+    expect(displayNameForProduct("Comfort Plus Leakproof Underwear 5 Pack")).toBe(
+      "Comfort Plus Leakproof Underwear",
+    );
+    // sheet-style dedup suffix after the pack ("10-Pack-1")
+    expect(displayNameForProduct("Leakproof High Waisted Comfort Plus 10-Pack-1")).toBe(
+      "Leakproof High Waisted Comfort Plus",
+    );
+    // a number that is part of the product name must survive
+    expect(displayNameForProduct("Style 9055")).toBe("Style 9055");
+  });
+
   it("never returns an empty name", () => {
     expect(displayNameForProduct("(Bundles)")).toBe("(Bundles)");
   });
