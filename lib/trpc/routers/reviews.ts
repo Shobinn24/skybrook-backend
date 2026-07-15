@@ -21,14 +21,13 @@ const dateRange = z.object({
   // YYYY-MM-DD, inclusive; `to` is treated as end-of-day UTC.
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  // Loox moderation filter. Default matches what Loox shows customers;
-  // `pending` previews reviews awaiting moderation (Scott 2026-07-14);
-  // `all` additionally includes unpublished.
-  status: z.enum(["published", "pending", "all"]).default("published"),
+  // Loox moderation filter. Per Scott 2026-07-15 the tool shows ALL
+  // reviews (the UI no longer exposes this filter; enum kept for API compat).
+  status: z.enum(["published", "pending", "all"]).default("all"),
   // Purchase verification filter (Scott 2026-07-14): `verified` narrows to
   // reviewers whose email actually ordered this product family before the
-  // review. Order coverage is a rolling ~60 days, so older reviews are
-  // 'unknown' and only show under `all`.
+  // review. Order coverage is full store history since the read_all_orders
+  // grant (2026-07-15).
   buyers: z.enum(["all", "verified"]).default("all"),
 });
 

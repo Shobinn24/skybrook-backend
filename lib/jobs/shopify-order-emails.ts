@@ -8,9 +8,10 @@ import { logger } from "@/lib/logger";
 //
 // 1. syncOrderEmails — pulls (buyer email, product id, order date) rows
 //    from both Shopify stores into order_emails. Incremental from the
-//    newest stored order date minus a 2-day overlap; the first run walks
-//    the full ~60 days the standard read_orders scope allows. Deeper
-//    history needs a read_all_orders grant from Shopify.
+//    newest stored order date minus a 2-day overlap. read_all_orders was
+//    granted 2026-07-15, so a fresh/full walk covers complete store
+//    history back to the earliest review (2022-05); pass
+//    { fullHistory: true } to force that walk.
 //
 // 2. verifyReviewPurchases — stamps loox_reviews.purchase_verified:
 //    'verified' when the reviewer's email ordered the SAME PRODUCT FAMILY
@@ -26,6 +27,8 @@ const STORES: Array<{ label: "main" | "intl"; env: string }> = [
   { label: "intl", env: "SHOPIFY_INTL_STORE" },
 ];
 const PAGE_DELAY_MS = 300;
+// Predates the earliest review (2022-05-31); nothing older can verify.
+const FULL_HISTORY_START = "2022-05-01";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 type OrdersPage = {
@@ -47,9 +50,11 @@ export type OrderEmailSyncResult = {
   stores: Array<{ store: string; orders: number; inserted: number; error?: string }>;
 };
 
-export async function syncOrderEmails(): Promise<OrderEmailSyncResult> {
+export async function syncOrderEmails(opts?: { fullHistory?: boolean }): Promise<OrderEmailSyncResult> {
   const results: OrderEmailSyncResult["stores"] = [];
   let anyConfigured = false;
+  // ~250k orders live in full history: the page cap must not truncate it.
+  const maxPages = opts?.fullHistory ? 4000 : 200;
 
   for (const s of STORES) {
     const domain = process.env[s.env]?.trim();
@@ -61,14 +66,14 @@ export async function syncOrderEmails(): Promise<OrderEmailSyncResult> {
         .select({ max: sql<string | null>`max(${orderEmails.orderDate})` })
         .from(orderEmails)
         .where(eq(orderEmails.store, s.label));
-      const from = newest?.max
-        ? new Date(new Date(newest.max).getTime() - 2 * 24 * 3600 * 1000)
-        : new Date(Date.now() - 59 * 24 * 3600 * 1000);
-      const fromStr = from.toISOString().slice(0, 10);
+      const fromStr =
+        opts?.fullHistory || !newest?.max
+          ? FULL_HISTORY_START
+          : new Date(new Date(newest.max).getTime() - 2 * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
       const token = await getShopifyAccessToken(domain);
       let cursor: string | null = null;
-      for (let page = 0; page < 200; page++) {
+      for (let page = 0; page < maxPages; page++) {
         const query = `{ orders(first: 250, query: "created_at:>=${fromStr}"${cursor ? `, after: "${cursor}"` : ""}) {
           pageInfo { hasNextPage endCursor }
           nodes { email createdAt lineItems(first: 20) { nodes { product { id } } } } } }`;
@@ -169,11 +174,11 @@ export async function verifyReviewPurchases(): Promise<VerifyResult> {
 }
 
 // One call for the crons: pull fresh orders, then restamp.
-export async function runPurchaseVerification(): Promise<{
+export async function runPurchaseVerification(opts?: { fullHistory?: boolean }): Promise<{
   sync: OrderEmailSyncResult;
   verify: VerifyResult;
 }> {
-  const syncResult = await syncOrderEmails();
+  const syncResult = await syncOrderEmails(opts);
   const verify = syncResult.configured
     ? await verifyReviewPurchases()
     : { verified: 0, unverified: 0, unknown: 0 };

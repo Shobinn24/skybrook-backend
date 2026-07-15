@@ -13,12 +13,6 @@ type Range = { from?: string; to?: string };
 type StatusFilter = "published" | "pending" | "all";
 type BuyersFilter = "all" | "verified";
 
-const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
-  { value: "published", label: "Published" },
-  { value: "pending", label: "Pending" },
-  { value: "all", label: "All" },
-];
-
 const PRESETS: { label: string; days: number | null }[] = [
   { label: "All time", days: null },
   { label: "30d", days: 30 },
@@ -304,7 +298,8 @@ export default function ReviewsPage() {
   const [selected, setSelected] = useState<Selection | null>(null);
   const [preset, setPreset] = useState<number | null>(null);
   const [custom, setCustom] = useState<Range>({});
-  const [status, setStatus] = useState<StatusFilter>("published");
+  // Per Scott 2026-07-15: no status filter — always every review.
+  const status: StatusFilter = "all";
   const [buyers, setBuyers] = useState<BuyersFilter>("all");
   const [page, setPage] = useState(1);
 
@@ -424,28 +419,6 @@ export default function ReviewsPage() {
         />
         <span className="ml-2 h-4 w-px bg-neutral-200" />
         <div className="flex overflow-hidden rounded-md border border-neutral-300">
-          {STATUS_OPTIONS.map((s) => (
-            <button
-              key={s.value}
-              onClick={() => {
-                setStatus(s.value);
-                setPage(1);
-              }}
-              className={
-                "px-2.5 py-1 text-xs " +
-                (status === s.value
-                  ? s.value === "pending"
-                    ? "bg-amber-500 text-white"
-                    : "bg-neutral-800 text-white"
-                  : "bg-white text-neutral-600 hover:bg-neutral-50")
-              }
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-        <span className="ml-2 h-4 w-px bg-neutral-200" />
-        <div className="flex overflow-hidden rounded-md border border-neutral-300">
           {(
             [
               { value: "all", label: "All reviewers" },
@@ -471,16 +444,9 @@ export default function ReviewsPage() {
             </button>
           ))}
         </div>
-        {status !== "published" && (
-          <span className="text-[11px] text-amber-700">
-            {status === "pending"
-              ? "showing reviews awaiting moderation, not visible to customers"
-              : "including pending and unpublished reviews"}
-          </span>
-        )}
         {buyers === "verified" && (
           <span className="text-[11px] text-emerald-700">
-            only reviewers whose email actually ordered this product (order data covers ~60 days)
+            only reviewers whose email actually ordered this product (full order history)
           </span>
         )}
       </div>
