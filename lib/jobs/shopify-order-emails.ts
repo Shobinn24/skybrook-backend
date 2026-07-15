@@ -77,12 +77,25 @@ export async function syncOrderEmails(opts?: { fullHistory?: boolean }): Promise
         const query = `{ orders(first: 250, query: "created_at:>=${fromStr}"${cursor ? `, after: "${cursor}"` : ""}) {
           pageInfo { hasNextPage endCursor }
           nodes { email createdAt lineItems(first: 20) { nodes { product { id } } } } } }`;
-        const resp = (await fetch(`https://${domain}/admin/api/2025-10/graphql.json`, {
-          method: "POST",
-          headers: { "content-type": "application/json", "X-Shopify-Access-Token": token },
-          body: JSON.stringify({ query }),
-          signal: AbortSignal.timeout(30_000),
-        }).then((x) => x.json())) as OrdersPage;
+        // One slow page must not kill a multi-hour walk: 3 attempts,
+        // fresh 60s abort signal each, short backoff (7/15: both stores'
+        // first full-history walks died on a single page timeout).
+        let resp: OrdersPage | undefined;
+        for (let attempt = 1; ; attempt++) {
+          try {
+            resp = (await fetch(`https://${domain}/admin/api/2025-10/graphql.json`, {
+              method: "POST",
+              headers: { "content-type": "application/json", "X-Shopify-Access-Token": token },
+              body: JSON.stringify({ query }),
+              signal: AbortSignal.timeout(60_000),
+            }).then((x) => x.json())) as OrdersPage;
+            break;
+          } catch (err) {
+            if (attempt >= 3) throw err;
+            logger.warn("order_emails.page_retry", { store: s.label, page, attempt });
+            await sleep(5_000 * attempt);
+          }
+        }
         if (!resp.data) throw new Error(`orders query failed: ${JSON.stringify(resp.errors).slice(0, 200)}`);
 
         const rows: Array<{ store: string; email: string; productId: string; orderDate: string }> = [];
