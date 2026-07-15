@@ -50,13 +50,24 @@ export type OrderEmailSyncResult = {
   stores: Array<{ store: string; orders: number; inserted: number; error?: string }>;
 };
 
-export async function syncOrderEmails(opts?: { fullHistory?: boolean }): Promise<OrderEmailSyncResult> {
+export type OrderSyncOpts = {
+  fullHistory?: boolean;
+  /** explicit created_at window (yyyy-mm-dd); used by gap backfills so a
+   * dropped DB connection costs one slice, not a multi-hour walk */
+  from?: string;
+  toExclusive?: string;
+  /** limit to specific stores (gap windows differ per store) */
+  stores?: Array<"main" | "intl">;
+};
+
+export async function syncOrderEmails(opts?: OrderSyncOpts): Promise<OrderEmailSyncResult> {
   const results: OrderEmailSyncResult["stores"] = [];
   let anyConfigured = false;
   // ~250k orders live in full history: the page cap must not truncate it.
-  const maxPages = opts?.fullHistory ? 4000 : 200;
+  const maxPages = opts?.fullHistory || opts?.from ? 4000 : 200;
 
   for (const s of STORES) {
+    if (opts?.stores && !opts.stores.includes(s.label)) continue;
     const domain = process.env[s.env]?.trim();
     if (!domain) continue;
     anyConfigured = true;
@@ -67,14 +78,16 @@ export async function syncOrderEmails(opts?: { fullHistory?: boolean }): Promise
         .from(orderEmails)
         .where(eq(orderEmails.store, s.label));
       const fromStr =
-        opts?.fullHistory || !newest?.max
+        opts?.from ??
+        (opts?.fullHistory || !newest?.max
           ? FULL_HISTORY_START
-          : new Date(new Date(newest.max).getTime() - 2 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+          : new Date(new Date(newest.max).getTime() - 2 * 24 * 3600 * 1000).toISOString().slice(0, 10));
+      const rangeCond = `created_at:>=${fromStr}${opts?.toExclusive ? ` created_at:<${opts.toExclusive}` : ""}`;
 
       const token = await getShopifyAccessToken(domain);
       let cursor: string | null = null;
       for (let page = 0; page < maxPages; page++) {
-        const query = `{ orders(first: 250, query: "created_at:>=${fromStr}"${cursor ? `, after: "${cursor}"` : ""}) {
+        const query = `{ orders(first: 250, query: "${rangeCond}"${cursor ? `, after: "${cursor}"` : ""}) {
           pageInfo { hasNextPage endCursor }
           nodes { email createdAt lineItems(first: 20) { nodes { product { id } } } } } }`;
         // One slow page must not kill a multi-hour walk: 3 attempts,
