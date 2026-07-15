@@ -19,9 +19,23 @@ DATABASE_URL='<that url>' pnpm db:migrate
 DATABASE_URL='<that url>' pnpm tsx scripts/whatever.ts
 ```
 
-If the Railway CLI says Unauthorized, the token lapsed (it does this every
-few weeks): `railway login`, or `railway login --browserless` from an
-agent session and click the printed activate link.
+If the Railway CLI says Unauthorized, DON'T bother with `railway login` —
+the OAuth session churns constantly (three logouts in two days as of
+2026-07-15, not fixed by the 5.26 upgrade). Use the project token instead:
+`.env` carries `RAILWAY_TOKEN` (project token "skybrook-agent-cli",
+production env, created 2026-07-15). Export it and every project-scoped
+command works regardless of login state:
+
+```bash
+export RAILWAY_TOKEN=$(grep ^RAILWAY_TOKEN= .env | cut -d= -f2)
+railway variables --service skybrook-backend --kv
+railway logs --service skybrook-backend
+railway deployment list --service skybrook-backend --json
+```
+
+Account-scoped commands (`railway whoami`, cross-project) still need a
+real login. If the token is ever compromised, revoke it in the dashboard:
+project Settings > Tokens.
 
 Rule of thumb: `source .env` is never sufficient evidence you are on prod.
 Check the host before destructive work: prod is `*.rlwy.net`, local is
