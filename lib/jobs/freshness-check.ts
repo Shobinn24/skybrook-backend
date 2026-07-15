@@ -611,6 +611,36 @@ export async function runFreshnessCheck(opts?: {
     alertsResolved += r.resolved;
   }
 
+  // Resolve orphaned URL-coverage alerts. evaluateFbUrlCoverage only emits
+  // entries for URLs still missing from the product map — once a URL is
+  // mapped its check VANISHES instead of passing, so the pass-side resolve
+  // above never sees it and the alert stays open forever (found 2026-07-15:
+  // the cotton funnel alert survived two days past its mapping). Any open
+  // fb_url_unmapped alert whose key isn't among the currently-failing
+  // coverage checks means the URL got mapped (or its spend dropped below
+  // threshold) — either way, resolved.
+  const failingCoverageKeys = new Set(
+    evaluated
+      .filter((c) => c.dedupKey?.startsWith("fb_url_unmapped:") && c.status === "fail")
+      .map((c) => c.dedupKey as string),
+  );
+  const openCoverageAlerts = await db
+    .select({ dedupKey: alertEvents.dedupKey })
+    .from(alertEvents)
+    .where(
+      and(
+        like(alertEvents.dedupKey, "fb_url_unmapped:%"),
+        isNull(alertEvents.resolvedAt),
+      ),
+    );
+  for (const row of openCoverageAlerts) {
+    if (failingCoverageKeys.has(row.dedupKey)) continue;
+    const r = await resolveAlert(row.dedupKey, {
+      resolveMessage: `URL now mapped in the product sheet: ${row.dedupKey.replace("fb_url_unmapped:", "")}`,
+    });
+    alertsResolved += r.resolved;
+  }
+
   const checks: FreshnessCheck[] = evaluated.map((c) => ({
     name: c.name,
     status: c.status,
