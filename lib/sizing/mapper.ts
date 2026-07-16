@@ -41,7 +41,7 @@ export function normSize(v: string | null | undefined): string | null {
 
 export type StyleMapping = { product: string; heavy: boolean } | null;
 
-const NO_ABSORBENCY_SPLIT = new Set(["Men's", "Super HW", "Shapewear"]);
+const NO_ABSORBENCY_SPLIT = new Set(["Men's", "Super HW", "Shapewear", "Highrise Short", "Cotton"]);
 
 // Token match, never substring — 'S' inside 'BSHORT' must not hit.
 export function mapStyle(style: string | null | undefined): StyleMapping {
@@ -56,10 +56,17 @@ export function mapStyle(style: string | null | undefined): StyleMapping {
     return { product: "Boyshort", heavy };
   if (t.includes("HIP")) return { product: "Hipster", heavy };
   if (t.includes("BIK")) return { product: "Bikini", heavy };
-  if (t.includes("MENS") || t.includes("MEN'S")) return { product: "Men's", heavy: false };
+  if (t.includes("MENS") || t.includes("MEN'S") || t.includes("MEN"))
+    return { product: "Men's", heavy: false };
   if (t.includes("SUPHW") || t.includes("SUPHFW")) return { product: "Super HW", heavy: false };
-  if (t.includes("FRENCH") || t.includes("FR")) return { product: "French", heavy };
-  if (t.includes("SW")) return { product: "Shapewear", heavy: false };
+  // FC/HC: CS also writes French Cut / High Cut as initials.
+  if (["FRENCH", "FR", "FC", "HC"].some((x) => t.includes(x))) return { product: "French", heavy };
+  if (t.includes("SW") || t.includes("SHAPEWEAR")) return { product: "Shapewear", heavy: false };
+  // Post-spec products (launched 2026): Highrise/Comfort Shorts and Cotton.
+  if (["HRSHORT", "HSHORT", "HRSHORTS", "HSHORTS"].some((x) => t.includes(x)))
+    return { product: "Highrise Short", heavy: false };
+  if (t.includes("COTTON")) return { product: "Cotton", heavy: false };
+  if (t.includes("HIPSTER")) return { product: "Hipster", heavy };
   return null;
 }
 
@@ -104,7 +111,15 @@ export function labelFromProductTitle(title: string): string | null {
   if (s.includes("shapewear") || s.includes("shaping brief")) product = "Shapewear";
   else if (s.includes("men's") || s.includes("mens")) product = "Men's";
   else if (s.includes("super high waisted")) product = "Super HW";
-  else if (s.includes("high cut")) product = "French";
+  // Comfort Shorts is the same garment as Highrise Shorts (reviews page
+  // already merges them under one display name).
+  else if (
+    s.includes("highrise short") ||
+    s.includes("high rise short") ||
+    s.includes("comfort shorts")
+  ) {
+    product = "Highrise Short";
+  } else if (s.includes("high cut")) product = "French";
   else if (s.includes("boyshort")) product = "Boyshort";
   else if (s.includes("hipster")) product = "Hipster";
   else if (s.includes("bikini")) product = "Bikini";
@@ -113,7 +128,7 @@ export function labelFromProductTitle(title: string): string | null {
   else if (s.includes("comfy") && s.includes("discreet")) product = "Comfy & Discreet";
   else if (s.includes("cotton")) product = "Cotton";
   if (!product) return null;
-  if (NO_ABSORBENCY_SPLIT.has(product) || product === "Cotton") return product;
+  if (NO_ABSORBENCY_SPLIT.has(product)) return product;
   return `${product} ${heavy ? "Heavy" : "Std"}`;
 }
 

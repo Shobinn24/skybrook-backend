@@ -22,6 +22,10 @@ const PRESETS: { label: string; days: number | null }[] = [
 const UP = "#D85A30"; // sized up — ran small
 const DOWN = "#4A7C9B"; // sized down — ran big
 const SAME = "#CCCCCC";
+// Boundary sizes can only exchange one way, so their mix carries no
+// signal — rendered as a neutral striped bar instead (Scott 2026-07-16).
+const NO_SIGNAL_STRIPES =
+  "repeating-linear-gradient(45deg, #E2E2E2 0 6px, #F4F4F4 6px 12px)";
 
 export default function SizingPage() {
   const [view, setView] = useState<"direction" | "rate">("direction");
@@ -64,8 +68,9 @@ export default function SizingPage() {
         <div className="flex overflow-hidden rounded-md border border-neutral-300">
           {PRESETS.map((p) => {
             const active =
-              (p.days === null && !range.from) ||
+              (p.days === null && !range.from && !range.to) ||
               (p.days !== null &&
+                !range.to &&
                 range.from === new Date(Date.now() - p.days * 86400000).toISOString().slice(0, 10));
             return (
               <button
@@ -87,11 +92,35 @@ export default function SizingPage() {
             );
           })}
         </div>
+        <span className="flex items-center gap-1 text-neutral-600">
+          <input
+            type="date"
+            value={range.from ?? ""}
+            max={range.to}
+            onChange={(e) => setRange({ ...range, from: e.target.value || undefined })}
+            className="rounded-md border border-neutral-300 bg-white px-1.5 py-1 text-neutral-700"
+          />
+          →
+          <input
+            type="date"
+            value={range.to ?? ""}
+            min={range.from}
+            onChange={(e) => setRange({ ...range, to: e.target.value || undefined })}
+            className="rounded-md border border-neutral-300 bg-white px-1.5 py-1 text-neutral-700"
+          />
+        </span>
         {view === "direction" ? (
           <span className="flex items-center gap-3 text-neutral-600">
             <Chip color={UP} /> sized up (ran small)
             <Chip color={DOWN} /> sized down (ran big)
             <Chip color={SAME} /> same size
+            <span className="flex items-center gap-1">
+              <span
+                className="inline-block h-3 w-3 rounded-sm align-middle"
+                style={{ background: NO_SIGNAL_STRIPES }}
+              />
+              smallest/largest size — no signal
+            </span>
           </span>
         ) : (
           <span className="text-neutral-600">
@@ -143,12 +172,18 @@ function DirectionView({ range }: { range: Range }) {
             {p.cells.map((c) => (
               <div key={c.size} className="flex items-center gap-2 text-xs">
                 <span className="w-9 shrink-0 text-right text-neutral-700">{c.size}</span>
-                {c.lowConfidence ? (
+                {c.boundary ? (
+                  <div
+                    className="h-4 flex-1 rounded-sm"
+                    style={{ background: NO_SIGNAL_STRIPES }}
+                    title={`${c.size} is at the end of this product's size run — exchanges can only go one way, so the mix carries no signal (up ${c.pctUp}% · down ${c.pctDown}% · same ${c.pctSame}%)`}
+                  />
+                ) : c.lowConfidence ? (
                   <span className="flex-1 text-neutral-400">– (n={c.total}, too few to read)</span>
                 ) : (
                   <div
                     className="flex h-4 flex-1 overflow-hidden rounded-sm"
-                    title={`up ${c.pctUp}% · down ${c.pctDown}% · same ${c.pctSame}%${c.boundary ? " · boundary size: % toward the wall is censored" : ""}`}
+                    title={`up ${c.pctUp}% · down ${c.pctDown}% · same ${c.pctSame}%`}
                   >
                     <div style={{ width: `${c.pctUp}%`, background: UP }} />
                     <div style={{ width: `${c.pctDown}%`, background: DOWN }} />
@@ -156,7 +191,6 @@ function DirectionView({ range }: { range: Range }) {
                   </div>
                 )}
                 <span className="w-14 shrink-0 text-right tabular-nums text-neutral-500">
-                  {c.boundary && <span title="boundary size — censored toward the wall">▲ </span>}
                   n={c.total}
                 </span>
               </div>
@@ -165,6 +199,54 @@ function DirectionView({ range }: { range: Range }) {
         </section>
       ))}
     </div>
+  );
+}
+
+// Overall average per product (Scott 2026-07-16) — same severity
+// thresholds as the per-size cells below it.
+function OverallRateTable({
+  panels,
+}: {
+  panels: { label: string; units: number; exchanges: number }[];
+}) {
+  const rows = panels
+    .map((p) => ({
+      ...p,
+      rate: p.units > 0 ? Math.round((p.exchanges / p.units) * 1000) / 10 : 0,
+    }))
+    .sort((a, b) => b.rate - a.rate);
+  return (
+    <section className="mb-4 rounded-md border border-neutral-200 bg-white">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-neutral-200 text-left text-neutral-500">
+            <th className="px-3 py-2 font-medium">Product</th>
+            <th className="px-3 py-2 text-right font-medium">Units sold</th>
+            <th className="px-3 py-2 text-right font-medium">Sizing exchanges</th>
+            <th className="px-3 py-2 text-right font-medium">Overall exchange rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const color = r.rate > 10 ? "#DC2626" : r.rate >= 7 ? "#D97706" : "#374151";
+            return (
+              <tr key={r.label} className="border-b border-neutral-100 last:border-0">
+                <td className="px-3 py-1.5 font-medium text-neutral-700">{r.label}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums text-neutral-500">
+                  {r.units.toLocaleString()}
+                </td>
+                <td className="px-3 py-1.5 text-right tabular-nums text-neutral-500">
+                  {r.exchanges.toLocaleString()}
+                </td>
+                <td className="px-3 py-1.5 text-right font-semibold tabular-nums" style={{ color }}>
+                  {r.rate}%
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </section>
   );
 }
 
@@ -181,6 +263,7 @@ function RateView({ range }: { range: Range }) {
         Sales coverage: {q.data?.salesCoverage.from ?? "–"} → {q.data?.salesCoverage.to ?? "–"} ·
         exchange % = sizing exchanges ÷ units sold at that size
       </p>
+      <OverallRateTable panels={panels} />
       <div className="grid gap-4 md:grid-cols-2">
         {panels.map((p) => (
           <section key={p.label} className="rounded-md border border-neutral-200 bg-white p-4">

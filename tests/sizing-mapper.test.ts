@@ -67,6 +67,17 @@ describe("mapStyle", () => {
     expect(mapStyle("")).toBeNull();
     expect(mapStyle(null)).toBeNull();
   });
+  it("maps post-spec 2026 products and CS spelling variants", () => {
+    expect(mapStyle("HRSHORT")).toEqual({ product: "Highrise Short", heavy: false });
+    expect(mapStyle("HSHORT")).toEqual({ product: "Highrise Short", heavy: false });
+    expect(mapStyle("COTTON")).toEqual({ product: "Cotton", heavy: false });
+    expect(mapStyle("FC")?.product).toBe("French");
+    expect(mapStyle("FC HF")).toEqual({ product: "French", heavy: true });
+    expect(mapStyle("HC")?.product).toBe("French");
+    expect(mapStyle("HIPSTER")?.product).toBe("Hipster");
+    expect(mapStyle("SHAPEWEAR")?.product).toBe("Shapewear");
+    expect(mapStyle("MEN")?.product).toBe("Men's");
+  });
 });
 
 describe("labelOf", () => {
@@ -76,6 +87,8 @@ describe("labelOf", () => {
     expect(labelOf({ product: "Men's", heavy: false })).toBe("Men's");
     expect(labelOf({ product: "Super HW", heavy: false })).toBe("Super HW");
     expect(labelOf({ product: "Shapewear", heavy: false })).toBe("Shapewear");
+    expect(labelOf({ product: "Highrise Short", heavy: false })).toBe("Highrise Short");
+    expect(labelOf({ product: "Cotton", heavy: false })).toBe("Cotton");
   });
 });
 
@@ -132,6 +145,12 @@ describe("labelFromProductTitle (spec step 8 ordering)", () => {
       "Comfy & Discreet Std",
     );
     expect(labelFromProductTitle("Cotton Leakproof Underwear")).toBe("Cotton");
+  });
+  it("Highrise Shorts and its Comfort Shorts alias map to one label", () => {
+    expect(labelFromProductTitle("NEW: Leakproof Highrise Shorts (Bundles)")).toBe("Highrise Short");
+    expect(labelFromProductTitle("Leakproof Comfort Shorts (5-Pack)")).toBe("Highrise Short");
+    // the alias must not swallow Comfort Plus
+    expect(labelFromProductTitle("NEW: Comfort Plus Leakproof Underwear")).toBe("Comfort Plus Std");
   });
 });
 
