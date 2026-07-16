@@ -167,6 +167,31 @@ export async function gatherOpsDigest(now = new Date()): Promise<DigestItem[]> {
     }),
   );
 
+  // New products in the CS exchange log: unmapped style codes with real
+  // volume mean a product launched that the sizing mapper doesn't know
+  // yet (the team wants new products added automatically, 2026-07-16).
+  // CB/JAC/MLB are excluded on purpose (discontinued products).
+  items.push(
+    await check("New CS style codes", async () => {
+      const rows = (await db.execute(sql`
+        select upper(trim(style_raw)) as style, count(*)::int as n
+        from cs_exchanges
+        where excluded = 'unmapped'
+          and coalesce(trim(style_raw), '') <> ''
+          and upper(trim(style_raw)) not in ('CB', 'JAC', 'MLB')
+        group by 1 having count(*) >= 15
+        order by 2 desc`)) as Array<{ style: string; n: number }>;
+      return rows.length === 0
+        ? { ok: true, detail: "no unmapped codes with volume" }
+        : {
+            ok: false,
+            detail:
+              rows.map((r) => `${r.style} (${r.n} rows)`).join(", ") +
+              " — likely new product(s), add to lib/sizing/mapper.ts",
+          };
+    }),
+  );
+
   // M — overdue unreceipted shipments with substantial arrival evidence.
   items.push(
     await check("Unreceipted arrivals", async () => {

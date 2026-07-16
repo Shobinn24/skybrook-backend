@@ -48,18 +48,50 @@ function salesMonthConds(input: z.infer<typeof range>) {
   return conds;
 }
 
+// Mismatched windows silently distort rates (spec section 1B): when no
+// explicit from-date is given, derive it from the CS data's own start so
+// exchanges and sales cover the same months.
+async function effectiveRange(input: z.infer<typeof range>): Promise<z.infer<typeof range>> {
+  if (input.from) return input;
+  const [minRow] = await db
+    .select({ min: sql<string | null>`min(${csExchanges.rowDate})::text` })
+    .from(csExchanges)
+    .where(isNull(csExchanges.excluded));
+  return minRow?.min ? { ...input, from: minRow.min } : input;
+}
+
+async function unitsByLabel(input: z.infer<typeof range>) {
+  const conds = salesMonthConds(input);
+  const rows = await db
+    .select({
+      label: variantSalesMonthly.label,
+      units: sql<number>`sum(${variantSalesMonthly.units})::int`,
+    })
+    .from(variantSalesMonthly)
+    .where(conds.length ? and(...conds) : undefined)
+    .groupBy(variantSalesMonthly.label);
+  return new Map(rows.filter((r) => r.label != null).map((r) => [r.label as string, r.units]));
+}
+
 export const sizingRouter = router({
-  // Output 1 — direction mix by product × size, with verdicts.
+  // Output 1 — direction mix by product × size, with verdicts. Panels
+  // carry the product's overall exchange rate (exchanges ÷ units sold in
+  // the same window) so it shows next to the name (Scott 2026-07-16).
   directionMix: opsProcedure.input(range).query(async ({ input }) => {
-    const rows = await directionRows(input);
+    const effective = await effectiveRange(input);
+    const [rows, units] = await Promise.all([directionRows(effective), unitsByLabel(effective)]);
     const cells = buildDirectionMix(rows);
     const labels = [...new Set(cells.map((c) => c.label))];
     const panels = labels
       .map((label) => {
         const labelCells = cells.filter((c) => c.label === label);
+        const totalExchanges = labelCells.reduce((s, c) => s + c.total, 0);
+        const u = units.get(label) ?? 0;
         return {
           label,
-          totalExchanges: labelCells.reduce((s, c) => s + c.total, 0),
+          totalExchanges,
+          units: u,
+          pctExchange: u > 0 ? Math.round((totalExchanges / u) * 1000) / 10 : null,
           verdict: labelVerdict(labelCells),
           cells: labelCells,
         };

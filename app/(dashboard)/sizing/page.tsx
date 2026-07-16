@@ -21,7 +21,6 @@ const PRESETS: { label: string; days: number | null }[] = [
 
 const UP = "#D85A30"; // sized up — ran small
 const DOWN = "#4A7C9B"; // sized down — ran big
-const SAME = "#CCCCCC";
 // Boundary sizes can only exchange one way, so their mix carries no
 // signal — rendered as a neutral striped bar instead (Scott 2026-07-16).
 const NO_SIGNAL_STRIPES =
@@ -29,6 +28,10 @@ const NO_SIGNAL_STRIPES =
 
 export default function SizingPage() {
   const [view, setView] = useState<"direction" | "rate">("direction");
+  // Two direction renderings, user-toggled (Scott picked both mockup
+  // options 2026-07-16): butterfly = raw up/down shares on opposite
+  // sides of a center line; net = one signed bar, up% minus down%.
+  const [mode, setMode] = useState<"butterfly" | "net">("butterfly");
   const [range, setRange] = useState<Range>({});
 
   return (
@@ -110,18 +113,40 @@ export default function SizingPage() {
           />
         </span>
         {view === "direction" ? (
-          <span className="flex items-center gap-3 text-neutral-600">
-            <Chip color={UP} /> sized up (ran small)
-            <Chip color={DOWN} /> sized down (ran big)
-            <Chip color={SAME} /> same size
-            <span className="flex items-center gap-1">
-              <span
-                className="inline-block h-3 w-3 rounded-sm align-middle"
-                style={{ background: NO_SIGNAL_STRIPES }}
-              />
-              smallest/largest size — no signal
+          <>
+            <div className="flex overflow-hidden rounded-md border border-neutral-300">
+              {(
+                [
+                  { v: "butterfly", label: "Butterfly" },
+                  { v: "net", label: "Net lean" },
+                ] as const
+              ).map((t) => (
+                <button
+                  key={t.v}
+                  onClick={() => setMode(t.v)}
+                  className={
+                    "px-2.5 py-1.5 " +
+                    (mode === t.v
+                      ? "bg-neutral-800 text-white"
+                      : "bg-white text-neutral-600 hover:bg-neutral-50")
+                  }
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <span className="flex items-center gap-3 text-neutral-600">
+              <Chip color={UP} /> sized up (ran small)
+              <Chip color={DOWN} /> sized down (ran big)
+              <span className="flex items-center gap-1">
+                <span
+                  className="inline-block h-3 w-3 rounded-sm align-middle"
+                  style={{ background: NO_SIGNAL_STRIPES }}
+                />
+                smallest/largest size — no signal
+              </span>
             </span>
-          </span>
+          </>
         ) : (
           <span className="text-neutral-600">
             &lt;5% normal for apparel · 7–10% watch · &gt;10% problem
@@ -129,7 +154,7 @@ export default function SizingPage() {
         )}
       </div>
 
-      {view === "direction" ? <DirectionView range={range} /> : <RateView range={range} />}
+      {view === "direction" ? <DirectionView range={range} mode={mode} /> : <RateView range={range} />}
     </main>
   );
 }
@@ -150,7 +175,95 @@ function VerdictChip({ verdict }: { verdict: string }) {
   return <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ${cls}`}>{verdict}</span>;
 }
 
-function DirectionView({ range }: { range: Range }) {
+function RatePill({ pct }: { pct: number | null }) {
+  if (pct == null) return null;
+  const color = pct > 10 ? "#DC2626" : pct >= 7 ? "#D97706" : "#525252";
+  return (
+    <span
+      className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums"
+      style={{ color }}
+      title="sizing exchanges as % of units sold in this window"
+    >
+      {pct}% exch
+    </span>
+  );
+}
+
+type DirCell = {
+  size: string;
+  total: number;
+  pctUp: number;
+  pctDown: number;
+  pctSame: number;
+  boundary: boolean;
+  lowConfidence: boolean;
+};
+
+// Option A (butterfly): raw shares on opposite sides of a center line —
+// the lean of the row is the delta, both magnitudes stay visible.
+function ButterflyBar({ c }: { c: DirCell }) {
+  return (
+    <>
+      <div
+        className="flex h-4 flex-1"
+        title={`up ${c.pctUp}% · down ${c.pctDown}% · same ${c.pctSame}%`}
+      >
+        <div className="relative h-full flex-1 border-r border-neutral-400">
+          <div
+            className="absolute right-0 top-0 h-full rounded-l-sm"
+            style={{ width: `${c.pctDown}%`, background: DOWN }}
+          />
+        </div>
+        <div className="relative h-full flex-1">
+          <div
+            className="absolute left-0 top-0 h-full rounded-r-sm"
+            style={{ width: `${c.pctUp}%`, background: UP }}
+          />
+        </div>
+      </div>
+      <span className="w-20 shrink-0 text-right tabular-nums text-neutral-500">
+        {c.pctDown}% · {c.pctUp}%
+      </span>
+    </>
+  );
+}
+
+// Option B (net lean): one signed bar, up% minus down%.
+function NetLeanBar({ c }: { c: DirCell }) {
+  const net = Math.round(c.pctUp - c.pctDown);
+  const color = net > 5 ? "#b34524" : net < -5 ? "#38657f" : "#737373";
+  return (
+    <>
+      <div
+        className="flex h-4 flex-1"
+        title={`net ${net > 0 ? "+" : ""}${net} (up ${c.pctUp}% − down ${c.pctDown}% · same ${c.pctSame}%)`}
+      >
+        <div className="relative h-full flex-1 border-r border-neutral-400">
+          {net < 0 && (
+            <div
+              className="absolute right-0 top-0 h-full rounded-l-sm"
+              style={{ width: `${-net}%`, background: DOWN }}
+            />
+          )}
+        </div>
+        <div className="relative h-full flex-1">
+          {net >= 0 && (
+            <div
+              className="absolute left-0 top-0 h-full rounded-r-sm"
+              style={{ width: `${net}%`, background: UP }}
+            />
+          )}
+        </div>
+      </div>
+      <span className="w-20 shrink-0 text-right font-semibold tabular-nums" style={{ color }}>
+        {net > 0 ? "+" : ""}
+        {net}
+      </span>
+    </>
+  );
+}
+
+function DirectionView({ range, mode }: { range: Range; mode: "butterfly" | "net" }) {
   const q = trpc.sizing.directionMix.useQuery(range);
   if (q.isLoading) return <p className="text-sm text-neutral-500">Loading…</p>;
   if (q.error) return <p className="text-sm text-red-600">{q.error.message}</p>;
@@ -162,7 +275,9 @@ function DirectionView({ range }: { range: Range }) {
       {panels.map((p) => (
         <section key={p.label} className="rounded-md border border-neutral-200 bg-white p-4">
           <div className="mb-2 flex items-baseline justify-between">
-            <h2 className="text-sm font-semibold">{p.label}</h2>
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              {p.label} <RatePill pct={p.pctExchange} />
+            </h2>
             <span className="flex items-center gap-2 text-xs text-neutral-500">
               <VerdictChip verdict={p.verdict} />
               n={p.totalExchanges.toLocaleString()}
@@ -173,22 +288,23 @@ function DirectionView({ range }: { range: Range }) {
               <div key={c.size} className="flex items-center gap-2 text-xs">
                 <span className="w-9 shrink-0 text-right text-neutral-700">{c.size}</span>
                 {c.boundary ? (
-                  <div
-                    className="h-4 flex-1 rounded-sm"
-                    style={{ background: NO_SIGNAL_STRIPES }}
-                    title={`${c.size} is at the end of this product's size run — exchanges can only go one way, so the mix carries no signal (up ${c.pctUp}% · down ${c.pctDown}% · same ${c.pctSame}%)`}
-                  />
+                  <>
+                    <div
+                      className="h-4 flex-1 rounded-sm"
+                      style={{ background: NO_SIGNAL_STRIPES }}
+                      title={`${c.size} is at the end of this product's size run — exchanges can only go one way, so the mix carries no signal (up ${c.pctUp}% · down ${c.pctDown}% · same ${c.pctSame}%)`}
+                    />
+                    <span className="w-20 shrink-0" />
+                  </>
                 ) : c.lowConfidence ? (
-                  <span className="flex-1 text-neutral-400">– (n={c.total}, too few to read)</span>
+                  <>
+                    <span className="flex-1 text-neutral-400">– (n={c.total}, too few to read)</span>
+                    <span className="w-20 shrink-0" />
+                  </>
+                ) : mode === "butterfly" ? (
+                  <ButterflyBar c={c} />
                 ) : (
-                  <div
-                    className="flex h-4 flex-1 overflow-hidden rounded-sm"
-                    title={`up ${c.pctUp}% · down ${c.pctDown}% · same ${c.pctSame}%`}
-                  >
-                    <div style={{ width: `${c.pctUp}%`, background: UP }} />
-                    <div style={{ width: `${c.pctDown}%`, background: DOWN }} />
-                    <div style={{ width: `${c.pctSame}%`, background: SAME }} />
-                  </div>
+                  <NetLeanBar c={c} />
                 )}
                 <span className="w-14 shrink-0 text-right tabular-nums text-neutral-500">
                   n={c.total}
@@ -203,27 +319,41 @@ function DirectionView({ range }: { range: Range }) {
 }
 
 // Overall average per product (Scott 2026-07-16) — same severity
-// thresholds as the per-size cells below it.
+// thresholds as the per-size cells below it. Sortable by any numeric
+// column (Scott 2026-07-16 PM); click again to flip direction.
+type SortKey = "units" | "exchanges" | "rate";
+
 function OverallRateTable({
   panels,
 }: {
   panels: { label: string; units: number; exchanges: number }[];
 }) {
+  const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "rate", desc: true });
   const rows = panels
     .map((p) => ({
       ...p,
       rate: p.units > 0 ? Math.round((p.exchanges / p.units) * 1000) / 10 : 0,
     }))
-    .sort((a, b) => b.rate - a.rate);
+    .sort((a, b) => (b[sort.key] - a[sort.key]) * (sort.desc ? 1 : -1));
+  const header = (key: SortKey, label: string) => (
+    <th className="px-3 py-2 text-right font-medium">
+      <button
+        onClick={() => setSort((s) => ({ key, desc: s.key === key ? !s.desc : true }))}
+        className={"hover:text-neutral-800 " + (sort.key === key ? "text-neutral-800" : "")}
+      >
+        {label} {sort.key === key ? (sort.desc ? "↓" : "↑") : ""}
+      </button>
+    </th>
+  );
   return (
     <section className="mb-4 rounded-md border border-neutral-200 bg-white">
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-neutral-200 text-left text-neutral-500">
             <th className="px-3 py-2 font-medium">Product</th>
-            <th className="px-3 py-2 text-right font-medium">Units sold</th>
-            <th className="px-3 py-2 text-right font-medium">Sizing exchanges</th>
-            <th className="px-3 py-2 text-right font-medium">Overall exchange rate</th>
+            {header("units", "Units sold")}
+            {header("exchanges", "Sizing exchanges")}
+            {header("rate", "Overall exchange rate")}
           </tr>
         </thead>
         <tbody>
@@ -268,7 +398,12 @@ function RateView({ range }: { range: Range }) {
         {panels.map((p) => (
           <section key={p.label} className="rounded-md border border-neutral-200 bg-white p-4">
             <div className="mb-2 flex items-baseline justify-between">
-              <h2 className="text-sm font-semibold">{p.label}</h2>
+              <h2 className="flex items-center gap-2 text-sm font-semibold">
+                {p.label}{" "}
+                <RatePill
+                  pct={p.units > 0 ? Math.round((p.exchanges / p.units) * 1000) / 10 : null}
+                />
+              </h2>
               <span className="text-xs text-neutral-500">
                 {p.exchanges.toLocaleString()} exch / {p.units.toLocaleString()} units
               </span>

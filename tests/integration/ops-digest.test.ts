@@ -32,6 +32,7 @@ describe("gatherOpsDigest", () => {
       "FB history frozen",
       "Bonus awards",
       "Launches SKU leak",
+      "New CS style codes",
       "Unreceipted arrivals",
       "Open alerts",
       "Supermetrics queries",
