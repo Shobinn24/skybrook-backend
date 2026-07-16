@@ -17,8 +17,6 @@ export type DirectionCell = {
   lowConfidence: boolean;
   /** first/last size in this product's run — pct toward the wall is censored (spec 4.3) */
   boundary: boolean;
-  /** XXS is a suspected placeholder until CS confirms (spec 4.2) */
-  flagged: boolean;
 };
 
 const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 1000) / 10 : 0);
@@ -55,7 +53,6 @@ export function buildDirectionMix(
         pctSame: pct(r.same, total),
         lowConfidence: total < minN,
         boundary: r.size === first || r.size === last,
-        flagged: r.size === "XXS" || r.size === "XXXS",
       });
     }
   }
@@ -74,7 +71,6 @@ export type RateCell = {
   pctDown: number;
   /** thresholds from the manual run: <5 normal, 7-10 watch, >10 problem */
   severity: "normal" | "watch" | "problem";
-  flagged: boolean;
 };
 
 export function buildSalesWeighted(
@@ -102,7 +98,6 @@ export function buildSalesWeighted(
         pctUp: pct(up, s.units),
         pctDown: pct(down, s.units),
         severity: pctExch > 10 ? "problem" : pctExch >= 7 ? "watch" : "normal",
-        flagged: s.size === "XXS" || s.size === "XXXS",
       } as RateCell;
     })
     .sort(
@@ -112,12 +107,13 @@ export function buildSalesWeighted(
 }
 
 /**
- * Verdict per spec section 6, honoring every caveat: only non-boundary,
- * non-flagged, confident cells vote, and Std/Heavy are never merged
- * (the caller passes cells for ONE label).
+ * Verdict per spec section 6: only non-boundary, confident cells vote
+ * (XXS confirmed a real size by the team 2026-07-16, so it votes like
+ * any other; as the smallest size in a run it is usually boundary
+ * anyway). Std/Heavy are never merged (caller passes ONE label).
  */
 export function labelVerdict(cells: DirectionCell[]): "runs small" | "runs large" | "neutral" | "insufficient data" {
-  const voting = cells.filter((c) => !c.boundary && !c.flagged && !c.lowConfidence);
+  const voting = cells.filter((c) => !c.boundary && !c.lowConfidence);
   const total = voting.reduce((s, c) => s + c.total, 0);
   if (total < 30) return "insufficient data";
   const up = voting.reduce((s, c) => s + c.up, 0);

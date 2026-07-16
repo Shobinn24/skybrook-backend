@@ -301,6 +301,8 @@ export async function POST(req: Request) {
     await syncCsExchanges();
     const { syncVariantSalesRecent } = await import("@/lib/jobs/variant-sales-sync");
     await syncVariantSalesRecent();
+    const { syncShopifyRefundsRecent } = await import("@/lib/jobs/shopify-refunds-sync");
+    await syncShopifyRefundsRecent();
   } catch (e) {
     logger.error("sizing.cron.failed", { error: e instanceof Error ? e.message : String(e) });
   }

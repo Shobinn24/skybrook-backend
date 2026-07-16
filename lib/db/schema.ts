@@ -1064,6 +1064,31 @@ export const variantSalesMonthly = pgTable(
   (t) => [uniqueIndex("variant_sales_grain_uq").on(t.store, t.month, t.label, t.size)],
 );
 
+// One row per (Shopify refund, product label, size): refunded units and
+// dollars straight from refund objects (Scott 2026-07-16: the API beats
+// the CS sheet, and it sidesteps the refund-vs-cancel button ambiguity —
+// a refund is a refund). Refund-id grain makes the daily incremental
+// walk idempotent (re-seeing a refund replaces its rows); monthly and
+// per-product aggregation happens at query time — the table is tiny.
+export const shopifyRefundLines = pgTable(
+  "shopify_refund_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    refundId: text("refund_id").notNull(), // Shopify refund gid
+    store: text("store").notNull(), // 'main' | 'intl'
+    refundDate: date("refund_date").notNull(),
+    label: text("label").notNull(),
+    size: text("size").notNull(), // normalized; '' when unparseable
+    units: integer("units").notNull(),
+    amountUsd: numeric("amount_usd", { precision: 14, scale: 2 }).notNull().default("0"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("shopify_refund_lines_grain_uq").on(t.refundId, t.label, t.size),
+    index("shopify_refund_lines_date_idx").on(t.refundDate),
+  ],
+);
+
 // Size-chart change log (manual, data-only): direction stats are only
 // comparable within one chart version (spec interpretation caveat 2).
 export const sizeChartNotes = pgTable("size_chart_notes", {

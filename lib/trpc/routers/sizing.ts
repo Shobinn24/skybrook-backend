@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { and, eq, gte, isNull, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { csExchanges, variantSalesMonthly } from "@/lib/db/schema";
+import { csExchanges, shopifyRefundLines, variantSalesMonthly } from "@/lib/db/schema";
 import { opsProcedure, router } from "@/lib/trpc/server";
 import { buildDirectionMix, buildSalesWeighted, labelVerdict } from "@/lib/sizing/compute";
 
@@ -120,22 +120,17 @@ export const sizingRouter = router({
         .from(csExchanges)
         .where(and(isNull(csExchanges.excluded), eq(csExchanges.description, "sizing issue")))
         .groupBy(csExchanges.label),
+      // Refunds from Shopify refund objects (Scott 2026-07-16) — counts
+      // refunded UNITS, so the rate shares the units-sold denominator.
       db
         .select({
-          label: csExchanges.label,
-          n: sql<number>`count(*)::int`,
-          amount: sql<number>`coalesce(sum(${csExchanges.amount}), 0)::float`,
+          label: shopifyRefundLines.label,
+          n: sql<number>`coalesce(sum(${shopifyRefundLines.units}), 0)::int`,
+          amount: sql<number>`coalesce(sum(${shopifyRefundLines.amountUsd}), 0)::float`,
         })
-        .from(csExchanges)
-        .where(
-          and(
-            isNull(csExchanges.excluded),
-            eq(csExchanges.process, "refund"),
-            // cancels excluded by default (pending confirmation)
-            sql`coalesce(${csExchanges.description}, '') not like '%cancel%'`,
-          ),
-        )
-        .groupBy(csExchanges.label),
+        .from(shopifyRefundLines)
+        .where(gte(shopifyRefundLines.refundDate, "2026-01-01"))
+        .groupBy(shopifyRefundLines.label),
       db
         .select({
           label: variantSalesMonthly.label,
@@ -160,7 +155,7 @@ export const sizingRouter = router({
         pctExchange: Math.round(((ex.get(s.label) ?? 0) / s.units) * 1000) / 10,
         pctRefund: Math.round(((re.get(s.label)?.n ?? 0) / s.units) * 1000) / 10,
       }));
-    return { rates, window: "2026-01-01 onward (CS data start)" };
+    return { rates, window: "2026-01-01 onward · refunds from Shopify" };
   }),
 });
 

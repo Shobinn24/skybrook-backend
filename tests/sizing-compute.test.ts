@@ -36,14 +36,12 @@ describe("buildDirectionMix", () => {
     expect(bySize["5XL"].boundary).toBe(true);
   });
 
-  it("flags XXS as suspect (spec 4.2) and sorts sizes by rank", () => {
+  it("sorts sizes by rank (XXS first — a real size per the team 2026-07-16)", () => {
     const cells = buildDirectionMix([
       row("Comfort Plus Std", "M", 10, 5),
       row("Comfort Plus Std", "XXS", 500, 0),
     ]);
-    expect(cells[0].size).toBe("XXS"); // rank order
-    expect(cells[0].flagged).toBe(true);
-    expect(cells[1].flagged).toBe(false);
+    expect(cells[0].size).toBe("XXS");
   });
 });
 
@@ -93,13 +91,13 @@ describe("labelVerdict (spec section 6 with caveats)", () => {
     expect(labelVerdict(cells)).toBe("runs small");
   });
 
-  it("boundary and XXS cells never vote", () => {
+  it("boundary cells never vote (XXS as smallest size is boundary)", () => {
     const cells = buildDirectionMix([
-      row("X", "XXS", 500, 0), // flagged — would swamp the vote if counted
+      row("X", "XXS", 500, 0), // boundary (min of the run) — excluded
       row("X", "M", 10, 20),
       row("X", "L", 12, 22),
       row("X", "XL", 9, 18),
-      row("X", "2XL", 30, 0), // boundary
+      row("X", "2XL", 30, 0), // boundary (max) — excluded
     ]);
     expect(labelVerdict(cells)).toBe("runs large");
   });

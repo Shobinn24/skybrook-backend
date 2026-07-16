@@ -499,7 +499,7 @@ export default function ReviewsPage() {
                 <th className="px-3 py-2 text-right" title="sizing exchanges as % of units sold, 2026 CS window">
                   Exch
                 </th>
-                <th className="px-3 py-2 text-right" title="refunds (excl cancels) as % of units sold, 2026 CS window">
+                <th className="px-3 py-2 text-right" title="Shopify refunded units as % of units sold, 2026">
                   Refund
                 </th>
                 <th className="px-3 py-2 text-right">Latest</th>

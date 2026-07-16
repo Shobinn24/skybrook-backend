@@ -8,8 +8,8 @@ import { trpc } from "@/lib/trpc/client";
 //   Direction — of exchanges at each size, % up (ran small) vs down (ran
 //   big) vs same-size style swap. Denominator = exchanges.
 //   Rate — exchanges as % of units sold per size. Denominator = sales.
-// XXS renders greyed pending a CS answer on what it means; boundary sizes
-// carry a censoring marker and never drive the verdict chip.
+// XXS is a real size (confirmed 2026-07-16) and counts fully; boundary
+// sizes carry a censoring marker and never drive the verdict chip.
 
 type Range = { from?: string; to?: string };
 
@@ -32,7 +32,7 @@ export default function SizingPage() {
       <div className="mb-1 flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Sizing exchanges</h1>
         <span className="text-xs text-neutral-500">
-          CS exchange log × Shopify sales · Seamless excluded · warehouse errors excluded
+          CS exchange log (EV tab) × Shopify sales · Seamless excluded · 2026 data
         </span>
       </div>
       <p className="mb-4 text-sm text-neutral-600">
@@ -142,16 +142,12 @@ function DirectionView({ range }: { range: Range }) {
           <div className="grid gap-1">
             {p.cells.map((c) => (
               <div key={c.size} className="flex items-center gap-2 text-xs">
-                <span className={`w-9 shrink-0 text-right ${c.flagged ? "text-neutral-400" : "text-neutral-700"}`}>
-                  {c.size}
-                  {c.flagged && "?"}
-                </span>
+                <span className="w-9 shrink-0 text-right text-neutral-700">{c.size}</span>
                 {c.lowConfidence ? (
                   <span className="flex-1 text-neutral-400">– (n={c.total}, too few to read)</span>
                 ) : (
                   <div
                     className="flex h-4 flex-1 overflow-hidden rounded-sm"
-                    style={{ opacity: c.flagged ? 0.35 : 1 }}
                     title={`up ${c.pctUp}% · down ${c.pctDown}% · same ${c.pctSame}%${c.boundary ? " · boundary size: % toward the wall is censored" : ""}`}
                   >
                     <div style={{ width: `${c.pctUp}%`, background: UP }} />
@@ -166,11 +162,6 @@ function DirectionView({ range }: { range: Range }) {
               </div>
             ))}
           </div>
-          {p.cells.some((c) => c.flagged) && (
-            <p className="mt-2 text-[10px] text-neutral-400">
-              XXS greyed: pattern looks like a placeholder/mis-key, awaiting CS confirmation.
-            </p>
-          )}
         </section>
       ))}
     </div>
@@ -205,11 +196,8 @@ function RateView({ range }: { range: Range }) {
                   c.severity === "problem" ? "#DC2626" : c.severity === "watch" ? "#D97706" : "#9CA3AF";
                 return (
                   <div key={c.size} className="flex items-center gap-2 text-xs">
-                    <span className={`w-9 shrink-0 text-right ${c.flagged ? "text-neutral-400" : "text-neutral-700"}`}>
-                      {c.size}
-                      {c.flagged && "?"}
-                    </span>
-                    <div className="h-4 flex-1 rounded-sm bg-neutral-100" style={{ opacity: c.flagged ? 0.35 : 1 }}>
+                    <span className="w-9 shrink-0 text-right text-neutral-700">{c.size}</span>
+                    <div className="h-4 flex-1 rounded-sm bg-neutral-100">
                       <div
                         className="h-full rounded-sm"
                         style={{ width: `${Math.min(100, c.pctExch * 5)}%`, background: color }}

@@ -5,18 +5,12 @@ import { buildSheetsClient } from "@/lib/sources/sheets";
 import { logger } from "@/lib/logger";
 import { direction, isMultiProduct, labelOf, mapStyle, normSize } from "@/lib/sizing/mapper";
 
-// CS returns/replacements workbook ingest (Scott 2026-07-15). One
-// workbook per year, tab EV. Full delete+reinsert per source year on
-// every run: the CS team edits historical rows, so incremental sync
-// would drift. ~22k rows/year, cheap.
-//
-// Fulfillment errors (customer received the WRONG item, logged on the
-// AF/PD tabs) are excluded from fit analysis by order number — the
-// customer's size choice was right, the warehouse pick was wrong.
+// CS returns/replacements workbook ingest (Scott 2026-07-15). EV tab
+// ONLY, 2026 data only (both per Scott 2026-07-16). Full delete+reinsert
+// per source year on every run: the CS team edits historical rows, so
+// incremental sync would drift. ~22k rows/year, cheap.
 
 const WORKBOOKS: Array<{ year: number; env: string; fallbackId?: string }> = [
-  // 2025 workbook: pending link from the team; set CS_RETURNS_SHEET_2025.
-  { year: 2025, env: "CS_RETURNS_SHEET_2025" },
   {
     year: 2026,
     env: "CS_RETURNS_SHEET_2026",
@@ -32,8 +26,6 @@ const HEADER_ALIASES: Record<string, string> = {
   " ": "Date",
   "": "Date",
 };
-
-const FULFILLMENT_ERROR_TABS = ["AF Order Issues", "PD Order Issues"];
 
 type RawRow = Record<string, string>;
 
@@ -101,23 +93,6 @@ export async function syncCsExchanges(): Promise<CsExchangeSyncResult> {
       excluded: {},
     };
     try {
-      // Fulfillment-error order numbers from the agent issue tabs.
-      const errorOrders = new Set<string>();
-      for (const tab of FULFILLMENT_ERROR_TABS) {
-        try {
-          const resp = await sheets.spreadsheets.values.get({
-            spreadsheetId: sheetId,
-            range: `'${tab}'!A1:H10000`,
-          });
-          for (const row of rowsFromValues((resp.data.values as string[][]) ?? [])) {
-            const orderNo = row["Order No."]?.trim();
-            if (orderNo) errorOrders.add(orderNo.toUpperCase());
-          }
-        } catch {
-          // tab may not exist in every year's workbook — fine
-        }
-      }
-
       const resp = await sheets.spreadsheets.values.get({
         spreadsheetId: sheetId,
         range: "'EV'!A1:M50000",
@@ -139,9 +114,7 @@ export async function syncCsExchanges(): Promise<CsExchangeSyncResult> {
 
         let excluded: string | null = null;
         let label: string | null = null;
-        if (errorOrders.has(orderNo.toUpperCase())) {
-          excluded = "fulfillment_error";
-        } else if (isMultiProduct(styleRaw) || isMultiProduct(sizeReplacedRaw)) {
+        if (isMultiProduct(styleRaw) || isMultiProduct(sizeReplacedRaw)) {
           excluded = "multi_product";
         } else {
           const mapping = mapStyle(styleRaw);
