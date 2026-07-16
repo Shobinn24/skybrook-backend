@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc/client";
+import { sizingLabelFor } from "@/lib/sizing/mapper";
 
 // Loox reviews tool v2 (Scott 2026-07-13): every review from both stores,
 // deduped, grouped Std vs Heavy. The KPI table (count / average / stacked
@@ -72,14 +73,29 @@ type OverviewProduct = {
 
 type Selection = { displayName: string; line: "std" | "heavy" };
 
+// Sizing exchange + refund rates per product (Scott 2026-07-15), keyed by
+// sizing label; window = 2026 CS data vs same-window unit sales.
+type ProductRates = Map<string, { pctExchange: number; pctRefund: number }>;
+
+function RateCellValue({ value, kind }: { value: number | undefined; kind: "exch" | "refund" }) {
+  if (value === undefined) return <span className="text-neutral-300">—</span>;
+  const color =
+    value > 10 ? "text-red-600" : value >= 7 ? "text-amber-600" : "text-neutral-600";
+  return (
+    <span className={`tabular-nums ${kind === "exch" ? color : "text-neutral-600"}`}>{value}%</span>
+  );
+}
+
 function KpiRows({
   products,
   selected,
   onSelect,
+  rates,
 }: {
   products: OverviewProduct[];
   selected: Selection | null;
   onSelect: (sel: Selection) => void;
+  rates: ProductRates;
 }) {
   return (
     <>
@@ -111,6 +127,18 @@ function KpiRows({
             <td className="w-[30%] px-3 py-2">
               <DistBar dist={[p.r5, p.r4, p.r3, p.r2, p.r1]} n={p.n} />
             </td>
+            <td className="px-3 py-2 text-right text-xs">
+              <RateCellValue
+                value={rates.get(sizingLabelFor(p.displayName, p.line) ?? "")?.pctExchange}
+                kind="exch"
+              />
+            </td>
+            <td className="px-3 py-2 text-right text-xs">
+              <RateCellValue
+                value={rates.get(sizingLabelFor(p.displayName, p.line) ?? "")?.pctRefund}
+                kind="refund"
+              />
+            </td>
             <td className="whitespace-nowrap px-3 py-2 text-right text-xs text-neutral-500">
               {p.latestReviewAt ? fmtDate(p.latestReviewAt) : "—"}
             </td>
@@ -141,6 +169,8 @@ function TotalRow({ label, products }: { label: string; products: OverviewProduc
       <td className="px-3 py-2">
         <DistBar dist={dist} n={n} />
       </td>
+      <td className="px-3 py-2" />
+      <td className="px-3 py-2" />
       <td className="px-3 py-2" />
     </tr>
   );
@@ -327,6 +357,11 @@ export default function ReviewsPage() {
   });
 
   const data = overview.data;
+  const ratesQ = trpc.sizing.productRates.useQuery();
+  const rates: ProductRates = useMemo(
+    () => new Map((ratesQ.data?.rates ?? []).map((r) => [r.label, r])),
+    [ratesQ.data],
+  );
   const configured = data?.configured;
   const std = (data?.products ?? []).filter((p) => p.line !== "heavy");
   const heavy = (data?.products ?? []).filter((p) => p.line === "heavy");
@@ -461,32 +496,38 @@ export default function ReviewsPage() {
                 <th className="px-3 py-2 text-right">Reviews</th>
                 <th className="px-3 py-2 text-right">Avg</th>
                 <th className="px-3 py-2">5★ → 1★</th>
+                <th className="px-3 py-2 text-right" title="sizing exchanges as % of units sold, 2026 CS window">
+                  Exch
+                </th>
+                <th className="px-3 py-2 text-right" title="refunds (excl cancels) as % of units sold, 2026 CS window">
+                  Refund
+                </th>
                 <th className="px-3 py-2 text-right">Latest</th>
               </tr>
             </thead>
             <tbody>
               {std.length > 0 && (
                 <tr className="border-t border-neutral-200 bg-neutral-50/50">
-                  <td colSpan={5} className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                  <td colSpan={7} className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
                     Standard
                   </td>
                 </tr>
               )}
-              <KpiRows products={std} selected={selected} onSelect={pick} />
+              <KpiRows products={std} selected={selected} onSelect={pick} rates={rates} />
               <TotalRow label="Standard total" products={std} />
               {heavy.length > 0 && (
                 <tr className="border-t border-neutral-200 bg-neutral-50/50">
-                  <td colSpan={5} className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                  <td colSpan={7} className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
                     Heavy
                   </td>
                 </tr>
               )}
-              <KpiRows products={heavy} selected={selected} onSelect={pick} />
+              <KpiRows products={heavy} selected={selected} onSelect={pick} rates={rates} />
               <TotalRow label="Heavy total" products={heavy} />
               <TotalRow label="All products" products={data?.products ?? []} />
               {data && data.products.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-neutral-500">
+                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-neutral-500">
                     No reviews in this range yet.
                   </td>
                 </tr>

@@ -292,6 +292,19 @@ export async function POST(req: Request) {
     logger.error("loox.cron.failed", { error: e instanceof Error ? e.message : String(e) });
   }
 
+  // Sizing exchange analysis inputs (Scott 2026-07-15): re-pull the CS
+  // returns workbook (full replace — CS edits history) and refresh the
+  // current+previous month of variant sales. Best-effort, never fails
+  // the cron.
+  try {
+    const { syncCsExchanges } = await import("@/lib/jobs/cs-exchange-sync");
+    await syncCsExchanges();
+    const { syncVariantSalesRecent } = await import("@/lib/jobs/variant-sales-sync");
+    await syncVariantSalesRecent();
+  } catch (e) {
+    logger.error("sizing.cron.failed", { error: e instanceof Error ? e.message : String(e) });
+  }
+
   // Morning ops digest — the automated A-to-M checklist sweep, one Slack
   // message to #skybrook-digest. Scheduled runs only (poller triggers pass
   // freshness=skip and skip this too): a digest is a daily rhythm, not a

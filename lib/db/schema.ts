@@ -1002,6 +1002,77 @@ export const orderEmails = pgTable(
   ],
 );
 
+// ── Sizing exchange analysis (Scott 2026-07-15) ─────────────────────
+// Source: the CS returns/replacements workbook, tab EV (one workbook per
+// year). Raw columns are kept verbatim; label/size/direction are derived
+// at ingest by lib/sizing/mapper.ts (spec: docs/SIZING.md). Rows that the
+// spec excludes are kept with `excluded` set instead of being dropped, so
+// counts are auditable. Dedupe grain extends the spec's year-overlap rule
+// (order + sizes) with description, so distinct events on one order (a
+// refund and a separate exchange) both survive.
+export const csExchanges = pgTable(
+  "cs_exchanges",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sourceYear: integer("source_year").notNull(), // which workbook the row came from
+    rowDate: date("row_date"), // defensively parsed; the sheet has junk values
+    orderNo: text("order_no").notNull(),
+    email: text("email"), // lowercased
+    country: text("country"),
+    process: text("process"), // replace | refund | cancel (lowercased)
+    styleRaw: text("style_raw"),
+    sizeOrderedRaw: text("size_ordered_raw"),
+    sizeReplacedRaw: text("size_replaced_raw"),
+    description: text("description"), // lowercased + trimmed
+    amount: numeric("amount", { precision: 10, scale: 2 }),
+    // Derived by the mapper at ingest:
+    label: text("label"), // e.g. 'High Waisted Std' — null when unmapped
+    sizeOrdered: text("size_ordered"), // normalized (2XL canon), null unparseable
+    sizeReplaced: text("size_replaced"),
+    direction: text("direction"), // up | down | same | unknown
+    // Why the row is out of scope, null = in scope:
+    // seamless | multi_product | fulfillment_error | other_brand | unmapped
+    excluded: text("excluded"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("cs_exchanges_dedupe_uq").on(
+      t.orderNo,
+      t.sizeOrderedRaw,
+      t.sizeReplacedRaw,
+      t.description,
+    ),
+    index("cs_exchanges_label_idx").on(t.label),
+  ],
+);
+
+// Units sold per product label × size × calendar month, built from
+// Shopify order line items (both stores). Monthly grain is what makes
+// rolling 30/60/90-day sales-weighted exchange rates possible — the
+// manual analysis only had a cumulative export (spec issue 4.5).
+export const variantSalesMonthly = pgTable(
+  "variant_sales_monthly",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    store: text("store").notNull(), // 'main' | 'intl'
+    month: date("month").notNull(), // first of month
+    label: text("label").notNull(), // same product labels as cs_exchanges
+    size: text("size").notNull(), // normalized size
+    units: integer("units").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("variant_sales_grain_uq").on(t.store, t.month, t.label, t.size)],
+);
+
+// Size-chart change log (manual, data-only): direction stats are only
+// comparable within one chart version (spec interpretation caveat 2).
+export const sizeChartNotes = pgTable("size_chart_notes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  effectiveDate: date("effective_date").notNull(),
+  note: text("note").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // One row per (product, analysis run): Claude's read of that product's
 // reviews — summary, themes, complaints, improvement ideas — plus the
 // KPIs computed in SQL (count / average) frozen at generation time so the

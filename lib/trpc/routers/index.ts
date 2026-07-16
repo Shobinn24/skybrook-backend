@@ -6,6 +6,7 @@ import { inventoryRouter } from "./inventory";
 import { pipelineRouter } from "./pipeline";
 import { reviewsRouter } from "./reviews";
 import { shippingAuditRouter } from "./shipping-audit";
+import { sizingRouter } from "./sizing";
 
 export const appRouter = router({
   admin: adminRouter,
@@ -15,5 +16,6 @@ export const appRouter = router({
   pipeline: pipelineRouter,
   reviews: reviewsRouter,
   shippingAudit: shippingAuditRouter,
+  sizing: sizingRouter,
 });
 export type AppRouter = typeof appRouter;

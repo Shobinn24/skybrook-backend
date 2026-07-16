@@ -22,6 +22,7 @@ const NAV_ITEMS: ReadonlyArray<{
   { href: "/campaign-tracker", label: "Campaign Tracker", roles: ["ops", "marketing"] },
   { href: "/launches",       label: "Launches",       roles: ["ops", "marketing"], fbAdsOnly: true },
   { href: "/reviews",        label: "Reviews",        roles: ["ops"] },
+  { href: "/sizing",         label: "Sizing",         roles: ["ops"] },
   { href: "/fb-ads",         label: "FB Ads Tracker", roles: ["ops", "marketing"], fbAdsOnly: true },
   { href: "/bonus-tracker",  label: "Bonus Tracker",  roles: ["ops", "marketing"], fbAdsOnly: true },
   { href: "/shipping-performance", label: "Shipping",   roles: ["ops"] },
