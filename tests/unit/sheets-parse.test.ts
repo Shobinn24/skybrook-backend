@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildIncomingSkippedAlert,
+  canonicalizeInventorySku,
   colIndexToA1,
   dedupeAdSpendRows,
   extractArrivalDates,
@@ -987,5 +988,19 @@ describe("parseBulkOrderForecast", () => {
       { weekDate: "2024-04-08", amountUsd: 413028.96 },
       { weekDate: "2024-04-22", amountUsd: 146801.19 },
     ]);
+  });
+});
+describe("canonicalizeInventorySku", () => {
+  it("folds the trailing 2xl alias even when decomposePackSku does not recognize the SKU (flybrief 3x, 2026-07-17)", () => {
+    // The 2026-07-09 inventory row spelled the flybrief 2XL as -2xl and
+    // created a costless duplicate of ev-flybrief-3x-xxl plus a false
+    // missing-cost alert.
+    expect(canonicalizeInventorySku("ev-flybrief-3x-2xl")).toBe("ev-flybrief-3x-xxl");
+    expect(canonicalizeInventorySku("EV-FLYBRIEF-3X-2XL")).toBe("ev-flybrief-3x-xxl");
+  });
+  it("leaves already-canonical and non-2xl SKUs unchanged", () => {
+    expect(canonicalizeInventorySku("ev-flybrief-3x-xxl")).toBe("ev-flybrief-3x-xxl");
+    expect(canonicalizeInventorySku("ev-flybrief-3x-3xl")).toBe("ev-flybrief-3x-3xl");
+    expect(canonicalizeInventorySku("ev-flybrief-3x-s")).toBe("ev-flybrief-3x-s");
   });
 });

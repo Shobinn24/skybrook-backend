@@ -10,7 +10,13 @@ import { decomposePackSku } from "@/lib/domain/sku-pack";
 export function canonicalizeInventorySku(rawSku: string): string {
   const lower = rawSku.trim().toLowerCase();
   const dec = decomposePackSku(lower);
-  return dec && dec.multiplier === 1 ? dec.canonicalSku : lower;
+  if (dec && dec.multiplier === 1) return dec.canonicalSku;
+  // SKUs decomposePackSku doesn't recognize (e.g. the flybrief 3x pack
+  // form) skip the fold above, but the trailing size alias must still
+  // canonicalize: 2026-07-17 an inventory row spelled ev-flybrief-3x-2xl
+  // created a costless duplicate of ev-flybrief-3x-xxl and a false
+  // missing-cost alert. Same 2xl→xxl rule the decompose path applies.
+  return lower.replace(/(^|-)2xl$/, "$1xxl");
 }
 
 export const MONTHS: Record<string, number> = {
