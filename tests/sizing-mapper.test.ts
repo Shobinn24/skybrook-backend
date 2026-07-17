@@ -56,8 +56,8 @@ describe("mapStyle", () => {
     expect(mapStyle("HIP")?.product).toBe("Hipster");
     expect(mapStyle("BIK")?.product).toBe("Bikini");
     expect(mapStyle("MENS")?.product).toBe("Men's");
-    expect(mapStyle("SUPHW")?.product).toBe("Super HW");
-    expect(mapStyle("SUPHFW")?.product).toBe("Super HW");
+    expect(mapStyle("SUPHW")?.product).toBe("Comfort Plus HW");
+    expect(mapStyle("SUPHFW")?.product).toBe("Comfort Plus HW");
     expect(mapStyle("FRENCH")?.product).toBe("French");
     expect(mapStyle("FR")?.product).toBe("French");
     expect(mapStyle("SW")?.product).toBe("Shapewear");
@@ -85,7 +85,7 @@ describe("labelOf", () => {
     expect(labelOf({ product: "High Waisted", heavy: true })).toBe("High Waisted Heavy");
     expect(labelOf({ product: "High Waisted", heavy: false })).toBe("High Waisted Std");
     expect(labelOf({ product: "Men's", heavy: false })).toBe("Men's");
-    expect(labelOf({ product: "Super HW", heavy: false })).toBe("Super HW");
+    expect(labelOf({ product: "Comfort Plus HW", heavy: false })).toBe("Comfort Plus HW");
     expect(labelOf({ product: "Shapewear", heavy: false })).toBe("Shapewear");
     expect(labelOf({ product: "Highrise Short", heavy: false })).toBe("Highrise Short");
     expect(labelOf({ product: "Cotton", heavy: false })).toBe("Cotton");
@@ -124,8 +124,23 @@ describe("isMultiProduct", () => {
 });
 
 describe("labelFromProductTitle (spec step 8 ordering)", () => {
-  it("checks super high waisted before high waisted", () => {
-    expect(labelFromProductTitle("Super High Waisted Shaper")).toBe("Super HW");
+  it("checks Comfort Plus HW titles before comfort plus and high waisted", () => {
+    expect(labelFromProductTitle("Super High Waisted Shaper")).toBe("Comfort Plus HW");
+    expect(labelFromProductTitle("Leakproof High Waisted Comfort Plus (5-Pack)")).toBe(
+      "Comfort Plus HW",
+    );
+    expect(labelFromProductTitle("NEW: Leakproof High Waisted Comfort Plus (Bundles)")).toBe(
+      "Comfort Plus HW",
+    );
+    expect(labelFromProductTitle("Comfort Plus Leakproof Underwear (5-Pack)")).toBe(
+      "Comfort Plus Std",
+    );
+    expect(labelFromProductTitle("NEW: French Cut Leakproof Underwear (Bundles)")).toBe(
+      "French Std",
+    );
+    expect(labelFromProductTitle("NEW: French Cut Leakproof Underwear (Heavy Absorbency Bundles)")).toBe(
+      "French Heavy",
+    );
     expect(labelFromProductTitle("NEW: Leakproof High Waisted")).toBe("High Waisted Std");
     expect(labelFromProductTitle("Leakproof High Waisted Heavy Flow Version")).toBe(
       "High Waisted Heavy",

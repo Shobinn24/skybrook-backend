@@ -41,7 +41,13 @@ export function normSize(v: string | null | undefined): string | null {
 
 export type StyleMapping = { product: string; heavy: boolean } | null;
 
-const NO_ABSORBENCY_SPLIT = new Set(["Men's", "Super HW", "Shapewear", "Highrise Short", "Cotton"]);
+const NO_ABSORBENCY_SPLIT = new Set([
+  "Men's",
+  "Comfort Plus HW",
+  "Shapewear",
+  "Highrise Short",
+  "Cotton",
+]);
 
 // Token match, never substring — 'S' inside 'BSHORT' must not hit.
 export function mapStyle(style: string | null | undefined): StyleMapping {
@@ -58,7 +64,10 @@ export function mapStyle(style: string | null | undefined): StyleMapping {
   if (t.includes("BIK")) return { product: "Bikini", heavy };
   if (t.includes("MENS") || t.includes("MEN'S") || t.includes("MEN"))
     return { product: "Men's", heavy: false };
-  if (t.includes("SUPHW") || t.includes("SUPHFW")) return { product: "Super HW", heavy: false };
+  // Real product name is Comfort Plus HW (Shopify: "Leakproof High Waisted
+  // Comfort Plus"); CS writes it SUPHW / SUPHFW. Renamed per Scott 2026-07-17.
+  if (t.includes("SUPHW") || t.includes("SUPHFW"))
+    return { product: "Comfort Plus HW", heavy: false };
   // FC/HC: CS also writes French Cut / High Cut as initials.
   if (["FRENCH", "FR", "FC", "HC"].some((x) => t.includes(x))) return { product: "French", heavy };
   if (t.includes("SW") || t.includes("SHAPEWEAR")) return { product: "Shapewear", heavy: false };
@@ -110,7 +119,10 @@ export function labelFromProductTitle(title: string): string | null {
   let product: string | null = null;
   if (s.includes("shapewear") || s.includes("shaping brief")) product = "Shapewear";
   else if (s.includes("men's") || s.includes("mens")) product = "Men's";
-  else if (s.includes("super high waisted")) product = "Super HW";
+  // "Leakproof High Waisted Comfort Plus" must match before both
+  // "comfort plus" and "high waisted" or its units land in the wrong bucket.
+  else if (s.includes("high waisted comfort plus") || s.includes("super high waisted"))
+    product = "Comfort Plus HW";
   // Comfort Shorts is the same garment as Highrise Shorts (reviews page
   // already merges them under one display name).
   else if (
@@ -119,7 +131,7 @@ export function labelFromProductTitle(title: string): string | null {
     s.includes("comfort shorts")
   ) {
     product = "Highrise Short";
-  } else if (s.includes("high cut")) product = "French";
+  } else if (s.includes("high cut") || s.includes("french cut")) product = "French";
   else if (s.includes("boyshort")) product = "Boyshort";
   else if (s.includes("hipster")) product = "Hipster";
   else if (s.includes("bikini")) product = "Bikini";
