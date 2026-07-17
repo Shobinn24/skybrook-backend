@@ -55,6 +55,17 @@ export const marketingProcedure = t.procedure.use(
 
 export const opsProcedure = t.procedure.use(requireTier(["ops"]));
 
+// Reviews + Sizing read surface (client 2026-07-17: external collaborator
+// sees only those two pages). Mutations on those pages stay opsProcedure.
+export const reviewsProcedure = t.procedure.use(requireTier(["ops", "reviews_only"]));
+
+// Shared shell queries every signed-in tier needs (pull-status widget,
+// own access tier). Data is benign: source freshness metadata plus the
+// session's own tier.
+export const shellProcedure = t.procedure.use(
+  requireTier(["ops", "marketing", "fb_ads_only", "reviews_only"]),
+);
+
 export const cashflowProcedure = t.procedure
   .use(requireSession)
   .use(

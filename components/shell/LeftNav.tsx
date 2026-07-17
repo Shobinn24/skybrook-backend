@@ -12,6 +12,7 @@ const NAV_ITEMS: ReadonlyArray<{
   label: string;
   roles: ReadonlyArray<Role>;
   fbAdsOnly?: boolean;
+  reviewsOnly?: boolean;
 }> = [
   { href: "/inventory",      label: "Inventory",      roles: ["ops"] },
   { href: "/incoming",       label: "Incoming",       roles: ["ops"] },
@@ -21,8 +22,8 @@ const NAV_ITEMS: ReadonlyArray<{
   { href: "/performance",    label: "Performance",    roles: ["ops", "marketing"] },
   { href: "/campaign-tracker", label: "Campaign Tracker", roles: ["ops", "marketing"] },
   { href: "/launches",       label: "Launches",       roles: ["ops", "marketing"], fbAdsOnly: true },
-  { href: "/reviews",        label: "Reviews",        roles: ["ops"] },
-  { href: "/sizing",         label: "Sizing",         roles: ["ops"] },
+  { href: "/reviews",        label: "Reviews",        roles: ["ops"], reviewsOnly: true },
+  { href: "/sizing",         label: "Sizing",         roles: ["ops"], reviewsOnly: true },
   { href: "/fb-ads",         label: "FB Ads Tracker", roles: ["ops", "marketing"], fbAdsOnly: true },
   { href: "/bonus-tracker",  label: "Bonus Tracker",  roles: ["ops", "marketing"], fbAdsOnly: true },
   { href: "/shipping-performance", label: "Shipping",   roles: ["ops"] },
@@ -35,6 +36,7 @@ export function LeftNav({
   role = "ops",
   showCashflow = false,
   fbAdsOnly = false,
+  reviewsOnly = false,
 }: {
   role?: Role;
   // Cashflow is gated to its own allowlist (SKYBROOK_CASHFLOW_EMAILS), not the
@@ -45,10 +47,15 @@ export function LeftNav({
   // just redirect at the middleware. Client 2026-07-02 added
   // /bonus-tracker (read-only) alongside /fb-ads.
   fbAdsOnly?: boolean;
+  // reviews-only tier (external collaborator, client 2026-07-17): shows
+  // only Reviews + Sizing (must mirror isReviewsOnlyAllowedPath).
+  reviewsOnly?: boolean;
 }) {
   const items = fbAdsOnly
     ? NAV_ITEMS.filter((i) => i.fbAdsOnly)
-    : NAV_ITEMS.filter((i) => i.roles.includes(role));
+    : reviewsOnly
+      ? NAV_ITEMS.filter((i) => i.reviewsOnly)
+      : NAV_ITEMS.filter((i) => i.roles.includes(role));
   return (
     <aside className="w-56 shrink-0 border-r border-neutral-200 bg-white p-4 space-y-1 text-sm">
       <div className="mb-3 font-semibold text-neutral-900">Skybrook</div>

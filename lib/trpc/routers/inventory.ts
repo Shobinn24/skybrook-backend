@@ -55,7 +55,7 @@ import {
 import { getSkuDetail } from "@/lib/queries/sku-detail";
 import { getSustainabilityTimeline } from "@/lib/queries/sustainability-timeline";
 import { toEstDate } from "@/lib/tz";
-import { fbAdsProcedure, marketingProcedure, opsProcedure, router } from "@/lib/trpc/server";
+import { fbAdsProcedure, marketingProcedure, opsProcedure, router, shellProcedure } from "@/lib/trpc/server";
 
 const locationSchema = z.enum(["US", "CN"]);
 const velocityWindowSchema = z
@@ -569,7 +569,7 @@ export const inventoryRouter = router({
   // controls (approve/reject/bulk/preview/send) instead of rendering
   // buttons that would FORBIDDEN on click. Purely informational — every
   // mutation still enforces its tier server-side.
-  getMyAccessTier: fbAdsProcedure.query(({ ctx }) => ({ tier: ctx.tier })),
+  getMyAccessTier: shellProcedure.query(({ ctx }) => ({ tier: ctx.tier })),
 
   // Pending bonuses awaiting Jasper's per-ad approval decision.
   // Optional marketer filter — used by per-marketer tab views (Jasper

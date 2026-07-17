@@ -2,7 +2,7 @@ import { z } from "zod";
 import { and, eq, gte, isNull, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { csExchanges, shopifyRefundLines, variantSalesMonthly } from "@/lib/db/schema";
-import { opsProcedure, router } from "@/lib/trpc/server";
+import { reviewsProcedure, router } from "@/lib/trpc/server";
 import { buildDirectionMix, buildSalesWeighted, labelVerdict } from "@/lib/sizing/compute";
 
 // Sizing exchange analysis (Scott 2026-07-15). Two views per the spec:
@@ -77,7 +77,7 @@ export const sizingRouter = router({
   // Output 1 — direction mix by product × size, with verdicts. Panels
   // carry the product's overall exchange rate (exchanges ÷ units sold in
   // the same window) so it shows next to the name (Scott 2026-07-16).
-  directionMix: opsProcedure.input(range).query(async ({ input }) => {
+  directionMix: reviewsProcedure.input(range).query(async ({ input }) => {
     const effective = await effectiveRange(input);
     const [rows, units] = await Promise.all([directionRows(effective), unitsByLabel(effective)]);
     const cells = buildDirectionMix(rows);
@@ -101,7 +101,7 @@ export const sizingRouter = router({
   }),
 
   // Output 2 — sales-weighted exchange rate by product × size.
-  salesWeighted: opsProcedure.input(range).query(async ({ input }) => {
+  salesWeighted: reviewsProcedure.input(range).query(async ({ input }) => {
     // Mismatched windows silently distort the rate (spec section 1B):
     // when no explicit from-date is given, the sales window derives from
     // the CS data's own start so both sides cover the same months.
@@ -142,7 +142,7 @@ export const sizingRouter = router({
   }),
 
   // Per-product rates for the reviews page: keyed by (displayName, line).
-  productRates: opsProcedure.query(async () => {
+  productRates: reviewsProcedure.query(async () => {
     const [exchangesByLabel, refundsByLabel, salesByLabel] = await Promise.all([
       db
         .select({

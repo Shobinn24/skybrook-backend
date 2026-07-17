@@ -1,7 +1,14 @@
 import { cookies } from "next/headers";
 import { LeftNav } from "@/components/shell/LeftNav";
 import { TopBarStatus } from "@/components/shell/TopBarStatus";
-import { SESSION_COOKIE, getUserRole, isCashflowAllowed, isFbAdsOnly, verifySessionToken } from "@/lib/auth";
+import {
+  SESSION_COOKIE,
+  getUserRole,
+  isCashflowAllowed,
+  isFbAdsOnly,
+  isReviewsOnly,
+  verifySessionToken,
+} from "@/lib/auth";
 
 // Determine the signed-in user's role server-side so the rendered nav
 // reflects exactly what the middleware will allow. Edge middleware also
@@ -13,18 +20,21 @@ async function resolveAccessFromCookies(): Promise<{
   role: ReturnType<typeof getUserRole>;
   showCashflow: boolean;
   fbAdsOnly: boolean;
+  reviewsOnly: boolean;
 }> {
+  const none = { role: "ops" as const, showCashflow: false, fbAdsOnly: false, reviewsOnly: false };
   const secret = process.env.SESSION_SECRET;
-  if (!secret) return { role: "ops", showCashflow: false, fbAdsOnly: false };
+  if (!secret) return none;
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
-  if (!token) return { role: "ops", showCashflow: false, fbAdsOnly: false };
+  if (!token) return none;
   const session = await verifySessionToken(secret, token);
   const email = session?.email ?? null;
   return {
     role: getUserRole(email),
     showCashflow: isCashflowAllowed(email),
     fbAdsOnly: isFbAdsOnly(email),
+    reviewsOnly: isReviewsOnly(email),
   };
 }
 
@@ -47,12 +57,17 @@ function devDataBanner(): React.ReactNode {
 }
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { role, showCashflow, fbAdsOnly } = await resolveAccessFromCookies();
+  const { role, showCashflow, fbAdsOnly, reviewsOnly } = await resolveAccessFromCookies();
   return (
     <div className="flex min-h-screen flex-col">
       {devDataBanner()}
       <div className="flex flex-1">
-        <LeftNav role={role} showCashflow={showCashflow} fbAdsOnly={fbAdsOnly} />
+        <LeftNav
+          role={role}
+          showCashflow={showCashflow}
+          fbAdsOnly={fbAdsOnly}
+          reviewsOnly={reviewsOnly}
+        />
         <div className="flex min-w-0 flex-1 flex-col">
           <TopBarStatus />
           <main className="flex-1 p-6">{children}</main>

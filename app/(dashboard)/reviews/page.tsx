@@ -357,6 +357,12 @@ export default function ReviewsPage() {
   });
 
   const data = overview.data;
+  // Sync stays an ops action; reviews-only sessions get a read-only page
+  // (the mutation is opsProcedure server-side, this just hides the button).
+  const tierQ = trpc.inventory.getMyAccessTier.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+  const canSync = tierQ.data?.tier === "ops";
   const ratesQ = trpc.sizing.productRates.useQuery();
   const rates: ProductRates = useMemo(
     () => new Map((ratesQ.data?.rates ?? []).map((r) => [r.label, r])),
@@ -386,13 +392,15 @@ export default function ReviewsPage() {
           {data?.lastSyncAt && (
             <span className="text-xs text-neutral-400">synced {fmtDate(data.lastSyncAt)}</span>
           )}
-          <button
-            onClick={() => refresh.mutate()}
-            disabled={refresh.isPending || !(configured?.api || configured?.imap)}
-            className="whitespace-nowrap rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm hover:border-neutral-400 disabled:opacity-50"
-          >
-            {refresh.isPending ? "Syncing…" : "Sync now"}
-          </button>
+          {canSync && (
+            <button
+              onClick={() => refresh.mutate()}
+              disabled={refresh.isPending || !(configured?.api || configured?.imap)}
+              className="whitespace-nowrap rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm hover:border-neutral-400 disabled:opacity-50"
+            >
+              {refresh.isPending ? "Syncing…" : "Sync now"}
+            </button>
+          )}
         </div>
       </header>
 

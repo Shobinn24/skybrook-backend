@@ -7,7 +7,10 @@ import {
   isFbAdsOnly,
   isFbAdsOnlyAllowedPath,
   isMarketingAllowedPath,
+  isReviewsOnly,
+  isReviewsOnlyAllowedPath,
   MARKETING_LANDING_PATH,
+  REVIEWS_ONLY_LANDING_PATH,
   verifySessionToken,
 } from "@/lib/auth";
 
@@ -57,6 +60,19 @@ export async function middleware(req: NextRequest) {
       if (!isFbAdsOnlyAllowedPath(pathname)) {
         const url = req.nextUrl.clone();
         url.pathname = FB_ADS_ONLY_LANDING_PATH;
+        url.search = "";
+        return NextResponse.redirect(url);
+      }
+      return NextResponse.next();
+    }
+
+    // Reviews-only tier (client 2026-07-17): external collaborator sees
+    // only /reviews and /sizing. Checked before the marketing/cashflow
+    // logic, same as fb-ads-only.
+    if (isReviewsOnly(session.email)) {
+      if (!isReviewsOnlyAllowedPath(pathname)) {
+        const url = req.nextUrl.clone();
+        url.pathname = REVIEWS_ONLY_LANDING_PATH;
         url.search = "";
         return NextResponse.redirect(url);
       }

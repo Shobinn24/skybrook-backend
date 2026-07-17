@@ -6,7 +6,7 @@ import { looxProducts, looxReviews } from "@/lib/db/schema";
 import { runLooxApiSync } from "@/lib/jobs/loox-api-sync";
 import { looxConfigured, runLooxChat } from "@/lib/jobs/loox-chat";
 import { runLooxIngest } from "@/lib/jobs/loox-ingest";
-import { opsProcedure, router } from "@/lib/trpc/server";
+import { opsProcedure, reviewsProcedure, router } from "@/lib/trpc/server";
 
 // Loox reviews tool, v2 (Scott 2026-07-13). Reviews from both stores land
 // deduped in loox_reviews; everything here groups them by the display name
@@ -58,7 +58,7 @@ function rangeConds(input: { from?: string; to?: string; buyers?: "all" | "verif
 }
 
 export const reviewsRouter = router({
-  overview: opsProcedure.input(dateRange).query(async ({ input }) => {
+  overview: reviewsProcedure.input(dateRange).query(async ({ input }) => {
     const products = await db
       .select({
         displayName: groupName,
@@ -98,7 +98,7 @@ export const reviewsRouter = router({
     };
   }),
 
-  product: opsProcedure
+  product: reviewsProcedure
     .input(
       dateRange.extend({
         displayName: z.string().min(1).max(300),
@@ -153,7 +153,7 @@ export const reviewsRouter = router({
       };
     }),
 
-  chat: opsProcedure
+  chat: reviewsProcedure
     .input(
       dateRange.extend({
         displayName: z.string().min(1).max(300),

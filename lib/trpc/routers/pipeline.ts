@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { getLatestPullsPerSource, getPullHistoryAllSources } from "@/lib/queries/pipeline";
-import { fbAdsProcedure, opsProcedure, router } from "@/lib/trpc/server";
+import { opsProcedure, router, shellProcedure } from "@/lib/trpc/server";
 
 export const pipelineRouter = router({
-  getLatestPullsPerSource: fbAdsProcedure.query(() => getLatestPullsPerSource()),
+  getLatestPullsPerSource: shellProcedure.query(() => getLatestPullsPerSource()),
 
   // Per-source pull history for the Pipeline status page (SPEC §3.6).
   // Caps `limitPerSource` server-side so a misconfigured client can't

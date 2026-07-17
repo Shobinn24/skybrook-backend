@@ -117,6 +117,33 @@ describe("tRPC tier gating", () => {
     await expect(
       caller({ tier: "ops" }).inventory.getMyAccessTier(),
     ).resolves.toEqual({ tier: "ops" });
+    await expect(
+      caller({ tier: "reviews_only" }).inventory.getMyAccessTier(),
+    ).resolves.toEqual({ tier: "reviews_only" });
+  });
+
+  it("reviews_only cannot reach ops/marketing/fb-ads surfaces (client 2026-07-17)", async () => {
+    const c = caller({ tier: "reviews_only" });
+    await expectCode(c.factoryOrder.monthKey({ date: "2026-06-10" }), "FORBIDDEN");
+    await expectCode(c.inventory.getInventoryRows({ location: "US" }), "FORBIDDEN");
+    await expectCode(c.inventory.getLaunches(), "FORBIDDEN");
+    await expectCode(c.inventory.getBonusTracker(), "FORBIDDEN");
+    await expectCode(c.pipeline.getPullHistoryAllSources(), "FORBIDDEN");
+    await expectCode(c.cashflow.getAssumptions(), "FORBIDDEN");
+  });
+
+  it("reviews_only cannot invoke reviews mutations or internal QA queries", async () => {
+    const c = caller({ tier: "reviews_only" });
+    await expectCode(c.reviews.refresh(), "FORBIDDEN");
+    await expectCode(c.reviews.unparsed(), "FORBIDDEN");
+  });
+
+  it("marketing and fb_ads_only cannot reach the reviews/sizing surface", async () => {
+    // The reviews surface opened to reviews_only, NOT to the other
+    // restricted tiers — deny paths throw before any resolver runs.
+    await expectCode(caller({ tier: "marketing" }).sizing.directionMix({}), "FORBIDDEN");
+    await expectCode(caller({ tier: "fb_ads_only" }).sizing.productRates(), "FORBIDDEN");
+    await expectCode(caller({ tier: "marketing" }).reviews.overview({}), "FORBIDDEN");
   });
 
   it("marketing cannot reach ops-only surfaces", async () => {
@@ -151,6 +178,22 @@ describe("getAccessTier", () => {
       expect(getAccessTier("marketer@example.com")).toBe("marketing");
       expect(getAccessTier("owner@example.com")).toBe("ops");
     } finally {
+      delete process.env.SKYBROOK_FB_ADS_ONLY_EMAILS;
+      delete process.env.SKYBROOK_MARKETING_EMAILS;
+    }
+  });
+
+  it("reviews_only resolves from its list; fb_ads_only wins when in both", () => {
+    process.env.SKYBROOK_REVIEWS_ONLY_EMAILS = "kris@kndrsn.com,both@example.com";
+    process.env.SKYBROOK_FB_ADS_ONLY_EMAILS = "both@example.com";
+    process.env.SKYBROOK_MARKETING_EMAILS = "kris@kndrsn.com";
+    try {
+      // reviews_only wins over a marketing listing for the same email
+      expect(getAccessTier("kris@kndrsn.com")).toBe("reviews_only");
+      // fb_ads_only stays the tightest tier when an email is in both
+      expect(getAccessTier("both@example.com")).toBe("fb_ads_only");
+    } finally {
+      delete process.env.SKYBROOK_REVIEWS_ONLY_EMAILS;
       delete process.env.SKYBROOK_FB_ADS_ONLY_EMAILS;
       delete process.env.SKYBROOK_MARKETING_EMAILS;
     }

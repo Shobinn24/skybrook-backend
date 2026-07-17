@@ -10,6 +10,8 @@ import {
   isFbAdsOnly,
   isFbAdsOnlyAllowedPath,
   isMarketingAllowedPath,
+  isReviewsOnly,
+  isReviewsOnlyAllowedPath,
   parseAllowedEmails,
   verifyOAuthStateToken,
   verifySessionToken,
@@ -399,5 +401,43 @@ describe("isFbAdsOnlyAllowedPath", () => {
     expect(isFbAdsOnlyAllowedPath("/fb-ads-history")).toBe(false);
     expect(isFbAdsOnlyAllowedPath("/bonus-tracker-old")).toBe(false);
     expect(isFbAdsOnlyAllowedPath("/launches-history")).toBe(false);
+  });
+});
+
+describe("isReviewsOnly (external collaborator scoped to Reviews + Sizing, client 2026-07-17)", () => {
+  const LIST = "kris@kndrsn.com";
+  it("matches listed emails case-insensitively", () => {
+    expect(isReviewsOnly("kris@kndrsn.com", LIST)).toBe(true);
+    expect(isReviewsOnly("Kris@KNDRSN.com", LIST)).toBe(true);
+  });
+  it("denies non-listed emails and null", () => {
+    expect(isReviewsOnly("ops-user@everdries.com", LIST)).toBe(false);
+    expect(isReviewsOnly(null, LIST)).toBe(false);
+  });
+  it("fail-closed: empty/unset list = tier inactive", () => {
+    expect(isReviewsOnly("kris@kndrsn.com", "")).toBe(false);
+  });
+});
+
+describe("isReviewsOnlyAllowedPath", () => {
+  it("allows Reviews and Sizing + subpaths", () => {
+    expect(isReviewsOnlyAllowedPath("/reviews")).toBe(true);
+    expect(isReviewsOnlyAllowedPath("/reviews/anything")).toBe(true);
+    expect(isReviewsOnlyAllowedPath("/sizing")).toBe(true);
+    expect(isReviewsOnlyAllowedPath("/sizing/anything")).toBe(true);
+  });
+  it("allows tRPC paths (per-procedure tiers enforced in the tRPC layer)", () => {
+    expect(isReviewsOnlyAllowedPath("/api/trpc/sizing.directionMix")).toBe(true);
+  });
+  it("blocks every other page", () => {
+    expect(isReviewsOnlyAllowedPath("/performance")).toBe(false);
+    expect(isReviewsOnlyAllowedPath("/inventory")).toBe(false);
+    expect(isReviewsOnlyAllowedPath("/fb-ads")).toBe(false);
+    expect(isReviewsOnlyAllowedPath("/cashflow")).toBe(false);
+    expect(isReviewsOnlyAllowedPath("/")).toBe(false);
+  });
+  it("no false positive on similarly-prefixed paths", () => {
+    expect(isReviewsOnlyAllowedPath("/reviews-old")).toBe(false);
+    expect(isReviewsOnlyAllowedPath("/sizing-v1")).toBe(false);
   });
 });

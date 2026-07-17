@@ -302,9 +302,12 @@ export function parseAllowedEmails(raw: string | undefined): string[] {
 export type Role = "ops" | "marketing";
 
 /** Access tier for server-side authorization (tRPC + middleware).
- * Strictly ordered: fb_ads_only ⊂ marketing ⊂ ops. The fb-ads-only
- * check wins over marketing when an email appears in both lists. */
-export type AccessTier = "ops" | "marketing" | "fb_ads_only";
+ * Strictly ordered: fb_ads_only ⊂ marketing ⊂ ops. The restricted
+ * tiers (fb_ads_only, reviews_only) win over marketing/ops when an
+ * email appears in more than one list; fb_ads_only wins over
+ * reviews_only. reviews_only is a sibling restriction, not part of the
+ * marketing⊂ops chain — it sees ONLY /reviews and /sizing. */
+export type AccessTier = "ops" | "marketing" | "fb_ads_only" | "reviews_only";
 
 /** Resolves the single effective tier for an email. Used by the tRPC
  * context so every procedure can enforce its own minimum tier
@@ -312,6 +315,7 @@ export type AccessTier = "ops" | "marketing" | "fb_ads_only";
 export function getAccessTier(email: string | null | undefined): AccessTier {
   if (!email) return "fb_ads_only"; // most restrictive; callers reject null email anyway
   if (isFbAdsOnly(email)) return "fb_ads_only";
+  if (isReviewsOnly(email)) return "reviews_only";
   return getUserRole(email);
 }
 
@@ -412,6 +416,38 @@ export function isFbAdsOnlyAllowedPath(pathname: string): boolean {
   if (pathname === "/bonus-tracker" || pathname.startsWith("/bonus-tracker/"))
     return true;
   if (pathname === "/launches" || pathname.startsWith("/launches/")) return true;
+  if (pathname.startsWith("/api/trpc/")) return true;
+  return false;
+}
+
+// --- Reviews-only tier -----------------------------------------------------
+// Client request 2026-07-17: give an external collaborator access to the
+// Reviews and Sizing pages ONLY. Same shape as fb-ads-only: membership
+// from SKYBROOK_REVIEWS_ONLY_EMAILS, path gate in middleware, read
+// procedures opened via reviewsProcedure in the tRPC layer (mutations
+// stay ops). Non-workspace emails also need EXTERNAL_ALLOWED_EMAILS to
+// sign in at all. Fail-closed: empty/unset list = tier inactive.
+
+export const REVIEWS_ONLY_LANDING_PATH = "/reviews";
+
+/** True when `email` is restricted to Reviews + Sizing only. Controlled
+ * by SKYBROOK_REVIEWS_ONLY_EMAILS (comma-separated). */
+export function isReviewsOnly(
+  email: string | null | undefined,
+  reviewsOnlyEmailsRaw?: string,
+): boolean {
+  if (!email) return false;
+  const list = parseAllowedEmails(reviewsOnlyEmailsRaw ?? process.env.SKYBROOK_REVIEWS_ONLY_EMAILS);
+  return list.includes(email.toLowerCase());
+}
+
+/** Paths a reviews-only user may load: Reviews and Sizing (+ subpaths)
+ * and tRPC (per-procedure tiers enforced in the tRPC layer — a
+ * reviews-only session can only invoke reviewsProcedure/shellProcedure
+ * procedures). Everything else redirects to REVIEWS_ONLY_LANDING_PATH. */
+export function isReviewsOnlyAllowedPath(pathname: string): boolean {
+  if (pathname === "/reviews" || pathname.startsWith("/reviews/")) return true;
+  if (pathname === "/sizing" || pathname.startsWith("/sizing/")) return true;
   if (pathname.startsWith("/api/trpc/")) return true;
   return false;
 }
