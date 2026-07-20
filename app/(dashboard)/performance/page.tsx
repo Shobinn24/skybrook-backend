@@ -400,6 +400,87 @@ export default function PerformancePage() {
               )}
             </div>
 
+            {/* Aggregate men's rollup (owner request 2026-07-20): all men's
+                lines combined + US / INTL cuts. Per-product men's numbers
+                are distorted by cross-product traffic (e.g. Mens ads landing
+                on the Brief with Fly page intl); the aggregate cancels that
+                out. */}
+            {data?.mens && (
+              <>
+                <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  Men&apos;s rollup — all men&apos;s products combined
+                </div>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  {data.mens.rows.map((r) => (
+                    <div
+                      key={r.key}
+                      className="rounded-lg border border-neutral-300 bg-white p-5"
+                    >
+                      <div className="text-xs uppercase tracking-wide text-neutral-500">
+                        {r.label}
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-3">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wide text-neutral-400">
+                            Revenue
+                          </div>
+                          <div className="text-lg font-semibold text-neutral-900 tabular-nums">
+                            {fmtMoney(r.revenueUsd)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wide text-neutral-400">
+                            Spend
+                          </div>
+                          <div className="text-lg font-semibold text-neutral-900 tabular-nums">
+                            {fmtMoney(r.spendUsd)}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-4 border-t border-neutral-100 pt-3">
+                        <div className="text-[10px] uppercase tracking-wide text-neutral-400">
+                          ROAS
+                        </div>
+                        <div className="text-2xl font-bold tabular-nums text-neutral-900">
+                          {fmtRoas(r.roas)}
+                        </div>
+                      </div>
+                      {r.spendBySource && (
+                        <div className="mt-4 border-t border-neutral-100 pt-2 space-y-0.5 text-[11px]">
+                          <div className="text-neutral-500">Spend breakdown:</div>
+                          {r.spendBySource.map((b) => (
+                            <div
+                              key={b.source}
+                              className={
+                                "flex justify-between " +
+                                (b.staleness ? "text-amber-700" : "text-neutral-600")
+                              }
+                            >
+                              <span>{b.source === "AL" ? "AppLovin" : "FB"}</span>
+                              <span className="tabular-nums">{fmtMoney(b.spendUsd)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
+                  <strong>Men&apos;s rollup notes:</strong> Combines the{" "}
+                  {data.mens.lines.length > 0
+                    ? data.mens.lines.join(", ")
+                    : "men's"}{" "}
+                  lines. US / INTL <em>revenue</em> is split by which Shopify
+                  store sold; US / INTL <em>spend</em> is split by the ad&apos;s
+                  funnel region from the product-map sheet (audience-geo
+                  fraction when a URL isn&apos;t mapped). Because some men&apos;s
+                  ads currently send traffic to a different men&apos;s product
+                  page, per-product men&apos;s cards can misattribute between
+                  the men&apos;s lines — these rollup cards are immune to that.
+                </div>
+              </>
+            )}
+
             <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
               <strong>Notes:</strong> Each card shows the same product line
               (identical revenue / spend / ROAS) as the All products table.

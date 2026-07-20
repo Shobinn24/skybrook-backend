@@ -18,7 +18,8 @@ describe("revenueFamilyFromProductName", () => {
     ["Style 9055 HF", "9055 HF"],
     ["Hipster", "Hipster"],
     ["Mens 5-Pack", "Mens"],
-    ["Boxer w/ Fly 3-Pack", "Other products"], // not launched as its own line yet
+    // Intl launch 2026-07 wave 2: the boxer is its own line now
+    ["Boxer w/ Fly 3-Pack", "Mens Boxer"],
     ["HW 1-Pack", "HW"],
     ["Boyshort", "Boyshort"],
     ["Super High-Waist", "Super High-Waist"],

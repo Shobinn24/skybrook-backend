@@ -32,6 +32,9 @@ export function attributeFbPrefix(prefixInner: string): FbAttribution {
   // token ("Men Brief ..."), so it's matched on the full prefix text before
   // the first-token dispatch below ("men"/"mens" alone still means Mens).
   if (/^mens? brief(\s|$)/i.test(raw)) return { product: "Mens Brief", bucket: "product" };
+  // Intl launch 2026-07 wave 2: Men's Boxer (ev-flyboxer) gets its own
+  // line, same two-word-token pattern as Men Brief.
+  if (/^mens? boxer(\s|$)/i.test(raw)) return { product: "Mens Boxer", bucket: "product" };
   const p = raw.split(/\s+/)[0]?.toLowerCase() ?? "";
   const hf = /(^|\s)hf(\s|$)/i.test(raw) || p === "oghf" || p === "hwhf";
   const v = (base: string): FbAttribution => ({
@@ -125,6 +128,15 @@ export function canonicalProductLabel(
   if (key === "chw" || key === "cotton hw") return { label: "Cotton HW", kind: "product" };
   if (key === "men brief" || key === "mens brief" || key === "men's brief")
     return { label: "Mens Brief", kind: "product" };
+  if (
+    key === "men boxer" ||
+    key === "mens boxer" ||
+    key === "men's boxer" ||
+    key === "boxer" ||
+    key === "boxer brief" ||
+    key === "mens boxer brief"
+  )
+    return { label: "Mens Boxer", kind: "product" };
   return { label: raw, kind: "product" };
 }
 

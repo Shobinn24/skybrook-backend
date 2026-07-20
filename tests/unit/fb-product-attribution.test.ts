@@ -48,6 +48,8 @@ describe("canonicalProductLabel", () => {
     expect(canonicalProductLabel("CHW")).toEqual({ label: "Cotton HW", kind: "product" });
     expect(canonicalProductLabel("Men Brief")).toEqual({ label: "Mens Brief", kind: "product" });
     expect(canonicalProductLabel("Men's Brief")).toEqual({ label: "Mens Brief", kind: "product" });
+    expect(canonicalProductLabel("Men Boxer")).toEqual({ label: "Mens Boxer", kind: "product" });
+    expect(canonicalProductLabel("Boxer Brief")).toEqual({ label: "Mens Boxer", kind: "product" });
   });
   it("passes through known + unknown product labels as kind product", () => {
     expect(canonicalProductLabel("9055")).toEqual({ label: "9055", kind: "product" });
@@ -91,6 +93,11 @@ describe("attributeFbAd", () => {
     ["(CHW INTL) Ad 3050 - future", "Cotton HW", "product"],
     ["(Men Brief INTL) Ad 3003 - launch", "Mens Brief", "product"],
     ["(Mens Brief CC) Ad 3004 - variant spelling", "Mens Brief", "product"],
+    // Intl launch 2026-07 wave 2: the boxer line, same token pattern
+    ["(Men Boxer INTL) Ad 3100 - launch", "Mens Boxer", "product"],
+    ["(Mens Boxer) Ad 3101 - variant spelling", "Mens Boxer", "product"],
+    // "Mens BB" stays the classic Mens advertorial line, NOT the boxer
+    ["(Mens BB) Ad 2402 - existing line", "Mens", "product"],
     ["(Mens) Ad 3005 - still plain Mens", "Mens", "product"],
     ["(HOME US BAU) Ad 1616 - Dan", "Brand / Homepage", "brand"],
     ["(Clearance US BAU) Ad 1586 - Raul", "Clearance / Mixed", "clearance"],

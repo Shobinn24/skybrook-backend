@@ -72,6 +72,28 @@ export type PerformanceRow = {
   }>;
 };
 
+/** The product lines that make up "men's" for the aggregate men's
+ * rollup (owner request 2026-07-20). Cross-product men's traffic (e.g.
+ * Mens-prefixed ads landing on the flybrief page) distorts PER-PRODUCT
+ * numbers but cancels out inside this set, which is the point. */
+export const MENS_LINES = ["Mens", "Mens Brief", "Mens Boxer"] as const;
+
+export type MensRollupRow = {
+  key: "all" | "us" | "intl";
+  label: string;
+  /** Net revenue. For "us"/"intl" this is the revenue of the matching
+   * SHOPIFY STORE (shopify_us / shopify_intl channel). */
+  revenueUsd: number;
+  /** Combined FB + AppLovin spend. For "us"/"intl" this is the funnel
+   * region split (product-map region, geo fraction fallback; AppLovin
+   * country column). */
+  spendUsd: number;
+  roas: number | null;
+  /** FB/AppLovin breakdown — only on the "all" row (the per-source
+   * split is not computed at region grain). */
+  spendBySource?: PerformanceRow["spendBySource"];
+};
+
 export type PerformanceResult = {
   rangeDays: number;
   rangeStart: string;
@@ -86,6 +108,12 @@ export type PerformanceResult = {
    * in the name. FB only (AppLovin carries no ad names). No revenue can be
    * attributed to these ads, so the box exposes spend without revenue/ROAS. */
   infotainment: { spendUsd: number };
+  /** Owner request 2026-07-20: aggregate men's rollup — all men's lines
+   * combined (see MENS_LINES), plus US / INTL cuts. Computed from the
+   * SAME shared line stats as the focus cards, so All = the sum of the
+   * men's rows in All products by construction. Always global: the
+   * optional `channel` filter does not apply to this block. */
+  mens: { lines: string[]; rows: MensRollupRow[] };
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -211,6 +239,87 @@ export async function getPerformanceRollup(opts: {
       ),
     );
 
+  // --- Aggregate men's rollup (owner request 2026-07-20). Spend comes
+  // from the SAME shared line stats as the cards above; revenue is
+  // re-queried grouped by Shopify channel so the US/INTL cut reflects
+  // which STORE sold. Deliberately ignores opts.channel — the men's
+  // block is always the global picture.
+  const mensLineStats = lines.filter((l) =>
+    (MENS_LINES as readonly string[]).includes(l.line),
+  );
+  const mensFbSpend = round4(mensLineStats.reduce((s, l) => s + l.fbSpendUsd, 0));
+  const mensAlSpend = round4(mensLineStats.reduce((s, l) => s + l.alSpendUsd, 0));
+  const mensSpendAll = round4(mensFbSpend + mensAlSpend);
+  const mensSpendUs = round4(mensLineStats.reduce((s, l) => s + l.usSpendUsd, 0));
+  const mensSpendIntl = round4(
+    mensLineStats.reduce((s, l) => s + l.nonUsSpendUsd, 0),
+  );
+
+  const mensRevRows = await db
+    .select({
+      channel: dailySales.channel,
+      productName: skus.productName,
+      net: sql<string>`coalesce(sum(${dailySales.netSalesUsd}), 0)`,
+    })
+    .from(dailySales)
+    .leftJoin(skus, eq(skus.sku, dailySales.sku))
+    .where(
+      and(
+        gte(dailySales.salesDate, rangeStart),
+        lte(dailySales.salesDate, rangeEnd),
+      ),
+    )
+    .groupBy(dailySales.channel, skus.productName);
+  let mensRevUs = 0;
+  let mensRevIntl = 0;
+  for (const r of mensRevRows) {
+    const fam = revenueFamilyFromProductName(r.productName ?? "");
+    if (!(MENS_LINES as readonly string[]).includes(fam)) continue;
+    if (r.channel === "shopify_us") mensRevUs += Number(r.net);
+    else mensRevIntl += Number(r.net);
+  }
+  mensRevUs = round4(mensRevUs);
+  mensRevIntl = round4(mensRevIntl);
+  const mensRevAll = round4(mensRevUs + mensRevIntl);
+
+  const mensRoas = (rev: number, spend: number): number | null =>
+    spend > 0 ? rev / spend : null;
+  const mensAllSources = (["FB", "AL"] as const).map((source) => {
+    const entry: PerformanceRow["spendBySource"][number] = {
+      source,
+      spendUsd: source === "FB" ? mensFbSpend : mensAlSpend,
+    };
+    if (staleness[source]) entry.staleness = staleness[source];
+    return entry;
+  });
+  const mens: PerformanceResult["mens"] = {
+    lines: mensLineStats.map((l) => l.line),
+    rows: [
+      {
+        key: "all",
+        label: "All Men Products",
+        revenueUsd: mensRevAll,
+        spendUsd: mensSpendAll,
+        roas: mensRoas(mensRevAll, mensSpendAll),
+        spendBySource: mensAllSources,
+      },
+      {
+        key: "us",
+        label: "All Men US",
+        revenueUsd: mensRevUs,
+        spendUsd: mensSpendUs,
+        roas: mensRoas(mensRevUs, mensSpendUs),
+      },
+      {
+        key: "intl",
+        label: "All Men INTL",
+        revenueUsd: mensRevIntl,
+        spendUsd: mensSpendIntl,
+        roas: mensRoas(mensRevIntl, mensSpendIntl),
+      },
+    ],
+  };
+
   return {
     rangeDays: opts.rangeDays,
     rangeStart,
@@ -218,6 +327,7 @@ export async function getPerformanceRollup(opts: {
     rows,
     warnEmpty,
     infotainment: { spendUsd: Number(info?.total ?? 0) },
+    mens,
   };
 }
 
@@ -293,9 +403,12 @@ export function revenueFamilyFromProductName(name: string): string {
     if (n.includes("9055") || n.includes("hipster") || n.includes("comfort")) return "Cotton 9055";
     if (n.includes("high waisted") || /\bhw\b/.test(n)) return "Cotton HW";
   }
+  // Men's Boxer (ev-flyboxer "Boxer w/ Fly") is its own line as of the
+  // 2026-07 intl launch — matched before "brief" so a future "Boxer
+  // Brief" product name stays a boxer.
+  if (n.includes("boxer")) return "Mens Boxer";
   // Men's Brief with Fly (ev-flybrief) is its own line — carved out before
-  // the generic "mens" match so it doesn't lump into Mens. Boxer w/ Fly
-  // (ev-flyboxer, no "brief" in its name) is not affected.
+  // the generic "mens" match so it doesn't lump into Mens.
   if (n.includes("brief")) return "Mens Brief";
   if (n.includes("9055")) return hf ? "9055 HF" : "9055";
   // Boyshort lumps regular + HF into one family (2026-06-26): the landing URL
