@@ -395,6 +395,10 @@ export async function getPerformanceDataFreshness(): Promise<PerformanceDataFres
 export function revenueFamilyFromProductName(name: string): string {
   const n = (name ?? "").toLowerCase();
   const hf = /\bhf\b/.test(n);
+  // Acclaims is a separate brand line (2026-07-20); its product names
+  // reuse EV family words ("Acclaims Style 9055 3-Pack"), so carve the
+  // brand out FIRST or its revenue would merge into the EV families.
+  if (n.startsWith("acclaims")) return "Acclaims";
   // Intl launch 2026-07-10: the cotton lines are their own families and must
   // be carved out BEFORE the generic 9055/hipster/hw matches below. "Cotton
   // Hipster" (ev-cottonhip) IS the Cotton 9055 line — that's the owner's name

@@ -459,3 +459,30 @@ describe("LAUNCH_BLOCKED_NAME_PREFIXES — cleanup-query source of truth", () =>
     expect(LAUNCH_BLOCKED_NAME_PREFIXES).not.toContain("Super High-Waist");
   });
 });
+
+// Acclaims brand line (Scott 2026-07-20: keep on /launches, grouped
+// like every other product — not one row per SKU). Same family tokens
+// as EV with the brand label prepended; NOT subject to the EV-brand
+// launch blocklist ("9055 is an old product" applies to EV only).
+describe("Acclaims (ac-) brand SKUs", () => {
+  it("derives grouped pack-level names with the brand prefix", () => {
+    expect(deriveProductName("ac-9055-3x-m")).toBe("Acclaims Style 9055 3-Pack");
+    expect(deriveProductName("ac-9055-6x-xxl")).toBe("Acclaims Style 9055 6-Pack");
+    expect(deriveProductName("ac-bshort-hf-3x-s")).toBe("Acclaims Boyshort 3-Pack HF");
+  });
+
+  it("is not launch-blocked (the 9055 blocklist is EV-scoped)", () => {
+    expect(isLaunchBlockedFamily("ac-9055-3x-m")).toBe(false);
+    expect(isLaunchBlockedFamily("ev-9055-l")).toBe(true);
+  });
+
+  it("passes raw ac- placeholder names through deriveLaunchName untouched", () => {
+    expect(deriveLaunchName("ac-9055-3x-m", "ac-9055-3x-m")).toBe("ac-9055-3x-m");
+  });
+
+  it("keeps every size of a pack under one name (the grouping Scott asked for)", () => {
+    const sizes = ["xxs", "xs", "s", "m", "l", "xl", "xxl", "3xl", "4xl", "5xl"];
+    const names = new Set(sizes.map((sz) => deriveProductName(`ac-9055-3x-${sz}`)));
+    expect(names.size).toBe(1);
+  });
+});

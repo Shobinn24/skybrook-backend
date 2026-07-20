@@ -90,7 +90,12 @@ export async function cleanupStaleDefaultLaunches(): Promise<number> {
   // landed before the fix.
   const stalePlaceholderResult = await db
     .delete(productLaunches)
-    .where(like(productLaunches.productName, "ev-%"))
+    .where(
+      or(
+        like(productLaunches.productName, "ev-%"),
+        like(productLaunches.productName, "ac-%"),
+      ),
+    )
     .returning({ id: productLaunches.id });
 
   // Match each blocklisted family label as either the exact productName
@@ -337,7 +342,7 @@ export async function runLaunchAutoPopulate(): Promise<LaunchAutoPopulateResult>
     // per size (Scott 2026-05-28). Mirrors the same filter
     // getDistinctProductNames already applies to the add-launch
     // dropdown — keeps the two surfaces in sync.
-    if (launchName.startsWith("ev-")) continue;
+    if (launchName.startsWith("ev-") || launchName.startsWith("ac-")) continue;
     if (existingLaunchNames.has(launchName)) {
       skippedAlreadyLaunchedNames.add(launchName);
       continue;

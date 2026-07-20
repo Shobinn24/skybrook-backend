@@ -20,6 +20,9 @@ describe("revenueFamilyFromProductName", () => {
     ["Mens 5-Pack", "Mens"],
     // Intl launch 2026-07 wave 2: the boxer is its own line now
     ["Boxer w/ Fly 3-Pack", "Mens Boxer"],
+    // Acclaims brand carve-out: must NOT merge into the EV families
+    ["Acclaims Style 9055 3-Pack", "Acclaims"],
+    ["Acclaims Boyshort 3-Pack HF", "Acclaims"],
     ["HW 1-Pack", "HW"],
     ["Boyshort", "Boyshort"],
     ["Super High-Waist", "Super High-Waist"],

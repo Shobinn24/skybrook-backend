@@ -116,13 +116,24 @@ const IMPLICIT_5PACK_FAMILIES = new Set([
 // supply: aliasOf (rewrite to another family), displayLabel (label for
 // this family token), and isImplicit5pack (whether to drop the 5-Pack
 // suffix for this family). Without overrides, behavior is unchanged.
+// Brand prefixes. "ev" is the house brand (no label prefix); "ac" is
+// the Acclaims line (Scott 2026-07-20: keep Acclaims on /launches but
+// grouped like every other product, not one row per SKU). The family
+// tokens after the brand are shared (ac-9055-*, ac-bshort-hf-*), so
+// the same parser applies with the brand label prepended.
+const BRAND_LABEL_PREFIX: Record<string, string> = {
+  ev: "",
+  ac: "Acclaims ",
+};
+
 export function deriveProductName(
   sku: string,
   overrides?: FamilyOverrideMap
 ): string | null {
   const lower = sku.toLowerCase();
   const parts = lower.split("-");
-  if (parts[0] !== "ev" || parts.length < 3) return null;
+  const brandPrefix = BRAND_LABEL_PREFIX[parts[0] ?? ""];
+  if (brandPrefix === undefined || parts.length < 3) return null;
 
   // Resolve family. Multi-segment prefixes (sl-bik, new-og, bp-9055,
   // etc.) are checked first. Aliases — DB override or constant —
@@ -167,7 +178,7 @@ export function deriveProductName(
   // ev-mixed is a special case — Scott's no-color default OG 5-pack.
   // Bucket under "OG 5-Pack" so /inventory groups it with the other
   // ev-og-5x-{color}-{size} variants.
-  if (family === "mixed") return "OG 5-Pack";
+  if (family === "mixed") return brandPrefix + "OG 5-Pack";
 
   // Override displayLabel wins over MULTI_FAMILY_LABELS / FAMILY_LABELS.
   // Alias-mode override rows (aliasOf set) don't contribute a label —
@@ -181,7 +192,7 @@ export function deriveProductName(
     overrideLabel ?? MULTI_FAMILY_LABELS[family] ?? FAMILY_LABELS[family];
   if (!baseLabel) return null;
 
-  const out = [baseLabel];
+  const out = [brandPrefix + baseLabel];
   // Drop pack label when it's the family's implicit default (5-pack
   // for bshort/9055/sw/hip/bik/etc). Override is_implicit_5pack is
   // authoritative when present (covers both directions: opt new family
@@ -343,7 +354,7 @@ export function isLaunchBlockedFamily(sku: string): boolean {
  * to FAMILY_LABELS / FAMILY_ALIAS in this file.
  */
 export function deriveLaunchName(sku: string, baseName: string): string {
-  if (baseName.startsWith("ev-")) return baseName;
+  if (baseName.startsWith("ev-") || baseName.startsWith("ac-")) return baseName;
   const lower = sku.toLowerCase();
   const parts = lower.split("-");
   for (const t of parts) {
