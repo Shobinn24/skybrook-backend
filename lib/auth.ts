@@ -306,8 +306,16 @@ export type Role = "ops" | "marketing";
  * tiers (fb_ads_only, reviews_only) win over marketing/ops when an
  * email appears in more than one list; fb_ads_only wins over
  * reviews_only. reviews_only is a sibling restriction, not part of the
- * marketing⊂ops chain — it sees ONLY /reviews and /sizing. */
-export type AccessTier = "ops" | "marketing" | "fb_ads_only" | "reviews_only";
+ * marketing⊂ops chain — it sees ONLY /reviews and /sizing. viewer is
+ * read-only-everything: every page an ops user sees (cashflow still
+ * requires its own allowlist), queries only — all mutations FORBIDDEN
+ * in the tRPC layer. */
+export type AccessTier =
+  | "ops"
+  | "marketing"
+  | "fb_ads_only"
+  | "reviews_only"
+  | "viewer";
 
 /** Resolves the single effective tier for an email. Used by the tRPC
  * context so every procedure can enforce its own minimum tier
@@ -316,6 +324,7 @@ export function getAccessTier(email: string | null | undefined): AccessTier {
   if (!email) return "fb_ads_only"; // most restrictive; callers reject null email anyway
   if (isFbAdsOnly(email)) return "fb_ads_only";
   if (isReviewsOnly(email)) return "reviews_only";
+  if (isViewer(email)) return "viewer";
   return getUserRole(email);
 }
 
@@ -418,6 +427,27 @@ export function isFbAdsOnlyAllowedPath(pathname: string): boolean {
   if (pathname === "/launches" || pathname.startsWith("/launches/")) return true;
   if (pathname.startsWith("/api/trpc/")) return true;
   return false;
+}
+
+// --- Viewer tier -----------------------------------------------------------
+// Client request 2026-07-21: give an external collaborator VIEW access to
+// all parts of the backend tool. Membership from SKYBROOK_VIEWER_EMAILS.
+// No middleware path gate of its own: a viewer email resolves to the ops
+// role for nav/path purposes (sees every page; /cashflow keeps its own
+// allowlist gate), while the tRPC layer admits viewer sessions to QUERIES
+// only — every mutation rejects with FORBIDDEN (lib/trpc/server.ts).
+// Non-workspace emails also need EXTERNAL_ALLOWED_EMAILS to sign in at
+// all. Fail-closed: empty/unset list = tier inactive.
+
+/** True when `email` is in the read-only viewer tier. Controlled by
+ * SKYBROOK_VIEWER_EMAILS (comma-separated). */
+export function isViewer(
+  email: string | null | undefined,
+  viewerEmailsRaw?: string,
+): boolean {
+  if (!email) return false;
+  const list = parseAllowedEmails(viewerEmailsRaw ?? process.env.SKYBROOK_VIEWER_EMAILS);
+  return list.includes(email.toLowerCase());
 }
 
 // --- Reviews-only tier -----------------------------------------------------

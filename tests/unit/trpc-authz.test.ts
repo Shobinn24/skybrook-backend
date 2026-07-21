@@ -156,6 +156,55 @@ describe("tRPC tier gating", () => {
     await expectCode(c.admin.deleteOverride({ family: "x" }), "FORBIDDEN");
   });
 
+  it("viewer can read every tier's query surface (client 2026-07-21)", async () => {
+    // monthKey is the pure ops query (no DB on success) — a viewer
+    // session passes the ops-only builder because requireTier admits
+    // viewer for queries. Success paths that hit the DB are exercised
+    // by the integration suites with real ops sessions; the point here
+    // is the middleware admits viewer instead of throwing FORBIDDEN.
+    await expect(
+      caller({ tier: "viewer" }).factoryOrder.monthKey({ date: "2026-06-10" }),
+    ).resolves.toBeTruthy();
+    await expect(
+      caller({ tier: "viewer" }).inventory.getMyAccessTier(),
+    ).resolves.toEqual({ tier: "viewer" });
+  });
+
+  it("viewer cannot invoke ANY mutation on any surface (client 2026-07-21)", async () => {
+    const c = caller({ tier: "viewer" });
+    await expectCode(
+      c.inventory.addLaunch({ productName: "X", shipmentName: "Y" }),
+      "FORBIDDEN",
+    );
+    await expectCode(
+      c.inventory.approveBonus({
+        awardId: "00000000-0000-0000-0000-000000000000",
+        approval: "approved_full",
+      }),
+      "FORBIDDEN",
+    );
+    await expectCode(c.inventory.bulkApprovePending(), "FORBIDDEN");
+    await expectCode(
+      c.factoryOrder.approve({ orderId: "00000000-0000-0000-0000-000000000000" }),
+      "FORBIDDEN",
+    );
+    await expectCode(c.admin.deleteOverride({ family: "x" }), "FORBIDDEN");
+    await expectCode(c.reviews.refresh(), "FORBIDDEN");
+    await expectCode(
+      c.inventory.markIncomingReceived({
+        shipmentName: "x", destination: "US", expectedArrival: "2026-06-10",
+      }),
+      "FORBIDDEN",
+    );
+  });
+
+  it("viewer cannot read cashflow without the cashflow allowlist", async () => {
+    await expectCode(
+      caller({ tier: "viewer", cashflowAllowed: false }).cashflow.getAssumptions(),
+      "FORBIDDEN",
+    );
+  });
+
   it("cashflow procedures are gated by the allowlist flag, not tier", async () => {
     // Even a full-ops session is denied without the cashflow allowlist.
     await expectCode(
@@ -180,6 +229,19 @@ describe("getAccessTier", () => {
     } finally {
       delete process.env.SKYBROOK_FB_ADS_ONLY_EMAILS;
       delete process.env.SKYBROOK_MARKETING_EMAILS;
+    }
+  });
+
+  it("viewer resolves from its list; restricted tiers win when in both", () => {
+    process.env.SKYBROOK_VIEWER_EMAILS = "luke@anacondafightwear.co,both-v@example.com";
+    process.env.SKYBROOK_FB_ADS_ONLY_EMAILS = "both-v@example.com";
+    try {
+      expect(getAccessTier("luke@anacondafightwear.co")).toBe("viewer");
+      // fb_ads_only stays the tightest tier when an email is in both
+      expect(getAccessTier("both-v@example.com")).toBe("fb_ads_only");
+    } finally {
+      delete process.env.SKYBROOK_VIEWER_EMAILS;
+      delete process.env.SKYBROOK_FB_ADS_ONLY_EMAILS;
     }
   });
 

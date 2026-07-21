@@ -20,6 +20,13 @@ export const router = t.router;
 //   cashflowProcedure   — SKYBROOK_CASHFLOW_EMAILS allowlist only,
 //                         independent of tier (company cash position)
 //
+// The viewer tier (client 2026-07-21: external collaborator with VIEW
+// access to all parts) cuts across every tier builder: requireTier
+// admits a viewer session to QUERY procedures regardless of the
+// builder's tier list, and rejects every mutation. cashflowProcedure
+// does not go through requireTier, so viewers cannot read cashflow
+// unless they are also on the cashflow allowlist.
+//
 // All builders also reject sessions without an email (UNAUTHORIZED) and
 // narrow ctx.email to string so mutations can attribute writes safely.
 
@@ -31,11 +38,15 @@ const requireSession = t.middleware(({ ctx, next }) => {
 });
 
 function requireTier(allowed: ReadonlyArray<AccessTier>) {
-  return t.middleware(({ ctx, next }) => {
+  return t.middleware(({ ctx, type, next }) => {
     if (!ctx.email) {
       throw new TRPCError({ code: "UNAUTHORIZED", message: "no session" });
     }
-    if (!allowed.includes(ctx.tier)) {
+    // Viewer tier: read-only everything. Queries pass every tier
+    // builder; mutations (and subscriptions) fall through to the
+    // normal tier check and reject.
+    const viewerRead = ctx.tier === "viewer" && type === "query";
+    if (!allowed.includes(ctx.tier) && !viewerRead) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "your account does not have access to this resource",

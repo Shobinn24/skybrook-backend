@@ -12,6 +12,7 @@ import {
   isMarketingAllowedPath,
   isReviewsOnly,
   isReviewsOnlyAllowedPath,
+  isViewer,
   parseAllowedEmails,
   verifyOAuthStateToken,
   verifySessionToken,
@@ -416,6 +417,21 @@ describe("isReviewsOnly (external collaborator scoped to Reviews + Sizing, clien
   });
   it("fail-closed: empty/unset list = tier inactive", () => {
     expect(isReviewsOnly("kris@kndrsn.com", "")).toBe(false);
+  });
+});
+
+describe("isViewer (external collaborator, read-only all pages, client 2026-07-21)", () => {
+  const LIST = "luke@anacondafightwear.co";
+  it("matches listed emails case-insensitively", () => {
+    expect(isViewer("luke@anacondafightwear.co", LIST)).toBe(true);
+    expect(isViewer("Luke@AnacondaFightwear.co", LIST)).toBe(true);
+  });
+  it("denies non-listed emails and null", () => {
+    expect(isViewer("ops-user@everdries.com", LIST)).toBe(false);
+    expect(isViewer(null, LIST)).toBe(false);
+  });
+  it("fail-closed: empty/unset list = tier inactive", () => {
+    expect(isViewer("luke@anacondafightwear.co", "")).toBe(false);
   });
 });
 
