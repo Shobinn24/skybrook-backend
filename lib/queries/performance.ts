@@ -20,15 +20,18 @@ export type SalesChannel = "shopify_us" | "shopify_intl";
  * `line` is the canonical family label emitted by
  * `revenueFamilyFromProductName` / `attributeFbPrefix`. */
 const PRODUCT_CONFIG = {
-  men: { label: "Men's", line: "Mens" },
-  shapewear: { label: "Shapewear", line: "Shapewear" },
+  // `hidden: true` (client 2026-07-21, periodic focus pruning): the line
+  // keeps computing and stays in the All-products view; only its focus
+  // card is hidden. Flip the flag to bring a card back.
+  men: { label: "Men's", line: "Mens", hidden: true },
+  shapewear: { label: "Shapewear", line: "Shapewear", hidden: true },
   suphw: { label: "SupHW", line: "Super High-Waist" },
   hrshort: { label: "High Rise Short", line: "High Rise Short" },
   // Intl launch 2026-07-10 (owner request): Cotton 9055 = ev-cottonhip
   // "Cotton Hipster" revenue + "(Cotton ...)" FB ads; Men's Brief =
   // ev-flybrief "Mens Brief with Fly" revenue + "(Men Brief ...)" FB ads.
   cotton9055: { label: "Cotton 9055", line: "Cotton 9055" },
-  mensbrief: { label: "Men's Brief", line: "Mens Brief" },
+  mensbrief: { label: "Men's Brief", line: "Mens Brief", hidden: true },
   // Marketer request 2026-07-21: Cotton HW gets its own focus card ahead
   // of its ad launch. Ads carry the "CHW" ad-name token (mapped in
   // attributeFbPrefix since 2026-07-10); revenue = the "Cotton HW"
@@ -60,6 +63,9 @@ export type SpendSource = "FB" | "AL";
 export type PerformanceRow = {
   key: ProductKey;
   label: string;
+  /** Focus card hidden from view (client 2026-07-21). The line still
+   * computes and ships in the payload; only the card render is skipped. */
+  hidden: boolean;
   /** Net revenue = product revenue + the line's pro-rated shipping/tax
    * share (sum of daily_sales.net_sales_usd over the line's SKUs). */
   revenueUsd: number;
@@ -217,6 +223,7 @@ export async function getPerformanceRollup(opts: {
       return {
         key,
         label: cfg.label,
+        hidden: "hidden" in cfg && cfg.hidden === true,
         revenueUsd: stats?.revenueNetUsd ?? 0,
         spendUsd: stats?.spendUsd ?? 0,
         roas: stats?.roas ?? null,

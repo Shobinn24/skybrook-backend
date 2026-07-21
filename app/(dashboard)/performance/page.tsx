@@ -304,7 +304,10 @@ export default function PerformancePage() {
               </div>
             )}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              {rows.map((r) => (
+              {/* Hidden cards (client 2026-07-21) keep computing in the
+                  payload and the All-products view; only the card is
+                  skipped here. */}
+              {rows.filter((r) => !r.hidden).map((r) => (
                 <div
                   key={r.key}
                   className="rounded-lg border border-neutral-200 bg-white p-5"
