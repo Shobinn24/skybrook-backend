@@ -29,6 +29,11 @@ const PRODUCT_CONFIG = {
   // ev-flybrief "Mens Brief with Fly" revenue + "(Men Brief ...)" FB ads.
   cotton9055: { label: "Cotton 9055", line: "Cotton 9055" },
   mensbrief: { label: "Men's Brief", line: "Mens Brief" },
+  // Marketer request 2026-07-21: Cotton HW gets its own focus card ahead
+  // of its ad launch. Ads carry the "CHW" ad-name token (mapped in
+  // attributeFbPrefix since 2026-07-10); revenue = the "Cotton HW"
+  // family (ev-cottonhw "Cotton High Waisted").
+  cottonhw: { label: "Cotton HW", line: "Cotton HW" },
 } as const;
 
 type ProductKey = keyof typeof PRODUCT_CONFIG;
