@@ -80,11 +80,20 @@ export const shellProcedure = t.procedure.use(
 export const cashflowProcedure = t.procedure
   .use(requireSession)
   .use(
-    t.middleware(({ ctx, next }) => {
+    t.middleware(({ ctx, type, next }) => {
       if (!ctx.cashflowAllowed) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "your account does not have access to cashflow data",
+        });
+      }
+      // A viewer on the cashflow allowlist (client 2026-07-21: external
+      // collaborator views everything, cashflow included) stays
+      // read-only here too: queries pass, mutations reject.
+      if (ctx.tier === "viewer" && type !== "query") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "your account does not have access to this resource",
         });
       }
       return next();

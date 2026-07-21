@@ -205,6 +205,16 @@ describe("tRPC tier gating", () => {
     );
   });
 
+  it("viewer ON the cashflow allowlist stays read-only there too (client 2026-07-21)", async () => {
+    // The mutation rejects in the cashflowProcedure middleware before any
+    // resolver runs — no DB needed. (The query allow path hits the DB and
+    // is exercised against real sessions, same as the other tiers.)
+    await expectCode(
+      caller({ tier: "viewer", cashflowAllowed: true }).cashflow.deleteManualEntry({ ref: "x" }),
+      "FORBIDDEN",
+    );
+  });
+
   it("cashflow procedures are gated by the allowlist flag, not tier", async () => {
     // Even a full-ops session is denied without the cashflow allowlist.
     await expectCode(
