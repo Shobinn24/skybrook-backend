@@ -237,6 +237,58 @@ export async function gatherOpsDigest(now = new Date()): Promise<DigestItem[]> {
     }),
   );
 
+  // N — receipt ETA drift (found 2026-07-21 while auditing the incoming
+  // tracker): receipts are keyed by (shipment, destination, ETA), so if
+  // the sheet's arrival cell is EDITED after an operator marks a wave
+  // received, the receipt orphans and the wave silently reverts to
+  // pending/overdue. Signature: an orphaned receipt (no current sheet
+  // row matches its full key) alongside an UNRECEIVED current wave of
+  // the same shipment+destination within 14 days of the receipt's ETA.
+  // Bounded to receipts from the last 45 days — older orphans are the
+  // normal lifecycle of columns leaving the sheet after receiving.
+  items.push(
+    await check("Receipt ETA drift", async () => {
+      const rows = (await db.execute(sql`
+        select distinct r.shipment_name, r.destination,
+          to_char(r.expected_arrival, 'MM/DD') as receipt_eta,
+          to_char(s.expected_arrival, 'MM/DD') as sheet_eta
+        from incoming_receipts r
+        join incoming_shipments s
+          on s.shipment_name = r.shipment_name
+         and s.destination = r.destination
+         and s.expected_arrival <> r.expected_arrival
+         and abs(s.expected_arrival - r.expected_arrival) <= 14
+        where r.received_at > now() - interval '45 days'
+          and not exists (
+            select 1 from incoming_shipments s2
+            where s2.shipment_name = r.shipment_name
+              and s2.destination = r.destination
+              and s2.expected_arrival = r.expected_arrival)
+          and not exists (
+            select 1 from incoming_receipts r2
+            where r2.shipment_name = s.shipment_name
+              and r2.destination = s.destination
+              and r2.expected_arrival = s.expected_arrival)`)) as Array<{
+        shipment_name: string;
+        destination: string;
+        receipt_eta: string;
+        sheet_eta: string;
+      }>;
+      return rows.length === 0
+        ? { ok: true, detail: "no orphaned receipts near an open wave" }
+        : {
+            ok: false,
+            detail:
+              rows
+                .map(
+                  (r) =>
+                    `${r.shipment_name} ${r.destination}: received under ETA ${r.receipt_eta}, sheet now ${r.sheet_eta}`,
+                )
+                .join(" · ") + " — same delivery? re-mark received in /incoming (check N)",
+          };
+    }),
+  );
+
   // Open alerts summary (covers E/axon and anything else outstanding).
   items.push(
     await check("Open alerts", async () => {
