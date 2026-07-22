@@ -65,7 +65,7 @@ function Cell({ cell, bold }: { cell: CampaignTrackerCell; bold?: boolean }) {
   );
 }
 
-function WeekNotes({ week }: { week: CampaignTrackerWeek }) {
+function WeekNotes({ week, canEdit }: { week: CampaignTrackerWeek; canEdit: boolean }) {
   const utils = trpc.useUtils();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(week.note ?? "");
@@ -81,15 +81,17 @@ function WeekNotes({ week }: { week: CampaignTrackerWeek }) {
         <div className="min-w-0 flex-1 whitespace-pre-wrap text-sm text-neutral-700">
           {week.note ?? <span className="text-neutral-400">No notes for this week yet.</span>}
         </div>
-        <button
-          onClick={() => {
-            setDraft(week.note ?? "");
-            setEditing(true);
-          }}
-          className="shrink-0 text-xs text-neutral-500 hover:text-neutral-800"
-        >
-          {week.note ? "Edit" : "Add note"}
-        </button>
+        {canEdit && (
+          <button
+            onClick={() => {
+              setDraft(week.note ?? "");
+              setEditing(true);
+            }}
+            className="shrink-0 text-xs text-neutral-500 hover:text-neutral-800"
+          >
+            {week.note ? "Edit" : "Add note"}
+          </button>
+        )}
       </div>
     );
   }
@@ -119,7 +121,7 @@ function WeekNotes({ week }: { week: CampaignTrackerWeek }) {
   );
 }
 
-function WeekBlock({ week, isCurrent }: { week: CampaignTrackerWeek; isCurrent: boolean }) {
+function WeekBlock({ week, isCurrent, canEdit }: { week: CampaignTrackerWeek; isCurrent: boolean; canEdit: boolean }) {
   const weekEnd = week.days[week.days.length - 1]?.date ?? week.weekStart;
   return (
     <div className="rounded-md border border-neutral-200 bg-white">
@@ -171,7 +173,7 @@ function WeekBlock({ week, isCurrent }: { week: CampaignTrackerWeek; isCurrent: 
         </table>
       </div>
       <div className="border-t border-neutral-100 bg-neutral-50/50">
-        <WeekNotes week={week} />
+        <WeekNotes week={week} canEdit={canEdit} />
       </div>
     </div>
   );
@@ -179,6 +181,11 @@ function WeekBlock({ week, isCurrent }: { week: CampaignTrackerWeek; isCurrent: 
 
 export default function CampaignTrackerPage() {
   const query = trpc.inventory.getCampaignTracker.useQuery();
+  // viewer tier is read-only: server rejects its mutations; hide the controls (2026-07-22)
+  const me = trpc.inventory.getMyAccessTier.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+  const canEdit = me.data?.tier !== undefined && me.data.tier !== "viewer";
 
   if (query.isLoading) {
     return <div className="p-6 text-sm text-neutral-500">Loading campaign tracker…</div>;
@@ -209,7 +216,7 @@ export default function CampaignTrackerPage() {
           No campaign data ingested yet.
         </div>
       ) : (
-        weeks.map((w, i) => <WeekBlock key={w.weekStart} week={w} isCurrent={i === 0 && w.days.length < 7} />)
+        weeks.map((w, i) => <WeekBlock key={w.weekStart} week={w} isCurrent={i === 0 && w.days.length < 7} canEdit={canEdit} />)
       )}
     </div>
   );

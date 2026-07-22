@@ -137,6 +137,11 @@ function IncomingShipmentsPageInner() {
   }, [search, router]);
 
   const utils = trpc.useUtils();
+  // viewer tier is read-only: server rejects its mutations; hide the controls (2026-07-22)
+  const me = trpc.inventory.getMyAccessTier.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+  const canEdit = me.data?.tier !== undefined && me.data.tier !== "viewer";
   const { data, isLoading, error } = trpc.inventory.getIncomingShipmentsView.useQuery({
     destination: location === "all" ? undefined : location,
     includeReceived,
@@ -353,7 +358,9 @@ function IncomingShipmentsPageInner() {
                   <SortableHeader label="Status" sortKey="status" config={sort} onChange={setSort} />
                   <SortableHeader label="Quantity" sortKey="quantity" config={sort} onChange={setSort} align="right" />
                   <SortableHeader label="Expected arrival" sortKey="expectedArrival" config={sort} onChange={setSort} />
-                  <th className="px-4 py-2 text-right text-xs uppercase tracking-wide text-neutral-500">Action</th>
+                  {canEdit && (
+                    <th className="px-4 py-2 text-right text-xs uppercase tracking-wide text-neutral-500">Action</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">
@@ -407,6 +414,7 @@ function IncomingShipmentsPageInner() {
                           <div className="text-neutral-700">{fmtDate(g.expectedArrival)}</div>
                           <div className={"text-xs " + TONE_CLASS[rel.tone]}>{rel.label}</div>
                         </td>
+                        {canEdit && (
                         <td className="whitespace-nowrap px-4 py-2 text-right">
                           {isReceived ? (
                             <button
@@ -434,6 +442,7 @@ function IncomingShipmentsPageInner() {
                             </button>
                           ) : null}
                         </td>
+                        )}
                       </tr>
                       {open &&
                         g.skuRows.map((sr) => (
@@ -451,7 +460,7 @@ function IncomingShipmentsPageInner() {
                             <td className="whitespace-nowrap px-4 py-1.5 text-right tabular-nums text-neutral-600">
                               {fmtNumber(sr.quantity)}
                             </td>
-                            <td colSpan={2} />
+                            <td colSpan={canEdit ? 2 : 1} />
                           </tr>
                         ))}
                     </Fragment>

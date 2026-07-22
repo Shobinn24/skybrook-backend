@@ -85,6 +85,7 @@ function NumericCell({
   width = "w-24",
   prefix,
   step,
+  readOnly = false,
 }: {
   value: number | null;
   onChange: (n: number | null) => void;
@@ -92,6 +93,7 @@ function NumericCell({
   width?: string;
   prefix?: string;
   step?: string;
+  readOnly?: boolean;
 }) {
   const [raw, setRaw] = useState<string>(
     value === null ? "" : value.toFixed(digits),
@@ -99,6 +101,15 @@ function NumericCell({
   useEffect(() => {
     setRaw(value === null ? "" : value.toFixed(digits));
   }, [value, digits]);
+
+  if (readOnly) {
+    return (
+      <span className="text-sm tabular-nums text-neutral-700">
+        {prefix}
+        {value === null ? "—" : value.toFixed(digits)}
+      </span>
+    );
+  }
 
   return (
     <div className={clsx("inline-flex items-center", prefix && "rounded border border-neutral-300")}>
@@ -134,6 +145,12 @@ function NumericCell({
 
 export default function FactoryOrdersPage() {
   const [orderMonth, setOrderMonth] = useState<string>(currentMonthKey());
+
+  // viewer tier is read-only: server rejects its mutations; hide the controls (2026-07-22)
+  const me = trpc.inventory.getMyAccessTier.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+  const canEdit = me.data?.tier !== undefined && me.data.tier !== "viewer";
 
   // Load draft for the selected month. Idempotent — creates if missing.
   const draft = trpc.factoryOrder.getDraft.useQuery({ orderMonth });
@@ -269,6 +286,7 @@ export default function FactoryOrdersPage() {
               digits={2}
               prefix="$"
               width="w-32"
+              readOnly={!canEdit}
             />
             <label className="text-neutral-700">INTL Store</label>
             <NumericCell
@@ -277,6 +295,7 @@ export default function FactoryOrdersPage() {
               digits={2}
               prefix="$"
               width="w-32"
+              readOnly={!canEdit}
             />
             <label className="text-neutral-700">Amazon Store</label>
             <NumericCell
@@ -285,6 +304,7 @@ export default function FactoryOrdersPage() {
               digits={2}
               prefix="$"
               width="w-32"
+              readOnly={!canEdit}
             />
             <div className="border-t border-neutral-200 pt-2 font-medium text-neutral-900">
               Total
@@ -318,6 +338,7 @@ export default function FactoryOrdersPage() {
                 }
                 prefix="$"
                 width="w-24"
+                readOnly={!canEdit}
               />
             ))}
             <div className="col-span-1 text-right text-xs font-medium tabular-nums">
@@ -341,6 +362,7 @@ export default function FactoryOrdersPage() {
                 }
                 prefix="$"
                 width="w-24"
+                readOnly={!canEdit}
               />
             ))}
             <div className="col-span-2 text-right text-xs font-medium tabular-nums">
@@ -355,14 +377,20 @@ export default function FactoryOrdersPage() {
         <label className="text-xs uppercase tracking-wide text-neutral-500">
           Order notes
         </label>
-        <textarea
-          value={local.orderNotes ?? ""}
-          onChange={(e) => setLocal((c) => (c ? { ...c, orderNotes: e.target.value || null } : c))}
-          onBlur={() => local && saveAndCommit(local)}
-          rows={2}
-          className="mt-1 w-full rounded border border-neutral-300 px-2 py-1 text-sm"
-          placeholder="e.g., This needs to last until 4 Aug — when KAI May arrives"
-        />
+        {canEdit ? (
+          <textarea
+            value={local.orderNotes ?? ""}
+            onChange={(e) => setLocal((c) => (c ? { ...c, orderNotes: e.target.value || null } : c))}
+            onBlur={() => local && saveAndCommit(local)}
+            rows={2}
+            className="mt-1 w-full rounded border border-neutral-300 px-2 py-1 text-sm"
+            placeholder="e.g., This needs to last until 4 Aug — when KAI May arrives"
+          />
+        ) : (
+          <div className="mt-1 whitespace-pre-wrap text-sm text-neutral-700">
+            {local.orderNotes ?? "—"}
+          </div>
+        )}
       </div>
 
       {/* Product group table */}
@@ -388,6 +416,7 @@ export default function FactoryOrdersPage() {
             }
           }
           isApproved={isApproved}
+          canEdit={canEdit}
           details={
             (calc.data as CalculationResult | undefined)?.details ?? []
           }
@@ -432,7 +461,7 @@ export default function FactoryOrdersPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {!isApproved && (
+          {canEdit && !isApproved && (
             <button
               onClick={() => {
                 // Approver identity comes from the session server-side.
@@ -506,6 +535,7 @@ function ProductGroupsTable({
   summaryByKey,
   currentSplits,
   isApproved,
+  canEdit,
   details,
 }: {
   groups: ReadonlyArray<ProductGroup>;
@@ -514,6 +544,7 @@ function ProductGroupsTable({
   summaryByKey: Map<string, SummaryRow>;
   currentSplits: { us: Record<string, number>; intl: Record<string, number> };
   isApproved: boolean;
+  canEdit: boolean;
   details: DetailRow[];
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -592,6 +623,7 @@ function ProductGroupsTable({
                       digits={2}
                       step="0.01"
                       width="w-20"
+                      readOnly={!canEdit}
                     />
                   </td>
                   <td className="px-3 py-2 align-top text-right">
@@ -602,6 +634,7 @@ function ProductGroupsTable({
                         intlCurrent={currentSplits.intl[g.name] ?? 0}
                         usOverride={inputs.splits.us[g.name]}
                         intlOverride={inputs.splits.intl[g.name]}
+                        readOnly={!canEdit}
                         onChangeUs={(n) =>
                           patch((c) => ({
                             ...c,
@@ -626,6 +659,7 @@ function ProductGroupsTable({
                         groupName={g.name}
                         total={inputs.customQtys[g.name] ?? 0}
                         usShare={inputs.customUsShare[g.name] ?? 1.0}
+                        readOnly={!canEdit}
                         onChangeTotal={(n) =>
                           patch((c) => ({
                             ...c,
@@ -661,21 +695,27 @@ function ProductGroupsTable({
                     {fmtMoney(orderUsd)}
                   </td>
                   <td className="px-3 py-2 align-top">
-                    <input
-                      value={inputs.comments[g.name] ?? ""}
-                      onChange={(e) =>
-                        patch((c) => ({
-                          ...c,
-                          comments: {
-                            ...c.comments,
-                            [g.name]: e.target.value,
-                          },
-                        }))
-                      }
-                      className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
-                      placeholder="…"
-                      disabled={isApproved}
-                    />
+                    {canEdit ? (
+                      <input
+                        value={inputs.comments[g.name] ?? ""}
+                        onChange={(e) =>
+                          patch((c) => ({
+                            ...c,
+                            comments: {
+                              ...c.comments,
+                              [g.name]: e.target.value,
+                            },
+                          }))
+                        }
+                        className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                        placeholder="…"
+                        disabled={isApproved}
+                      />
+                    ) : (
+                      <span className="text-xs text-neutral-700">
+                        {inputs.comments[g.name] || "—"}
+                      </span>
+                    )}
                   </td>
                 </tr>
                 {isOpen && (
@@ -705,6 +745,7 @@ function MainLineSplitControls({
   intlOverride,
   onChangeUs,
   onChangeIntl,
+  readOnly = false,
 }: {
   groupName: string;
   usCurrent: number;
@@ -713,6 +754,7 @@ function MainLineSplitControls({
   intlOverride: number | undefined;
   onChangeUs: (n: number | null) => void;
   onChangeIntl: (n: number | null) => void;
+  readOnly?: boolean;
 }) {
   return (
     <div className="flex flex-col items-end gap-1 text-xs text-neutral-600">
@@ -726,6 +768,7 @@ function MainLineSplitControls({
           digits={2}
           step="0.01"
           width="w-16"
+          readOnly={readOnly}
         />
         <span className="text-neutral-400">US</span>
       </div>
@@ -739,6 +782,7 @@ function MainLineSplitControls({
           digits={2}
           step="0.01"
           width="w-16"
+          readOnly={readOnly}
         />
         <span className="text-neutral-400">INTL</span>
       </div>
@@ -753,12 +797,14 @@ function CustomQtyControls({
   usShare,
   onChangeTotal,
   onChangeShare,
+  readOnly = false,
 }: {
   groupName: string;
   total: number;
   usShare: number;
   onChangeTotal: (n: number | null) => void;
   onChangeShare: (n: number) => void;
+  readOnly?: boolean;
 }) {
   const sharePct = Math.round(usShare * 100);
   return (
@@ -769,19 +815,22 @@ function CustomQtyControls({
           onChange={onChangeTotal}
           digits={0}
           width="w-20"
+          readOnly={readOnly}
         />
         <span className="text-xs text-neutral-500">units</span>
       </div>
       <div className="flex items-center gap-2 text-xs text-neutral-600">
-        <input
-          type="range"
-          min={0}
-          max={100}
-          step={5}
-          value={sharePct}
-          onChange={(e) => onChangeShare(Number(e.target.value) / 100)}
-          className="w-24"
-        />
+        {!readOnly && (
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={sharePct}
+            onChange={(e) => onChangeShare(Number(e.target.value) / 100)}
+            className="w-24"
+          />
+        )}
         <span className="tabular-nums">
           US {sharePct}% / INTL {100 - sharePct}%
         </span>

@@ -41,6 +41,11 @@ function sourceLabel(raw: string): string {
 
 export default function ProductNamesAdminPage() {
   const utils = trpc.useUtils();
+  // viewer tier is read-only: server rejects its mutations; hide the controls (2026-07-22)
+  const me = trpc.inventory.getMyAccessTier.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+  const canEdit = me.data?.tier !== undefined && me.data.tier !== "viewer";
   const overrides = trpc.admin.listOverrides.useQuery(undefined, {
     refetchOnWindowFocus: false,
   });
@@ -162,7 +167,7 @@ export default function ProductNamesAdminPage() {
             Changes apply on the next product-names sync — click Run sync now to apply immediately.
           </p>
         </div>
-        {!form && (
+        {canEdit && !form && (
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -205,7 +210,7 @@ export default function ProductNamesAdminPage() {
         </div>
       )}
 
-      {form && (
+      {canEdit && form && (
         <div className="rounded border border-neutral-200 bg-neutral-50 p-3 space-y-2">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
             <label className="text-xs text-neutral-700">
@@ -314,19 +319,21 @@ export default function ProductNamesAdminPage() {
                   </td>
                   <td className="px-3 py-1.5 tabular-nums text-neutral-700">{u.skuCount}</td>
                   <td className="px-3 py-1.5 text-right">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setForm({
-                          ...EMPTY_FORM,
-                          family: u.family,
-                          familyLocked: true,
-                        })
-                      }
-                      className="rounded bg-amber-700 px-2 py-1 text-xs font-medium text-white hover:bg-amber-800"
-                    >
-                      Add label
-                    </button>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm({
+                            ...EMPTY_FORM,
+                            family: u.family,
+                            familyLocked: true,
+                          })
+                        }
+                        className="rounded bg-amber-700 px-2 py-1 text-xs font-medium text-white hover:bg-amber-800"
+                      >
+                        Add label
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -384,21 +391,23 @@ export default function ProductNamesAdminPage() {
                     )}
                   </td>
                   <td className="px-3 py-1.5 text-right whitespace-nowrap">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        startEdit(
-                          r.family,
-                          r.displayLabel,
-                          r.isImplicit5pack,
-                          r.aliasOf
-                        )
-                      }
-                      className="text-xs text-neutral-700 underline-offset-2 hover:underline"
-                    >
-                      Edit
-                    </button>
-                    {overrideFamilies.has(r.family) && (
+                    {canEdit && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          startEdit(
+                            r.family,
+                            r.displayLabel,
+                            r.isImplicit5pack,
+                            r.aliasOf
+                          )
+                        }
+                        className="text-xs text-neutral-700 underline-offset-2 hover:underline"
+                      >
+                        Edit
+                      </button>
+                    )}
+                    {canEdit && overrideFamilies.has(r.family) && (
                       <button
                         type="button"
                         onClick={() => {

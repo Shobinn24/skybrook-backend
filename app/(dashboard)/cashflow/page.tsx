@@ -65,6 +65,11 @@ const BTN_CLS = "border rounded px-3 py-1 text-sm";
 export default function CashflowPage() {
   const firstWeek = useMemo(mondayOfThisWeek, []);
   const utils = trpc.useUtils();
+  // viewer tier is read-only: server rejects its mutations; hide the controls (2026-07-22)
+  const me = trpc.inventory.getMyAccessTier.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+  const canEdit = me.data?.tier !== undefined && me.data.tier !== "viewer";
   const invalidateAll = () => {
     void utils.cashflow.getGrid.invalidate();
     void utils.cashflow.listManualEntries.invalidate();
@@ -112,44 +117,52 @@ export default function CashflowPage() {
       {/* This week's ritual */}
       <div className="rounded border p-4 space-y-3">
         <h2 className="font-medium">This week</h2>
-        <div className="flex items-end gap-2">
-          <label className="text-sm">Total cash on hand
-            <input className={`${INPUT_CLS} w-48`} inputMode="decimal"
-              value={cashInput} onChange={(e) => setCashInput(e.target.value)} placeholder="e.g. 200000" />
-          </label>
-          <button className={`${BTN_CLS} bg-black text-white`}
-            disabled={enterCash.isPending || cashInput.trim() === ""}
-            onClick={() => { enterCash.mutate({ weekStart: wk0.weekStart, totalCashUsd: num(cashInput) }); setCashInput(""); }}>
-            Save balance
-          </button>
-        </div>
+        {canEdit && (
+          <div className="flex items-end gap-2">
+            <label className="text-sm">Total cash on hand
+              <input className={`${INPUT_CLS} w-48`} inputMode="decimal"
+                value={cashInput} onChange={(e) => setCashInput(e.target.value)} placeholder="e.g. 200000" />
+            </label>
+            <button className={`${BTN_CLS} bg-black text-white`}
+              disabled={enterCash.isPending || cashInput.trim() === ""}
+              onClick={() => { enterCash.mutate({ weekStart: wk0.weekStart, totalCashUsd: num(cashInput) }); setCashInput(""); }}>
+              Save balance
+            </button>
+          </div>
+        )}
 
         {wk0.variance != null && wk0.varianceSignificant && (
           <div className="rounded bg-amber-50 p-3 space-y-2">
             <p>Variance vs forecast: <strong>{fmtMoney(wk0.variance)}</strong> (over {fmtMoney(data.thresholdUsd)})</p>
-            <div className="flex gap-2">
-              {(["volume", "spending", "timing"] as const).map((r) => (
-                <button key={r} className={`${BTN_CLS} ${wk0.varianceReason === r ? "bg-black text-white" : ""}`}
-                  onClick={() => setReason.mutate({ weekStart: wk0.weekStart, reason: r, note: null })}>{r}</button>
-              ))}
-            </div>
+            {canEdit && (
+              <div className="flex gap-2">
+                {(["volume", "spending", "timing"] as const).map((r) => (
+                  <button key={r} className={`${BTN_CLS} ${wk0.varianceReason === r ? "bg-black text-white" : ""}`}
+                    onClick={() => setReason.mutate({ weekStart: wk0.weekStart, reason: r, note: null })}>{r}</button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
         {/* Payout controls */}
-        <div className="flex items-end gap-2 flex-wrap">
-          <label className="text-sm">Payout this week ({fmtMoney(wk0.payout)})
-            <input className={`${INPUT_CLS} w-40`} inputMode="decimal"
-              value={payoutInput} onChange={(e) => setPayoutInput(e.target.value)} placeholder="override $" />
-          </label>
-          <button className={BTN_CLS}
-            disabled={setPayout.isPending || payoutInput.trim() === ""}
-            onClick={() => { setPayout.mutate({ weekStart: wk0.weekStart, overrideUsd: num(payoutInput) }); setPayoutInput(""); }}>
-            Set payout
-          </button>
-          <button className={BTN_CLS} onClick={() => setPayout.mutate({ weekStart: wk0.weekStart, skipped: true })}>Skip payout</button>
-          <button className={BTN_CLS} onClick={() => setPayout.mutate({ weekStart: wk0.weekStart, skipped: false, overrideUsd: null })}>Reset payout</button>
-        </div>
+        {canEdit ? (
+          <div className="flex items-end gap-2 flex-wrap">
+            <label className="text-sm">Payout this week ({fmtMoney(wk0.payout)})
+              <input className={`${INPUT_CLS} w-40`} inputMode="decimal"
+                value={payoutInput} onChange={(e) => setPayoutInput(e.target.value)} placeholder="override $" />
+            </label>
+            <button className={BTN_CLS}
+              disabled={setPayout.isPending || payoutInput.trim() === ""}
+              onClick={() => { setPayout.mutate({ weekStart: wk0.weekStart, overrideUsd: num(payoutInput) }); setPayoutInput(""); }}>
+              Set payout
+            </button>
+            <button className={BTN_CLS} onClick={() => setPayout.mutate({ weekStart: wk0.weekStart, skipped: true })}>Skip payout</button>
+            <button className={BTN_CLS} onClick={() => setPayout.mutate({ weekStart: wk0.weekStart, skipped: false, overrideUsd: null })}>Reset payout</button>
+          </div>
+        ) : (
+          <p className="text-sm">Payout this week ({fmtMoney(wk0.payout)})</p>
+        )}
       </div>
 
       {/* Forecast assumptions (collapsible) */}
@@ -157,7 +170,7 @@ export default function CashflowPage() {
         <button className="font-medium" onClick={() => setShowAssumptions((s) => !s)}>
           {showAssumptions ? "▾" : "▸"} Forecast assumptions
         </button>
-        {showAssumptions && assumptions.data && (
+        {canEdit && showAssumptions && assumptions.data && (
           <AssumptionsEditor
             initial={assumptions.data}
             pending={saveAssumptions.isPending}
@@ -170,11 +183,13 @@ export default function CashflowPage() {
       {/* Manual entries */}
       <div className="rounded border p-4 space-y-3">
         <h2 className="font-medium">Manual entries (expenses)</h2>
-        <ManualEntryForm
-          defaultDate={firstWeek}
-          pending={addEntry.isPending}
-          onAdd={(e) => addEntry.mutate({ ...e })}
-        />
+        {canEdit && (
+          <ManualEntryForm
+            defaultDate={firstWeek}
+            pending={addEntry.isPending}
+            onAdd={(e) => addEntry.mutate({ ...e })}
+          />
+        )}
         <ul className="text-sm divide-y">
           {(manual.data ?? []).map((m) => (
             <li key={m.ref} className="flex items-center justify-between py-1">
@@ -183,7 +198,9 @@ export default function CashflowPage() {
                 {m.recurring ? ` /mo (from ${m.firstDate})` : ` on ${m.firstDate}`}
                 {m.description ? ` · ${m.description}` : ""}
               </span>
-              <button className="text-red-600 hover:underline" onClick={() => delEntry.mutate({ ref: m.ref })}>remove</button>
+              {canEdit && (
+                <button className="text-red-600 hover:underline" onClick={() => delEntry.mutate({ ref: m.ref })}>remove</button>
+              )}
             </li>
           ))}
           {(manual.data ?? []).length === 0 && <li className="py-1 text-neutral-500">No manual entries yet.</li>}
