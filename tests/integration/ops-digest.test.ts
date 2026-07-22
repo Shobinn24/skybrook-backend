@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { incomingReceipts, incomingShipments, rawPulls } from "@/lib/db/schema";
+import { incomingReceipts, incomingShipments, rawPulls, stockSnapshots } from "@/lib/db/schema";
 import { formatDigest, gatherOpsDigest, type DigestItem } from "@/lib/jobs/ops-digest";
 
 describe("formatDigest", () => {
@@ -39,6 +39,7 @@ describe("gatherOpsDigest", () => {
       "New CS style codes",
       "Unreceipted arrivals",
       "Receipt ETA drift",
+      "Inventory snapshot gaps",
       "Open alerts",
       "Supermetrics queries",
     ]);
@@ -48,6 +49,52 @@ describe("gatherOpsDigest", () => {
       expect(i.detail.length).toBeGreaterThan(0);
       expect(i.detail).not.toContain("check errored");
     }
+  });
+});
+
+describe("Inventory snapshot gap check (O)", () => {
+  it("flags a broken weekday, stays quiet on the location's weekly quiet day", async () => {
+    await db.execute(sql`TRUNCATE TABLE raw_pulls, stock_snapshots CASCADE`);
+    const [pull] = await db
+      .insert(rawPulls)
+      .values({
+        source: "sheets_inventory",
+        pullBatchId: randomUUID(),
+        payload: {},
+        rowCount: 0,
+        schemaFingerprint: "test-fp",
+      })
+      .returning({ id: rawPulls.id });
+
+    const iso = (daysAgo: number) => {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - daysAgo);
+      return d.toISOString().slice(0, 10);
+    };
+    // US: snapshots every day for 28 days EXCEPT 3 days ago — and the
+    // three prior same-weekday dates (10, 17, 24 days ago) all have
+    // data, so the miss breaks the rhythm and must flag.
+    // CN: zero every 7 days on the same weekday (2, 9, 16, 23 days
+    // ago) — a weekly quiet day that must NOT flag.
+    const values: (typeof stockSnapshots.$inferInsert)[] = [];
+    for (let ago = 1; ago <= 28; ago++) {
+      if (ago !== 3) {
+        values.push({ sku: "ev-us-a", location: "US", snapshotDate: iso(ago), onHand: 10, sourcePullId: pull.id });
+        values.push({ sku: "ev-us-b", location: "US", snapshotDate: iso(ago), onHand: 5, sourcePullId: pull.id });
+      }
+      if (ago % 7 !== 2) {
+        values.push({ sku: "ev-cn-a", location: "CN", snapshotDate: iso(ago), onHand: 7, sourcePullId: pull.id });
+      }
+    }
+    await db.insert(stockSnapshots).values(values);
+
+    const items = await gatherOpsDigest(new Date());
+    const gap = items.find((i) => i.label === "Inventory snapshot gaps");
+    expect(gap).toBeDefined();
+    expect(gap!.ok).toBe(false);
+    expect(gap!.detail).toContain("US");
+    expect(gap!.detail).toContain("missing");
+    expect(gap!.detail).not.toContain("CN");
   });
 });
 

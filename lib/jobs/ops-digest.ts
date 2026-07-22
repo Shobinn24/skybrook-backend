@@ -289,6 +289,68 @@ export async function gatherOpsDigest(now = new Date()): Promise<DigestItem[]> {
     }),
   );
 
+  // O — inventory snapshot gaps (found 2026-07-22: CN had no snapshot on
+  // 7/18 and nothing noticed; US logged a 29-row partial on 7/19).
+  // Rhythm-aware to stay quiet on the sheet's weekly cadence (CN skips
+  // Saturdays, US skips Sundays): a zero or <50%-of-median day in the
+  // last 7 days flags ONLY when at least 2 of the location's 3 prior
+  // same-weekday dates had data — i.e. the day was expected to be full.
+  items.push(
+    await check("Inventory snapshot gaps", async () => {
+      const rows = (await db.execute(sql`
+        with daily as (
+          select location, snapshot_date, count(*)::int as n
+          from stock_snapshots
+          where snapshot_date >= current_date - 35
+          group by 1, 2
+        ), cal as (
+          select l.location, d::date as day
+          from (select distinct location from stock_snapshots) l
+          cross join generate_series(current_date - 7, current_date - 1, '1 day') d
+        ), merged as (
+          select c.location, c.day, coalesce(daily.n, 0) as n,
+            (select count(*) from daily d2
+              where d2.location = c.location
+                and d2.snapshot_date in (c.day - 7, c.day - 14, c.day - 21)
+                and d2.n > 0) as prior_dow_present
+          from cal c
+          left join daily on daily.location = c.location and daily.snapshot_date = c.day
+        ), med as (
+          select location,
+            percentile_cont(0.5) within group (order by n) as median_n
+          from daily where snapshot_date >= current_date - 14 and n > 0
+          group by 1
+        )
+        select m.location, to_char(m.day, 'MM/DD') as day, m.n,
+          round(med.median_n)::int as median_n,
+          case when m.n = 0 then 'missing' else 'partial' end as kind
+        from merged m
+        join med on med.location = m.location
+        where m.prior_dow_present >= 2
+          and (m.n = 0 or m.n < med.median_n * 0.5)
+        order by m.day, m.location`)) as Array<{
+        location: string;
+        day: string;
+        n: number;
+        median_n: number;
+        kind: string;
+      }>;
+      return rows.length === 0
+        ? { ok: true, detail: "all locations on rhythm" }
+        : {
+            ok: false,
+            detail:
+              rows
+                .map((r) =>
+                  r.kind === "missing"
+                    ? `${r.location} ${r.day} missing`
+                    : `${r.location} ${r.day} partial (${r.n} rows vs ~${r.median_n})`,
+                )
+                .join(", ") + " — inventory sheet or ingest hiccup (check O)",
+          };
+    }),
+  );
+
   // Open alerts summary (covers E/axon and anything else outstanding).
   items.push(
     await check("Open alerts", async () => {
