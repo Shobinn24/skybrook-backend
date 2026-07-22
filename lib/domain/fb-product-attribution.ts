@@ -42,7 +42,10 @@ export function attributeFbPrefix(prefixInner: string): FbAttribution {
     bucket: "product",
   });
 
-  if (p === "home") return { product: "Brand / Homepage", bucket: "brand" };
+  // "Homepage" = "Home" (marketer decision 2026-07-20: homepage BAU spend
+  // is brand traffic, deliberately not mapped to any single product).
+  if (p === "home" || p === "homepage")
+    return { product: "Brand / Homepage", bucket: "brand" };
   if (p === "clearance") return { product: "Clearance / Mixed", bucket: "clearance" };
   if (p === "9055") return v("9055");
   if (p === "hw" || p === "hwhf") return v("HW");
@@ -116,7 +119,8 @@ export function canonicalProductLabel(
   const raw = (sheetLabel ?? "").trim();
   const key = raw.toLowerCase();
   if (key === "" || key === "na") return { label: "Other (NA)", kind: "unmapped" };
-  if (key === "home") return { label: "Brand / Homepage", kind: "brand" };
+  if (key === "home" || key === "homepage")
+    return { label: "Brand / Homepage", kind: "brand" };
   if (key === "clearance") return { label: "Clearance / Mixed", kind: "clearance" };
   if (key === "super hw") return { label: "Super High-Waist", kind: "product" };
   // Intl launch 2026-07-10: pin the plausible sheet spellings of the two new

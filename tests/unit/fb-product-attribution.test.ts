@@ -35,6 +35,7 @@ describe("canonicalProductLabel", () => {
   it("maps sheet labels to canonical families with correct kind", () => {
     expect(canonicalProductLabel("Super HW")).toEqual({ label: "Super High-Waist", kind: "product" });
     expect(canonicalProductLabel("Home")).toEqual({ label: "Brand / Homepage", kind: "brand" });
+    expect(canonicalProductLabel("Homepage")).toEqual({ label: "Brand / Homepage", kind: "brand" });
     expect(canonicalProductLabel("Clearance")).toEqual({ label: "Clearance / Mixed", kind: "clearance" });
     expect(canonicalProductLabel("NA")).toEqual({ label: "Other (NA)", kind: "unmapped" });
   });
@@ -100,6 +101,10 @@ describe("attributeFbAd", () => {
     ["(Mens BB) Ad 2402 - existing line", "Mens", "product"],
     ["(Mens) Ad 3005 - still plain Mens", "Mens", "product"],
     ["(HOME US BAU) Ad 1616 - Dan", "Brand / Homepage", "brand"],
+    // "Homepage" = "Home" (marketer decision 2026-07-20: homepage BAU
+    // spend is brand traffic, deliberately not mapped to a product)
+    ["(Homepage US BAU) Ad 1700 - brand traffic", "Brand / Homepage", "brand"],
+    ["(Homepage INT BAU) Ad 1701 - brand traffic", "Brand / Homepage", "brand"],
     ["(Clearance US BAU) Ad 1586 - Raul", "Clearance / Mixed", "clearance"],
     ["(Botshort CC) Ad 1 - typo", "Unmapped", "unmapped"], // typo -> alert, no auto-correct
     ["(LAV) Ad 1 - color only", "Unmapped", "unmapped"],

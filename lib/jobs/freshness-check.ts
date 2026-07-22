@@ -641,6 +641,35 @@ export async function runFreshnessCheck(opts?: {
     alertsResolved += r.resolved;
   }
 
+  // Same vanished-check dynamic for `fb_prefix:*` (2026-07-22, latent
+  // twin of the fb_url_unmapped bug above): a prefix check VANISHES —
+  // instead of passing — once the prefix is renamed, mapped in the
+  // attribution, or drops below the spend threshold, so the pass-side
+  // resolve never sees it and the alert stays open forever. Drain any
+  // open fb_prefix alert whose key is not among the currently-failing
+  // checks.
+  const failingPrefixKeys = new Set(
+    evaluated
+      .filter((c) => c.dedupKey?.startsWith("fb_prefix:") && c.status === "fail")
+      .map((c) => c.dedupKey as string),
+  );
+  const openPrefixAlerts = await db
+    .select({ dedupKey: alertEvents.dedupKey })
+    .from(alertEvents)
+    .where(
+      and(
+        like(alertEvents.dedupKey, "fb_prefix:%"),
+        isNull(alertEvents.resolvedAt),
+      ),
+    );
+  for (const row of openPrefixAlerts) {
+    if (failingPrefixKeys.has(row.dedupKey)) continue;
+    const r = await resolveAlert(row.dedupKey, {
+      resolveMessage: `Prefix no longer unmapped with spend: ${row.dedupKey.replace("fb_prefix:", "")}`,
+    });
+    alertsResolved += r.resolved;
+  }
+
   const checks: FreshnessCheck[] = evaluated.map((c) => ({
     name: c.name,
     status: c.status,
