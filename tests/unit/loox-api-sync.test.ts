@@ -14,6 +14,7 @@ const review = (over: Partial<LooxApiReview>): LooxApiReview => ({
   createdAt: "2026-07-11T11:37:46.869Z",
   verified: false,
   status: "published",
+  orderId: null,
   reviewer: { name: "Jane Doe", firstName: "Jane", lastName: "Doe", nickname: "Jane D.", email: "jane@example.com" },
   product: { id: "1", name: "P", url: "http://everdries.com/products/p" },
   ...over,

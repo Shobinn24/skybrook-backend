@@ -35,6 +35,11 @@ function fmtDate(d: string | Date): string {
   return new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 
+// "Mar 2026" — order-history lines only need month precision.
+function fmtMonth(d: string): string {
+  return new Date(d).toLocaleDateString("en-GB", { month: "short", year: "numeric" });
+}
+
 function avgColor(avg: number): string {
   if (avg >= 4.6) return "bg-emerald-100 text-emerald-800";
   if (avg >= 4.3) return "bg-lime-100 text-lime-800";
@@ -596,10 +601,33 @@ export default function ReviewsPage() {
                             no matching order
                           </span>
                         )}
+                        {r.boughtSizes.length > 0 && (
+                          <span
+                            className="ml-2 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-800"
+                            title={
+                              r.sizeSource === "order"
+                                ? "Size from this order"
+                                : "Size from their order history"
+                            }
+                          >
+                            Bought: {r.boughtSizes.join(", ")}
+                          </span>
+                        )}
                       </span>
                       <span>{fmtDate(r.reviewedAt)}</span>
                     </div>
                     <p className="mt-1 text-sm text-neutral-700">{r.reviewText ?? "(no text)"}</p>
+                    {r.pastOrders.length > 0 && (
+                      <p className="mt-1 text-xs text-neutral-500">
+                        Previous orders:{" "}
+                        {r.pastOrders
+                          .map(
+                            (o) =>
+                              `${o.productTitle ?? "item"} ${o.variantTitle} (${fmtMonth(o.orderDate)})`,
+                          )
+                          .join(" · ")}
+                      </p>
+                    )}
                   </div>
                 ))}
                 {product.data && product.data.total > product.data.pageSize && (

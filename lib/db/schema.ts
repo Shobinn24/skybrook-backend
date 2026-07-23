@@ -915,6 +915,10 @@ export const looxReviews = pgTable(
     //   'unknown'    — review predates order coverage, or no email
     // Null = not yet evaluated.
     purchaseVerified: text("purchase_verified"),
+    // Shopify order numeric id straight from the Loox API (2026-07-23,
+    // size-per-review). Loox links reviews created since ~mid-2026 to the
+    // order that triggered the review request; null on older reviews.
+    looxOrderId: text("loox_order_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -999,6 +1003,34 @@ export const orderEmails = pgTable(
   (t) => [
     uniqueIndex("order_emails_grain_uq").on(t.store, t.email, t.productId, t.orderDate),
     index("order_emails_email_idx").on(t.email),
+  ],
+);
+
+// Variant-level order lines for size-per-review (Scott 2026-07-23,
+// fashion designer request). Separate from order_emails so that table's
+// dedup grain stays untouched: this one carries the Shopify order id and
+// the variant title (which encodes the size), enabling (a) exact lookup
+// via loox_reviews.loox_order_id and (b) email+product fallback for the
+// back catalog. Backfilled by syncOrderLineSizes({ fullHistory: true }).
+export const orderLineSizes = pgTable(
+  "order_line_sizes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    store: text("store").notNull(), // 'main' | 'intl'
+    shopifyOrderId: text("shopify_order_id").notNull(), // numeric gid tail
+    email: text("email"), // lowercased; null when the order has no email
+    productId: text("product_id").notNull(),
+    // Shopify product title at order time; makes purchase-history lines
+    // ("Cotton HW, size M, Mar 2026") self-contained without joins.
+    productTitle: text("product_title"),
+    variantTitle: text("variant_title").notNull(),
+    orderDate: date("order_date").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("order_line_sizes_grain_uq").on(t.store, t.shopifyOrderId, t.productId, t.variantTitle),
+    index("order_line_sizes_order_idx").on(t.shopifyOrderId),
+    index("order_line_sizes_email_idx").on(t.store, t.email, t.productId),
   ],
 );
 

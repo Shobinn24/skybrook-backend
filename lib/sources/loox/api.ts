@@ -26,6 +26,10 @@ export type LooxApiReview = {
     nickname: string | null;
     email: string | null;
   };
+  /** Shopify order numeric id the review request was tied to. Populated
+   * on reviews created since ~mid-2026 (93% of new reviews sampled
+   * 2026-07-23); null on the back catalog. */
+  orderId: string | null;
   product: {
     id: string | null;
     name: string | null;

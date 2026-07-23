@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { orderEmails } from "@/lib/db/schema";
+import { orderEmails, orderLineSizes } from "@/lib/db/schema";
 import { getShopifyAccessToken } from "@/lib/sources/shopify-auth";
 import { logger } from "@/lib/logger";
 
@@ -36,9 +36,15 @@ type OrdersPage = {
     orders: {
       pageInfo: { hasNextPage: boolean; endCursor: string | null };
       nodes: Array<{
+        id: string; // gid://shopify/Order/<numeric>
         email: string | null;
         createdAt: string;
-        lineItems: { nodes: Array<{ product: { id: string } | null }> };
+        lineItems: {
+          nodes: Array<{
+            product: { id: string; title: string | null } | null;
+            variantTitle: string | null;
+          }>;
+        };
       }>;
     };
   };
@@ -89,7 +95,7 @@ export async function syncOrderEmails(opts?: OrderSyncOpts): Promise<OrderEmailS
       for (let page = 0; page < maxPages; page++) {
         const query = `{ orders(first: 250, query: "${rangeCond}"${cursor ? `, after: "${cursor}"` : ""}) {
           pageInfo { hasNextPage endCursor }
-          nodes { email createdAt lineItems(first: 20) { nodes { product { id } } } } } }`;
+          nodes { id email createdAt lineItems(first: 20) { nodes { product { id title } variantTitle } } } } }`;
         // One slow page must not kill a multi-hour walk: 3 attempts,
         // fresh 60s abort signal each, short backoff (7/15: both stores'
         // first full-history walks died on a single page timeout).
@@ -112,17 +118,43 @@ export async function syncOrderEmails(opts?: OrderSyncOpts): Promise<OrderEmailS
         if (!resp.data) throw new Error(`orders query failed: ${JSON.stringify(resp.errors).slice(0, 200)}`);
 
         const rows: Array<{ store: string; email: string; productId: string; orderDate: string }> = [];
+        // Variant grain for size-per-review + purchase history (2026-07-23):
+        // same walk, second table. Kept separate so order_emails' dedup
+        // grain stays untouched. Orders WITHOUT an email still land here —
+        // the exact-order path (loox_order_id) does not need one.
+        const lineRows: Array<{
+          store: string;
+          shopifyOrderId: string;
+          email: string | null;
+          productId: string;
+          productTitle: string | null;
+          variantTitle: string;
+          orderDate: string;
+        }> = [];
         for (const o of resp.data.orders.nodes) {
           r.orders += 1;
-          const email = o.email?.trim().toLowerCase();
-          if (!email) continue;
+          const email = o.email?.trim().toLowerCase() || null;
           const orderDate = o.createdAt.slice(0, 10);
+          // gid://shopify/Order/6191776623847 -> 6191776623847
+          const shopifyOrderId = o.id.split("/").pop()!;
           for (const li of o.lineItems.nodes) {
             const gid = li.product?.id;
             if (!gid) continue;
             // gid://shopify/Product/8258900983882 -> 8258900983882
             const productId = gid.split("/").pop()!;
-            rows.push({ store: s.label, email, productId, orderDate });
+            if (email) rows.push({ store: s.label, email, productId, orderDate });
+            const variantTitle = li.variantTitle?.trim();
+            if (variantTitle) {
+              lineRows.push({
+                store: s.label,
+                shopifyOrderId,
+                email,
+                productId,
+                productTitle: li.product?.title?.trim() || null,
+                variantTitle,
+                orderDate,
+              });
+            }
           }
         }
         if (rows.length > 0) {
@@ -132,6 +164,9 @@ export async function syncOrderEmails(opts?: OrderSyncOpts): Promise<OrderEmailS
             .onConflictDoNothing()
             .returning({ id: orderEmails.id });
           r.inserted += inserted.length;
+        }
+        if (lineRows.length > 0) {
+          await db.insert(orderLineSizes).values(lineRows).onConflictDoNothing();
         }
         if (!resp.data.orders.pageInfo.hasNextPage) break;
         cursor = resp.data.orders.pageInfo.endCursor;

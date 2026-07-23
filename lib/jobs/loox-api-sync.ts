@@ -156,6 +156,7 @@ async function syncStore(store: LooxStoreConfig, full: boolean) {
         reviewText: review.body,
         verified: review.verified,
         status: review.status,
+        looxOrderId: review.orderId != null ? String(review.orderId) : null,
         parsed: true,
       }));
 
@@ -187,6 +188,10 @@ async function syncStore(store: LooxStoreConfig, full: boolean) {
               productTitle: v.productTitle,
               productHandle: v.productHandle,
               productId: v.productId,
+              // Backfills order links onto rows that predate the column;
+              // Loox only sets orderId on newer reviews, so this is
+              // write-once in practice.
+              looxOrderId: v.looxOrderId,
             })
             .where(
               and(
