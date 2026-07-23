@@ -377,8 +377,11 @@ export default function ReviewsPage() {
   const std = (data?.products ?? []).filter((p) => p.line !== "heavy");
   const heavy = (data?.products ?? []).filter((p) => p.line === "heavy");
 
+  // Clicking the already-selected product collapses its feed again.
   const pick = (sel: Selection) => {
-    setSelected(sel);
+    setSelected((cur) =>
+      cur?.displayName === sel.displayName && cur.line === sel.line ? null : sel,
+    );
     setPage(1);
   };
 
@@ -567,11 +570,20 @@ export default function ReviewsPage() {
                     </span>
                   )}
                 </h2>
-                {product.data && (
-                  <span className="text-xs text-neutral-500">
-                    {product.data.total.toLocaleString()} reviews · avg {product.data.avgRating ?? "—"}
-                  </span>
-                )}
+                <div className="flex items-center gap-3">
+                  {product.data && (
+                    <span className="text-xs text-neutral-500">
+                      {product.data.total.toLocaleString()} reviews · avg {product.data.avgRating ?? "—"}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => setSelected(null)}
+                    className="rounded border border-neutral-200 px-2 py-0.5 text-xs text-neutral-600 hover:bg-neutral-50"
+                    title="Collapse reviews"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
 
               <ChatPanel

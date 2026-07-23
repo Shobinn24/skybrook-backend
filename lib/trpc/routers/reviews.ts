@@ -6,6 +6,7 @@ import { looxProducts, looxReviews } from "@/lib/db/schema";
 import { runLooxApiSync } from "@/lib/jobs/loox-api-sync";
 import { looxConfigured, runLooxChat } from "@/lib/jobs/loox-chat";
 import { runLooxIngest } from "@/lib/jobs/loox-ingest";
+import { normalizedTitleSql } from "@/lib/queries/product-title-sql";
 import { resolveBoughtSizes, type SizeSource } from "@/lib/queries/review-sizes";
 import { opsProcedure, reviewsProcedure, router } from "@/lib/trpc/server";
 
@@ -178,6 +179,11 @@ export const reviewsRouter = router({
                   join family f on f.display_name = lp.display_name
                   where lp.handle = r.product_handle
                     and f.product_id = ols.product_id
+                ) or exists (
+                  select 1 from loox_products lpt
+                  where lpt.handle = r.product_handle
+                    and ols.product_title is not null
+                    and ${normalizedTitleSql(sql`ols.product_title`)} = lower(btrim(lpt.display_name))
                 )) as in_family
               from loox_reviews r
               join order_line_sizes ols on ols.shopify_order_id = r.loox_order_id
@@ -199,15 +205,24 @@ export const reviewsRouter = router({
               select r.id::text as review_id, ols.variant_title
               from loox_reviews r
               join loox_products lp on lp.handle = r.product_handle
-              join family f on f.display_name = lp.display_name
               join order_line_sizes ols
-                on ols.product_id = f.product_id
-               and ols.email = lower(r.reviewer_email)
+                on ols.email = lower(r.reviewer_email)
                and (r.store is null or ols.store = r.store)
               where r.id in (${idList})
                 and r.loox_order_id is null
                 and r.reviewer_email is not null
                 and ols.order_date <= coalesce(r.reviewed_at, r.received_at)::date
+                and (
+                  exists (
+                    select 1 from family f
+                    where f.display_name = lp.display_name
+                      and f.product_id = ols.product_id
+                  )
+                  or (
+                    ols.product_title is not null
+                    and ${normalizedTitleSql(sql`ols.product_title`)} = lower(btrim(lp.display_name))
+                  )
+                )
               group by r.id, ols.variant_title
               order by r.id, max(ols.order_date) desc`)) as unknown as Array<{
               review_id: string;

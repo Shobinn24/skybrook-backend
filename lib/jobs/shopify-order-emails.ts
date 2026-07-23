@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { orderEmails, orderLineSizes } from "@/lib/db/schema";
 import { getShopifyAccessToken } from "@/lib/sources/shopify-auth";
 import { logger } from "@/lib/logger";
+import { normalizedTitleSql } from "@/lib/queries/product-title-sql";
 
 // Purchase-verification pipeline (Scott 2026-07-14). Two halves:
 //
@@ -195,11 +196,18 @@ export async function verifyReviewPurchases(): Promise<VerifyResult> {
   if (!floorRow?.min) return { verified: 0, unverified: 0, unknown: 0 };
   const coverageFloor = `${floorRow.min}T00:00:00Z`;
 
-  // 'verified': an order_emails row with the same email, whose product id
-  // belongs to the review's display-name family (any listing of the same
-  // product counts — bundles, packs, renames), dated on/before the review.
-  // Family membership goes review.handle -> display_name -> all handles ->
-  // all product ids seen on those handles' reviews.
+  // 'verified', strongest signal first:
+  //   1. The review carries the Shopify order id Loox recorded when it
+  //      sent the review request, and that order exists in our order
+  //      history — direct review->order proof, no email needed.
+  //   2. An order_emails row with the same email whose product id belongs
+  //      to the review's display-name family (any listing of the same
+  //      product counts — bundles, packs, renames), on/before the review.
+  //      Family membership goes review.handle -> display_name -> all
+  //      handles -> all product ids seen on those handles' reviews.
+  //   3. Same-email order line whose TITLE normalizes to the family's
+  //      display name — catches listings that never received a review
+  //      (their product ids are absent from the review-derived family).
   const updated = (await db.execute(sql`
     with family as (
       select lp2.display_name, r2.product_id
@@ -210,6 +218,11 @@ export async function verifyReviewPurchases(): Promise<VerifyResult> {
     )
     update loox_reviews r
     set purchase_verified = case
+      when r.loox_order_id is not null and exists (
+        select 1 from order_line_sizes ols
+        where ols.shopify_order_id = r.loox_order_id
+          and (r.store is null or ols.store = r.store)
+      ) then 'verified'
       when r.reviewer_email is null then 'unknown'
       when coalesce(r.reviewed_at, r.received_at) < ${coverageFloor}::timestamptz then 'unknown'
       when exists (
@@ -218,6 +231,15 @@ export async function verifyReviewPurchases(): Promise<VerifyResult> {
         join family f on f.display_name = lp.display_name and f.product_id = oe.product_id
         where oe.email = lower(r.reviewer_email)
           and oe.order_date <= coalesce(r.reviewed_at, r.received_at)::date
+      ) then 'verified'
+      when exists (
+        select 1 from order_line_sizes ols
+        join loox_products lp on lp.handle = r.product_handle
+        where ols.email = lower(r.reviewer_email)
+          and (r.store is null or ols.store = r.store)
+          and ols.order_date <= coalesce(r.reviewed_at, r.received_at)::date
+          and ols.product_title is not null
+          and ${normalizedTitleSql(sql`ols.product_title`)} = lower(btrim(lp.display_name))
       ) then 'verified'
       else 'unverified'
     end
