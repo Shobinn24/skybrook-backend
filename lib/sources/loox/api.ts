@@ -69,17 +69,29 @@ export async function fetchLooxReviewsPage(
   // Passing the previous response's total back skips a count query on their end.
   if (opts.total !== undefined) params.set("total", String(opts.total));
 
-  const res = await fetch(
-    `https://api.loox.io/api/v1/store/${store.publicStoreId}/product-reviews?${params}`,
-    {
-      headers: { "X-Api-Secret-Key": store.secret },
-      signal: AbortSignal.timeout(30_000),
-    },
-  );
-  if (!res.ok) {
-    throw new Error(`loox api ${store.label} page ${opts.page}: HTTP ${res.status}`);
+  // Transient-failure retry, same shape as the Shopify order walk: a
+  // single ECONNRESET killed a 124-page full re-walk at page 37
+  // (2026-07-23). 3 attempts, fresh timeout each, short backoff.
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(
+        `https://api.loox.io/api/v1/store/${store.publicStoreId}/product-reviews?${params}`,
+        {
+          headers: { "X-Api-Secret-Key": store.secret },
+          signal: AbortSignal.timeout(30_000),
+        },
+      );
+      if (!res.ok) {
+        throw new Error(`loox api ${store.label} page ${opts.page}: HTTP ${res.status}`);
+      }
+      return (await res.json()) as LooxReviewsPage;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 4_000 * attempt));
+    }
   }
-  return (await res.json()) as LooxReviewsPage;
+  throw lastErr;
 }
 
 /** Shopify handle from the product url ("https://.../products/<handle>"). */
