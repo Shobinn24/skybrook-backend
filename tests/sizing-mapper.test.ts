@@ -78,6 +78,13 @@ describe("mapStyle", () => {
     expect(mapStyle("SHAPEWEAR")?.product).toBe("Shapewear");
     expect(mapStyle("MEN")?.product).toBe("Men's");
   });
+  it("maps COTTONHIP to Cotton Hipster (digest 2026-07-27), distinct from Cotton and Hipster", () => {
+    expect(mapStyle("COTTONHIP")).toEqual({ product: "Cotton Hipster", heavy: false });
+    expect(mapStyle("COTTONHIPSTER")?.product).toBe("Cotton Hipster");
+    // the neighbours must keep their own buckets
+    expect(mapStyle("COTTON")).toEqual({ product: "Cotton", heavy: false });
+    expect(mapStyle("HIP")?.product).toBe("Hipster");
+  });
 });
 
 describe("labelOf", () => {
@@ -89,6 +96,7 @@ describe("labelOf", () => {
     expect(labelOf({ product: "Shapewear", heavy: false })).toBe("Shapewear");
     expect(labelOf({ product: "Highrise Short", heavy: false })).toBe("Highrise Short");
     expect(labelOf({ product: "Cotton", heavy: false })).toBe("Cotton");
+    expect(labelOf({ product: "Cotton Hipster", heavy: false })).toBe("Cotton Hipster");
   });
 });
 
@@ -160,6 +168,12 @@ describe("labelFromProductTitle (spec step 8 ordering)", () => {
       "Comfy & Discreet Std",
     );
     expect(labelFromProductTitle("Cotton Leakproof Underwear")).toBe("Cotton");
+  });
+  it("Cotton Hipster titles match before the hipster branch", () => {
+    expect(labelFromProductTitle("Cotton Hipster")).toBe("Cotton Hipster");
+    expect(labelFromProductTitle("NEW: Cotton Hipster (Bundles)")).toBe("Cotton Hipster");
+    // plain Hipster must not be swallowed
+    expect(labelFromProductTitle("Hipster Leakproof Underwear")).toBe("Hipster Std");
   });
   it("Highrise Shorts and its Comfort Shorts alias map to one label", () => {
     expect(labelFromProductTitle("NEW: Leakproof Highrise Shorts (Bundles)")).toBe("Highrise Short");

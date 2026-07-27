@@ -47,6 +47,7 @@ const NO_ABSORBENCY_SPLIT = new Set([
   "Shapewear",
   "Highrise Short",
   "Cotton",
+  "Cotton Hipster",
 ]);
 
 // Token match, never substring — 'S' inside 'BSHORT' must not hit.
@@ -74,6 +75,11 @@ export function mapStyle(style: string | null | undefined): StyleMapping {
   // Post-spec products (launched 2026): Highrise/Comfort Shorts and Cotton.
   if (["HRSHORT", "HSHORT", "HRSHORTS", "HSHORTS"].some((x) => t.includes(x)))
     return { product: "Highrise Short", heavy: false };
+  // Digest-flagged 2026-07-27: CS writes the Cotton Hipster (ev-cottonhip,
+  // intl launch 2026-07-10) as a single COTTONHIP token. Distinct product
+  // from the legacy COTTON code and from Cotton HW — no heavy line.
+  if (t.includes("COTTONHIP") || t.includes("COTTONHIPSTER"))
+    return { product: "Cotton Hipster", heavy: false };
   if (t.includes("COTTON")) return { product: "Cotton", heavy: false };
   if (t.includes("HIPSTER")) return { product: "Hipster", heavy };
   return null;
@@ -133,6 +139,9 @@ export function labelFromProductTitle(title: string): string | null {
     product = "Highrise Short";
   } else if (s.includes("high cut") || s.includes("french cut")) product = "French";
   else if (s.includes("boyshort")) product = "Boyshort";
+  // "Cotton Hipster" must match before "hipster" or its units land in the
+  // Hipster bucket (same trap as High Waisted Comfort Plus above).
+  else if (s.includes("cotton hipster")) product = "Cotton Hipster";
   else if (s.includes("hipster")) product = "Hipster";
   else if (s.includes("bikini")) product = "Bikini";
   else if (s.includes("comfort plus")) product = "Comfort Plus";
