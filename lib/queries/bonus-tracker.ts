@@ -367,17 +367,33 @@ export type NotificationPreview = {
   grandTotalUsd: number;
 };
 
+/** Which bonus program a notification batch covers. Batches were
+ * combined (marketer roster + editor tail in one message) until
+ * 2026-07-29, when each program got its own send button + history. */
+export type BonusProgram = "marketers" | "videoEditors";
+
 /**
  * Aggregate every `approved_full` / `approved_half` award that hasn't
  * been notified yet (`notification_batch_id IS NULL`) into the WhatsApp
  * message Jasper outlined in his April example. The same shape is used
  * both for preview (render-only) and for the actual send (which then
  * writes a `bonus_notification_batches` row and stamps the awards).
+ *
+ * `program` limits the batch to one roster; omitted = legacy combined
+ * behavior (kept so history rows and old tests keep their meaning).
  */
 export async function previewNotification(opts?: {
   periodLabel?: string;
+  program?: BonusProgram;
 }): Promise<NotificationPreview> {
   const periodLabel = opts?.periodLabel ?? defaultPeriodLabel();
+  const program = opts?.program;
+  const inProgram = (name: string): boolean =>
+    program === "marketers"
+      ? isBonusMarketer(name)
+      : program === "videoEditors"
+        ? isVideoEditor(name)
+        : true;
   const unsent = await db
     .select()
     .from(bonusAwards)
@@ -407,21 +423,27 @@ export async function previewNotification(opts?: {
 
   type Bucket = NotificationPreview["totals"][number];
   const byMarketer = new Map<BonusMarketer | VideoEditor, Bucket>();
-  for (const m of BONUS_MARKETERS) {
-    byMarketer.set(m, {
-      marketer: m,
-      tier1FullCount: 0,
-      tier1HalfCount: 0,
-      tier2FullCount: 0,
-      tier2HalfCount: 0,
-      totalUsd: 0,
-    });
+  // The marketer roster is pre-seeded (Jasper lists $0 people too) —
+  // except in an editors-only batch, whose totals_json carries only
+  // the editors who actually earned.
+  if (program !== "videoEditors") {
+    for (const m of BONUS_MARKETERS) {
+      byMarketer.set(m, {
+        marketer: m,
+        tier1FullCount: 0,
+        tier1HalfCount: 0,
+        tier2FullCount: 0,
+        tier2HalfCount: 0,
+        totalUsd: 0,
+      });
+    }
   }
 
   const awards: NotificationAward[] = [];
   const awardIds: string[] = [];
   for (const a of unsent) {
     if (!isBonusMarketer(a.marketer) && !isVideoEditor(a.marketer)) continue;
+    if (!inProgram(a.marketer)) continue;
     if (a.status !== "approved_full" && a.status !== "approved_half") continue;
     // Editor buckets are created lazily so pure-marketer batches keep
     // the historical 6-bucket totals_json shape.
@@ -461,7 +483,7 @@ export async function previewNotification(opts?: {
 
   const totals = Array.from(byMarketer.values());
   const grandTotalUsd = totals.reduce((s, t) => s + t.totalUsd, 0);
-  const messageBody = renderNotificationMessage(periodLabel, awards);
+  const messageBody = renderNotificationMessage(periodLabel, awards, program);
 
   return {
     periodLabel,
@@ -528,8 +550,13 @@ const NOTIFICATION_BUCKETS = [
 function renderNotificationMessage(
   periodLabel: string,
   awards: NotificationAward[],
+  program?: BonusProgram,
 ): string {
-  const lines: string[] = [`*${periodLabel} Bonuses*`, ""];
+  const title =
+    program === "videoEditors"
+      ? `*${periodLabel} Video Editor Bonuses*`
+      : `*${periodLabel} Bonuses*`;
+  const lines: string[] = [title, ""];
   // Operator-error guard: the send button is monthly, so an entirely
   // empty batch means nothing was approved at all — flag it rather than
   // ship a roster of zeros.
@@ -538,24 +565,28 @@ function renderNotificationMessage(
     return lines.join("\n").trimEnd();
   }
 
-  const byMarketer = new Map<BonusMarketer, NotificationAward[]>();
-  for (const m of BONUS_SUMMARY_MARKETER_ORDER) byMarketer.set(m, []);
-  for (const a of awards) {
-    if (isBonusMarketer(a.marketer)) byMarketer.get(a.marketer)?.push(a);
+  if (program !== "videoEditors") {
+    const byMarketer = new Map<BonusMarketer, NotificationAward[]>();
+    for (const m of BONUS_SUMMARY_MARKETER_ORDER) byMarketer.set(m, []);
+    for (const a of awards) {
+      if (isBonusMarketer(a.marketer)) byMarketer.get(a.marketer)?.push(a);
+    }
+    for (const marketer of BONUS_SUMMARY_MARKETER_ORDER) {
+      pushPersonSection(lines, marketer, byMarketer.get(marketer) ?? []);
+    }
   }
 
-  for (const marketer of BONUS_SUMMARY_MARKETER_ORDER) {
-    pushPersonSection(lines, marketer, byMarketer.get(marketer) ?? []);
-  }
-
-  // Video-editor sections (client 2026-07-02) append AFTER the marketer
-  // roster, in editor roster order. Unlike marketers — where Jasper
-  // lists $0 people too — editors with no awards this period are
-  // omitted, so pure-marketer batches render exactly as before.
-  for (const editor of VIDEO_EDITORS) {
-    const list = awards.filter((a) => a.marketer === editor);
-    if (list.length === 0) continue;
-    pushPersonSection(lines, editor, list);
+  // Video-editor sections (client 2026-07-02), in editor roster order.
+  // Unlike marketers — where Jasper lists $0 people too — editors with
+  // no awards this period are omitted. In a combined (legacy) batch
+  // they follow the marketer roster; in a videoEditors batch they are
+  // the whole message. A marketers batch skips them entirely.
+  if (program !== "marketers") {
+    for (const editor of VIDEO_EDITORS) {
+      const list = awards.filter((a) => a.marketer === editor);
+      if (list.length === 0) continue;
+      pushPersonSection(lines, editor, list);
+    }
   }
   return lines.join("\n").trimEnd();
 }
@@ -624,13 +655,26 @@ export type NotificationHistoryRow = {
   sentAt: string;
   sentBy: string;
   whatsappStatus: string | null;
+  program: string | null;
   grandTotalUsd: number;
 };
 
-export async function getNotificationHistory(): Promise<NotificationHistoryRow[]> {
+export async function getNotificationHistory(opts?: {
+  program?: BonusProgram;
+}): Promise<NotificationHistoryRow[]> {
+  // Legacy combined batches (program NULL) carried both rosters in one
+  // message; they file under the marketer history so pre-split months
+  // stay visible somewhere sensible.
+  const where =
+    opts?.program === "marketers"
+      ? sql`${bonusNotificationBatches.program} = 'marketers' OR ${bonusNotificationBatches.program} IS NULL`
+      : opts?.program === "videoEditors"
+        ? eq(bonusNotificationBatches.program, "videoEditors")
+        : undefined;
   const rows = await db
     .select()
     .from(bonusNotificationBatches)
+    .where(where)
     .orderBy(desc(bonusNotificationBatches.sentAt));
 
   return rows.map((r) => {
@@ -641,6 +685,7 @@ export async function getNotificationHistory(): Promise<NotificationHistoryRow[]
       sentAt: r.sentAt instanceof Date ? r.sentAt.toISOString() : String(r.sentAt),
       sentBy: r.sentBy,
       whatsappStatus: r.whatsappStatus,
+      program: r.program,
       grandTotalUsd: grandTotalFromTotalsJson(r.totalsJson),
     };
   });

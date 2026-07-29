@@ -376,12 +376,22 @@ export default function BonusTrackerPage() {
     refetchOnWindowFocus: false,
     enabled: isAdmin,
   });
-  const preview = trpc.inventory.previewBonusNotification.useQuery(undefined, {
-    refetchOnWindowFocus: false,
-    enabled: isAdmin,
-  });
+  // Program toggle (operator design 2026-07-02): the page hosts two
+  // bonus programs. Declared before the queries because — since the
+  // 2026-07-29 split — the notification preview, send and history are
+  // all scoped to the active program.
+  type Program = "marketers" | "videoEditors";
+  const [program, setProgram] = useState<Program>("marketers");
+
+  const preview = trpc.inventory.previewBonusNotification.useQuery(
+    { program },
+    {
+      refetchOnWindowFocus: false,
+      enabled: isAdmin,
+    },
+  );
   const history = trpc.inventory.getBonusNotificationHistory.useQuery(
-    undefined,
+    { program },
     { refetchOnWindowFocus: false },
   );
   // Summary tab — count-only redesign (Jasper 2026-05-28). Old
@@ -423,13 +433,8 @@ export default function BonusTrackerPage() {
     onSuccess: refreshAll,
   });
 
-  // Program toggle (operator design 2026-07-02): the page hosts two
-  // bonus programs. "Marketers" renders the original page unchanged;
-  // "Video Editors" mirrors that UX per-editor. Each program keeps its
-  // own active-tab state so flipping between them doesn't lose position.
-  type Program = "marketers" | "videoEditors";
-  const [program, setProgram] = useState<Program>("marketers");
-
+  // Each program keeps its own active-tab state so flipping between
+  // them doesn't lose position.
   type ActiveView = BonusMarketer | "summary";
   // Summary is the default landing view and the leftmost tab (Jasper 2026-05-26).
   const [activeView, setActiveView] = useState<ActiveView>("summary");
@@ -469,7 +474,7 @@ export default function BonusTrackerPage() {
             onClick={() => setShowPreviewModal(true)}
             className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500"
           >
-            Generate notification · {previewData.awardIds.length} pending payouts
+            Generate {program === "videoEditors" ? "editor" : "marketer"} notification · {previewData.awardIds.length} pending payouts
           </button>
         )}
       </div>
@@ -1016,7 +1021,7 @@ export default function BonusTrackerPage() {
       {(history.data?.length ?? 0) > 0 && (
         <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
           <div className="border-b border-neutral-200 bg-neutral-50 px-4 py-2 text-sm font-medium text-neutral-700">
-            Notification history
+            {program === "videoEditors" ? "Video editor notification history" : "Notification history"}
           </div>
           <div className="divide-y divide-neutral-200">
             {(history.data ?? []).map((h) => (
@@ -1024,6 +1029,11 @@ export default function BonusTrackerPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <span className="font-medium">{h.periodLabel}</span>
+                    {!h.program && (
+                      <span className="ml-2 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-neutral-500">
+                        combined
+                      </span>
+                    )}
                     <span className="ml-2 text-xs text-neutral-500">
                       sent {fmtDate(h.sentAt.slice(0, 10))} by {h.sentBy}
                     </span>
@@ -1058,7 +1068,7 @@ export default function BonusTrackerPage() {
           <div className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-md bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
               <div className="font-semibold text-neutral-900">
-                Notification preview — {previewData.periodLabel}
+                {program === "videoEditors" ? "Video editor" : "Marketer"} notification preview — {previewData.periodLabel}
               </div>
               <button
                 type="button"
@@ -1103,7 +1113,7 @@ export default function BonusTrackerPage() {
                 type="button"
                 disabled={send.isPending}
                 onClick={() => {
-                  send.mutate(undefined, {
+                  send.mutate({ program }, {
                     onSuccess: () => setShowPreviewModal(false),
                   });
                 }}

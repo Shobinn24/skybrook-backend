@@ -9,7 +9,7 @@ import {
   isVideoEditor,
   videoEditorBonusAmountUsd,
 } from "@/lib/domain/video-editors";
-import { previewNotification } from "@/lib/queries/bonus-tracker";
+import { type BonusProgram, previewNotification } from "@/lib/queries/bonus-tracker";
 import { logger } from "@/lib/logger";
 
 /** Thrown inside the claim transaction when another send already
@@ -217,6 +217,8 @@ export async function bulkApprovePending(opts: {
 export async function sendNotification(opts: {
   sentBy: string;
   periodLabel?: string;
+  /** Which bonus program to batch; omitted = legacy combined batch. */
+  program?: BonusProgram;
   /** Optional override for the actual sender. Defaults to the no-op
    * stub so backend cron / preview paths don't hit the network. */
   sendWhatsApp?: (body: string) => Promise<{ ok: boolean; reason?: string }>;
@@ -224,7 +226,10 @@ export async function sendNotification(opts: {
   | { skipped: true; reason: string }
   | { skipped: false; batchId: string; messageBody: string; awardCount: number; whatsappStatus: string }
 > {
-  const preview = await previewNotification({ periodLabel: opts.periodLabel });
+  const preview = await previewNotification({
+    periodLabel: opts.periodLabel,
+    program: opts.program,
+  });
   if (preview.awardIds.length === 0) {
     return { skipped: true, reason: "no unsent approved bonuses" };
   }
@@ -252,6 +257,7 @@ export async function sendNotification(opts: {
           totalsJson: preview.totals,
           sentBy: opts.sentBy,
           whatsappStatus: "sending",
+          program: opts.program ?? null,
         })
         .returning({ id: bonusNotificationBatches.id });
 

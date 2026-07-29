@@ -587,6 +587,10 @@ export const bonusNotificationBatches = pgTable("bonus_notification_batches", {
   sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
   sentBy: text("sent_by").notNull(),
   whatsappStatus: text("whatsapp_status"), // "sent" | "skipped" | "failed:<reason>"
+  // Which bonus program this batch covers: "marketers" | "videoEditors".
+  // NULL = legacy combined batch from before the 2026-07-29 split (those
+  // messages carried both rosters); shown under the marketer history.
+  program: text("program"),
 });
 
 // --- Shipping Performance Checks (spec: docs/shipping-checks-spec) ---

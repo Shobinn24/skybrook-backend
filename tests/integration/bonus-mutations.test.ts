@@ -392,3 +392,140 @@ describe("sendNotification", () => {
     expect(second).toEqual({ skipped: true, reason: "no unsent approved bonuses" });
   });
 });
+
+describe("sendNotification — per-program batches (2026-07-29 split)", () => {
+  beforeAll(() => {
+    if (!process.env.DATABASE_URL)
+      throw new Error("DATABASE_URL not set in test env");
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+    await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+    await db.execute(sql`TRUNCATE TABLE bonus_notification_batches CASCADE`);
+    await db.execute(sql`TRUNCATE TABLE data_pulls CASCADE`);
+  });
+
+  async function seedApprovedEditorAward(editor: string) {
+    const [row] = await db
+      .insert(bonusAwards)
+      .values({
+        adNumber: "4001",
+        marketer: editor,
+        tier: "tier1",
+        crossedAt: "2026-07-01",
+        status: "approved_full",
+        amountUsd: "200.00",
+        approvedAt: new Date(),
+        approvedBy: "jasper",
+      })
+      .returning();
+    return row;
+  }
+
+  it("marketer batch leaves editor awards unclaimed; editor batch picks them up", async () => {
+    await seedPending("710", ["Craig"], 14_000);
+    const [m] = await db.select().from(bonusAwards);
+    await approveBonus({
+      awardId: m.id,
+      approval: "approved_full",
+      approvedBy: "jasper",
+    });
+    const editorAward = await seedApprovedEditorAward("Sebastian");
+
+    const marketerSend = await sendNotification({
+      sentBy: "jasper",
+      periodLabel: "July 2026",
+      program: "marketers",
+      sendWhatsApp: async () => ({ ok: true }),
+    });
+    if (marketerSend.skipped) throw new Error("expected marketer send");
+    expect(marketerSend.awardCount).toBe(1);
+    expect(marketerSend.messageBody).toContain("Craig");
+    expect(marketerSend.messageBody).not.toContain("Sebastian");
+    expect(marketerSend.messageBody).toContain("July 2026 Bonuses");
+
+    // Editor award untouched by the marketer batch
+    const [editorAfter] = await db
+      .select()
+      .from(bonusAwards)
+      .where(sql`marketer = 'Sebastian'`);
+    expect(editorAfter.notificationBatchId).toBeNull();
+
+    const editorSend = await sendNotification({
+      sentBy: "jasper",
+      periodLabel: "July 2026",
+      program: "videoEditors",
+      sendWhatsApp: async () => ({ ok: true }),
+    });
+    if (editorSend.skipped) throw new Error("expected editor send");
+    expect(editorSend.awardCount).toBe(1);
+    expect(editorSend.messageBody).toContain("July 2026 Video Editor Bonuses");
+    expect(editorSend.messageBody).toContain("Sebastian");
+    // No marketer roster in the editor message ($0 people are marketer-only)
+    expect(editorSend.messageBody).not.toContain("Craig");
+
+    const batches = await db.select().from(bonusNotificationBatches);
+    expect(batches).toHaveLength(2);
+    const byProgram = new Map(batches.map((b) => [b.program, b]));
+    expect(byProgram.get("marketers")?.messageBody).toContain("Craig");
+    expect(byProgram.get("videoEditors")?.messageBody).toContain("Sebastian");
+    expect(editorAward.id).toBeTruthy();
+  });
+
+  it("editors-only totals_json carries only earning editors (no zero marketer roster)", async () => {
+    await seedApprovedEditorAward("Sebastian");
+    const send = await sendNotification({
+      sentBy: "jasper",
+      program: "videoEditors",
+      sendWhatsApp: async () => ({ ok: true }),
+    });
+    if (send.skipped) throw new Error("expected send");
+    const [batch] = await db.select().from(bonusNotificationBatches);
+    const totals = batch.totalsJson as Array<{ marketer: string }>;
+    expect(totals).toHaveLength(1);
+    expect(totals[0].marketer).toBe("Sebastian");
+  });
+
+  it("history filters per program with legacy null batches filed under marketers", async () => {
+    const { getNotificationHistory } = await import(
+      "@/lib/queries/bonus-tracker"
+    );
+    await db.insert(bonusNotificationBatches).values([
+      {
+        periodLabel: "June 2026",
+        messageBody: "legacy combined",
+        totalsJson: [],
+        sentBy: "jasper",
+        whatsappStatus: "sent",
+        program: null,
+      },
+      {
+        periodLabel: "July 2026",
+        messageBody: "marketers only",
+        totalsJson: [],
+        sentBy: "jasper",
+        whatsappStatus: "sent",
+        program: "marketers",
+      },
+      {
+        periodLabel: "July 2026",
+        messageBody: "editors only",
+        totalsJson: [],
+        sentBy: "jasper",
+        whatsappStatus: "sent",
+        program: "videoEditors",
+      },
+    ]);
+
+    const marketerRows = await getNotificationHistory({ program: "marketers" });
+    expect(marketerRows.map((r) => r.messageBody).sort()).toEqual([
+      "legacy combined",
+      "marketers only",
+    ]);
+    const editorRows = await getNotificationHistory({ program: "videoEditors" });
+    expect(editorRows.map((r) => r.messageBody)).toEqual(["editors only"]);
+    const allRows = await getNotificationHistory();
+    expect(allRows).toHaveLength(3);
+  });
+});

@@ -618,7 +618,14 @@ export const inventoryRouter = router({
   // Render the WhatsApp message body + per-marketer totals from every
   // unsent approved award. Pure read — doesn't mutate anything.
   previewBonusNotification: marketingProcedure
-    .input(z.object({ periodLabel: z.string().max(60).optional() }).optional())
+    .input(
+      z
+        .object({
+          periodLabel: z.string().max(60).optional(),
+          program: z.enum(["marketers", "videoEditors"]).optional(),
+        })
+        .optional(),
+    )
     .query(({ input }) => previewNotification(input ?? {})),
 
   // Materialize the notification batch + stamp awards as sent. The
@@ -626,20 +633,32 @@ export const inventoryRouter = router({
   // configured MCP channel; until then the batch is recorded with
   // `whatsapp_status='failed:...'` so the operator can copy / re-send.
   sendBonusNotification: marketingProcedure
-    .input(z.object({ periodLabel: z.string().max(60).optional() }).optional())
+    .input(
+      z
+        .object({
+          periodLabel: z.string().max(60).optional(),
+          program: z.enum(["marketers", "videoEditors"]).optional(),
+        })
+        .optional(),
+    )
     .mutation(({ input, ctx }) =>
       sendNotification({
         sentBy: ctx.email ?? "unknown",
         periodLabel: input?.periodLabel,
+        program: input?.program,
         sendWhatsApp: sendViaWhatsAppBridge,
       }),
     ),
 
   // fbAdsProcedure since 2026-07-02 — read-only history, client-approved
   // for the fb_ads_only tier alongside getBonusTracker.
-  getBonusNotificationHistory: fbAdsProcedure.query(() =>
-    getNotificationHistory(),
-  ),
+  getBonusNotificationHistory: fbAdsProcedure
+    .input(
+      z
+        .object({ program: z.enum(["marketers", "videoEditors"]).optional() })
+        .optional(),
+    )
+    .query(({ input }) => getNotificationHistory(input ?? {})),
 
   // Scoreboard: bonus paid per month per marketer (Jasper 2026-05-20).
   // Kept for compatibility — UI Summary tab moved to getBonusCountSummary

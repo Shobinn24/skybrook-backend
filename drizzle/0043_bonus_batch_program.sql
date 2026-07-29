@@ -1,0 +1,1 @@
+ALTER TABLE "bonus_notification_batches" ADD COLUMN "program" text;
