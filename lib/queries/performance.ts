@@ -7,6 +7,7 @@ import {
   normalizeFunnelUrl,
   type FbBucket,
 } from "@/lib/domain/fb-product-attribution";
+import { deriveProductName } from "@/lib/domain/sku-naming";
 import { toEstDate } from "@/lib/tz";
 
 export type SalesChannel = "shopify_us" | "shopify_intl";
@@ -270,6 +271,7 @@ export async function getPerformanceRollup(opts: {
   const mensRevRows = await db
     .select({
       channel: dailySales.channel,
+      sku: dailySales.sku,
       productName: skus.productName,
       net: sql<string>`coalesce(sum(${dailySales.netSalesUsd}), 0)`,
     })
@@ -281,11 +283,13 @@ export async function getPerformanceRollup(opts: {
         lte(dailySales.salesDate, rangeEnd),
       ),
     )
-    .groupBy(dailySales.channel, skus.productName);
+    .groupBy(dailySales.channel, dailySales.sku, skus.productName);
   let mensRevUs = 0;
   let mensRevIntl = 0;
   for (const r of mensRevRows) {
-    const fam = revenueFamilyFromProductName(r.productName ?? "");
+    const fam = revenueFamilyFromProductName(
+      productNameForRevenue(r.productName, r.sku),
+    );
     if (!(MENS_LINES as readonly string[]).includes(fam)) continue;
     if (r.channel === "shopify_us") mensRevUs += Number(r.net);
     else mensRevIntl += Number(r.net);
@@ -401,6 +405,19 @@ export async function getPerformanceDataFreshness(): Promise<PerformanceDataFres
 // spend. AppLovin comes from its dedicated feed, attributed at ingest. Rows
 // expose fbSpendUsd/appLovinSpendUsd (platform) + usSpendUsd/nonUsSpendUsd
 // (region) for the expand-to-see UI.
+
+/** The product name a sales row's revenue is attributed under. The skus
+ * table only knows SKUs the inventory sheet carries — a Shopify variant
+ * sold before (or without ever) appearing there fails the join and its
+ * revenue used to silently land in "Other products" (caught 2026-07-29:
+ * ev-flyboxer 6-pack + 3x-2XL sales missing from the men's rollup).
+ * Deriving the name from the SKU id itself covers those rows. */
+export function productNameForRevenue(
+  productName: string | null,
+  sku: string,
+): string {
+  return productName ?? deriveProductName(sku) ?? "";
+}
 
 /** Map a skus.product_name to a canonical product family. MUST emit the same
  * labels as `attributeFbAd` so the revenue and spend sides join. HF split. */
@@ -543,17 +560,20 @@ export async function computeProductLineStats(opts: {
   if (opts.channel) revConds.push(eq(dailySales.channel, opts.channel));
   const revRows = await db
     .select({
+      sku: dailySales.sku,
       productName: skus.productName,
       net: sql<string>`coalesce(sum(${dailySales.netSalesUsd}), 0)`,
     })
     .from(dailySales)
     .leftJoin(skus, eq(skus.sku, dailySales.sku))
     .where(and(...revConds))
-    .groupBy(skus.productName);
+    .groupBy(dailySales.sku, skus.productName);
 
   const revByFamily = new Map<string, number>();
   for (const r of revRows) {
-    const fam = revenueFamilyFromProductName(r.productName ?? "");
+    const fam = revenueFamilyFromProductName(
+      productNameForRevenue(r.productName, r.sku),
+    );
     revByFamily.set(fam, (revByFamily.get(fam) ?? 0) + Number(r.net));
   }
 

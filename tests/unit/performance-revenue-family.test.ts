@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { revenueFamilyFromProductName } from "@/lib/queries/performance";
+import { productNameForRevenue, revenueFamilyFromProductName } from "@/lib/queries/performance";
 
 // Revenue-side family labels MUST match the spend-side labels emitted by
 // attributeFbPrefix / canonicalProductLabel, or a product's revenue and
@@ -30,5 +30,35 @@ describe("revenueFamilyFromProductName", () => {
   ];
   it.each(cases)("%s -> %s", (name, family) => {
     expect(revenueFamilyFromProductName(name)).toBe(family);
+  });
+});
+
+describe("productNameForRevenue (skus-join fallback, 2026-07-29)", () => {
+  it("passes a joined product name straight through", () => {
+    expect(productNameForRevenue("Boxer w/ Fly 3-Pack", "ev-flyboxer-3x-m")).toBe(
+      "Boxer w/ Fly 3-Pack",
+    );
+  });
+
+  it("derives the name from the SKU when the skus join missed", () => {
+    // The real gap: flyboxer 6-pack + 3x-2XL variants sold on Shopify
+    // before the inventory sheet (and therefore skus) knew them.
+    expect(productNameForRevenue(null, "ev-flyboxer-6x-xl")).toBe(
+      "Boxer w/ Fly 6-Pack",
+    );
+    expect(productNameForRevenue(null, "ev-flyboxer-3x-2xl")).toBe(
+      "Boxer w/ Fly 3-Pack",
+    );
+  });
+
+  it("derived names land in the right revenue family (the men's rollup)", () => {
+    expect(
+      revenueFamilyFromProductName(productNameForRevenue(null, "ev-flyboxer-6x-m")),
+    ).toBe("Mens Boxer");
+  });
+
+  it("falls back to empty string (Other products) for unknown SKU shapes", () => {
+    expect(productNameForRevenue(null, "totally-unknown")).toBe("");
+    expect(revenueFamilyFromProductName("")).toBe("Other products");
   });
 });
