@@ -12,9 +12,11 @@ import { detectAndInsertBonusCrossings } from "@/lib/jobs/bonus-crossings";
 import {
   approveBonus,
   bulkApprovePending,
+  changeApprovalLevel,
   rejectBonus,
   sendNotification,
 } from "@/lib/jobs/bonus-mutations";
+import { getApprovedUnsent } from "@/lib/queries/bonus-tracker";
 import { resetDb } from "@/tests/fixtures/seed";
 
 async function makeRawPull(): Promise<string> {
@@ -36,11 +38,12 @@ async function seedAdSpend(opts: {
   marketers: string[];
   totalCostUsd: number;
   sourcePullId: string;
+  adNameRaw?: string;
 }) {
   await db.insert(fbAdSpendDaily).values({
     adNumber: opts.adNumber,
     adName: `Ad ${opts.adNumber}`,
-    adNameRaw: `Ad ${opts.adNumber}`,
+    adNameRaw: opts.adNameRaw ?? `Ad ${opts.adNumber}`,
     adLink: null,
     marketers: opts.marketers,
     spendDate: "2026-04-01",
@@ -49,9 +52,14 @@ async function seedAdSpend(opts: {
   });
 }
 
-async function seedPending(adNumber: string, marketers: string[], totalCostUsd: number) {
+async function seedPending(
+  adNumber: string,
+  marketers: string[],
+  totalCostUsd: number,
+  adNameRaw?: string,
+) {
   const rawId = await makeRawPull();
-  await seedAdSpend({ adNumber, marketers, totalCostUsd, sourcePullId: rawId });
+  await seedAdSpend({ adNumber, marketers, totalCostUsd, sourcePullId: rawId, adNameRaw });
   await detectAndInsertBonusCrossings({ asOfDate: "2026-05-13" });
 }
 
@@ -527,5 +535,133 @@ describe("sendNotification — per-program batches (2026-07-29 split)", () => {
     expect(editorRows.map((r) => r.messageBody)).toEqual(["editors only"]);
     const allRows = await getNotificationHistory();
     expect(allRows).toHaveLength(3);
+  });
+});
+
+
+describe("auto-half rules at crossing detection (client 2026-08-03)", () => {
+  beforeAll(() => {
+    if (!process.env.DATABASE_URL)
+      throw new Error("DATABASE_URL not set in test env");
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+    await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+    await db.execute(sql`TRUNCATE TABLE bonus_notification_batches CASCADE`);
+    await db.execute(sql`TRUNCATE TABLE data_pulls CASCADE`);
+  });
+
+  it("stamps half_suggested on Rehook ads for rule marketers", async () => {
+    await seedPending("700", ["Craig"], 20_000, "(HW) Ad 700 - CJ - Craig Boyshort MC Rehooks");
+    const rows = await db.select().from(bonusAwards);
+    expect(rows.length).toBe(1);
+    expect(rows[0].halfSuggested).toBe(true);
+    expect(rows[0].halfReason).toMatch(/Rehook/);
+  });
+
+  it("stamps the rule marketer on an image-editor collab but not the editor", async () => {
+    // ad number above Jacob's per-marketer ad floor (1896) so both get awards
+    await seedPending("2001", ["Jacob", "Craig"], 20_000, "Ad 2001 - JR - Jacob x Craig - C4");
+    const rows = await db.select().from(bonusAwards);
+    const craig = rows.find((r) => r.marketer === "Craig")!;
+    const jacob = rows.find((r) => r.marketer === "Jacob")!;
+    expect(craig.halfSuggested).toBe(true);
+    expect(craig.halfReason).toMatch(/Jacob/);
+    expect(jacob.halfSuggested).toBe(false);
+  });
+
+  it("bulk approval honors the suggestion: flagged rows approve at half", async () => {
+    await seedPending("702", ["Craig"], 20_000, "Ad 702 - Craig VID 9 Remake");
+    await seedPending("703", ["Craig"], 20_000, "Ad 703 - Craig VID 10");
+    const result = await bulkApprovePending({ approvedBy: "test" });
+    expect(result.updatedCount).toBe(2);
+    const rows = await db.select().from(bonusAwards);
+    const remake = rows.find((r) => r.adNumber === "702")!;
+    const plain = rows.find((r) => r.adNumber === "703")!;
+    expect(remake.status).toBe("approved_half");
+    expect(Number(remake.amountUsd)).toBe(250);
+    expect(plain.status).toBe("approved_full");
+    expect(Number(plain.amountUsd)).toBe(500);
+  });
+});
+
+describe("changeApprovalLevel — mid-month review (client 2026-08-03)", () => {
+  beforeAll(() => {
+    if (!process.env.DATABASE_URL)
+      throw new Error("DATABASE_URL not set in test env");
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+    await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+    await db.execute(sql`TRUNCATE TABLE bonus_notification_batches CASCADE`);
+    await db.execute(sql`TRUNCATE TABLE data_pulls CASCADE`);
+  });
+
+  it("flips an approved-unsent award full -> half and reprices it", async () => {
+    await seedPending("710", ["Craig"], 20_000);
+    const [award] = await db.select().from(bonusAwards);
+    await approveBonus({ awardId: award.id, approval: "approved_full", approvedBy: "a" });
+
+    const res = await changeApprovalLevel({
+      awardId: award.id,
+      approval: "approved_half",
+      changedBy: "reviewer",
+    });
+    expect(res.updated).toBe(true);
+    const [after] = await db.select().from(bonusAwards);
+    expect(after.status).toBe("approved_half");
+    expect(Number(after.amountUsd)).toBe(250);
+    expect(after.approvedBy).toBe("reviewer");
+
+    // and back up to full
+    await changeApprovalLevel({ awardId: award.id, approval: "approved_full", changedBy: "r2" });
+    const [again] = await db.select().from(bonusAwards);
+    expect(again.status).toBe("approved_full");
+    expect(Number(again.amountUsd)).toBe(500);
+  });
+
+  it("refuses pending rows and awards already claimed by a sent batch", async () => {
+    await seedPending("711", ["Craig"], 20_000);
+    const [award] = await db.select().from(bonusAwards);
+
+    // pending -> no-op
+    const pendingRes = await changeApprovalLevel({
+      awardId: award.id,
+      approval: "approved_half",
+      changedBy: "r",
+    });
+    expect(pendingRes.updated).toBe(false);
+
+    await approveBonus({ awardId: award.id, approval: "approved_full", approvedBy: "a" });
+    await sendNotification({ periodLabel: "Test", sentBy: "t", program: "marketers" });
+
+    // claimed by a sent batch -> frozen
+    const claimedRes = await changeApprovalLevel({
+      awardId: award.id,
+      approval: "approved_half",
+      changedBy: "r",
+    });
+    expect(claimedRes.updated).toBe(false);
+    const [after] = await db.select().from(bonusAwards);
+    expect(after.status).toBe("approved_full");
+  });
+
+  it("getApprovedUnsent lists only unclaimed approved awards with both prices", async () => {
+    await seedPending("712", ["Craig"], 20_000, "Ad 712 - Craig VID Remake");
+    const [award] = await db.select().from(bonusAwards);
+    await approveBonus({ awardId: award.id, approval: "approved_half", approvedBy: "a" });
+
+    const list = await getApprovedUnsent({ program: "marketers" });
+    expect(list.length).toBe(1);
+    expect(list[0].status).toBe("approved_half");
+    expect(list[0].amountUsd).toBe(250);
+    expect(list[0].fullAmountUsd).toBe(500);
+    expect(list[0].halfAmountUsd).toBe(250);
+    expect(list[0].halfSuggested).toBe(true);
+
+    await sendNotification({ periodLabel: "Test", sentBy: "t", program: "marketers" });
+    expect((await getApprovedUnsent({ program: "marketers" })).length).toBe(0);
   });
 });

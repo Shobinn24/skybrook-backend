@@ -394,6 +394,12 @@ export default function BonusTrackerPage() {
     { program },
     { refetchOnWindowFocus: false },
   );
+  // Mid-month review (client 2026-08-03): approved-unsent awards for the
+  // active program, editable between full and half until the send.
+  const approvedUnsent = trpc.inventory.approvedUnsentAwards.useQuery(
+    { program },
+    { refetchOnWindowFocus: false, enabled: isAdmin },
+  );
   // Summary tab — count-only redesign (Jasper 2026-05-28). Old
   // getBonusSummary route is still alive for compatibility but no
   // longer wired into the UI.
@@ -412,6 +418,7 @@ export default function BonusTrackerPage() {
     await Promise.all([
       utils.inventory.getBonusTracker.invalidate(),
       utils.inventory.getPendingBonusApprovals.invalidate(),
+      utils.inventory.approvedUnsentAwards.invalidate(),
       utils.inventory.previewBonusNotification.invalidate(),
       utils.inventory.getBonusNotificationHistory.invalidate(),
       utils.inventory.getBonusSummary.invalidate(),
@@ -430,6 +437,9 @@ export default function BonusTrackerPage() {
     onSuccess: refreshAll,
   });
   const send = trpc.inventory.sendBonusNotification.useMutation({
+    onSuccess: refreshAll,
+  });
+  const changeLevel = trpc.inventory.changeBonusApprovalLevel.useMutation({
     onSuccess: refreshAll,
   });
 
@@ -514,6 +524,83 @@ export default function BonusTrackerPage() {
               </button>
             ))}
           </div>
+
+          {/* Mid-month review (client 2026-08-03): every approved award the
+              next send will include, editable full <-> half until the send
+              claims it. Visible in both programs, admin only. */}
+          {isAdmin && (approvedUnsent.data?.length ?? 0) > 0 && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50/50">
+              <div className="flex items-center justify-between px-4 py-2 text-sm font-medium text-blue-900">
+                <span>
+                  Approved this month · {approvedUnsent.data!.length} award
+                  {approvedUnsent.data!.length === 1 ? "" : "s"} · editable
+                  until the notification is sent
+                </span>
+              </div>
+              <div className="divide-y divide-blue-100">
+                {approvedUnsent.data!.map((a) => (
+                  <div
+                    key={a.awardId}
+                    className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-sm"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-neutral-900">
+                        <span>{a.marketer}</span>
+                        <span className="ml-2 text-neutral-500">·</span>
+                        <span className="ml-2">Ad {a.adNumber}</span>
+                        <span className="ml-2 text-neutral-500">·</span>
+                        <span className="ml-2">
+                          {a.tier === "tier1" ? "T1 ($13k)" : "T2 ($65k)"}
+                        </span>
+                        <span className="ml-2 font-semibold">
+                          {fmtMoney(a.amountUsd)}
+                        </span>
+                        {a.halfSuggested && (
+                          <span
+                            className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-800"
+                            title={a.halfReason ?? undefined}
+                          >
+                            {a.halfReason ?? "auto 50%"}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-0.5 truncate text-xs text-neutral-600">
+                        {a.adName} · crossed {fmtDate(a.crossedAt)}
+                      </div>
+                    </div>
+                    <div className="inline-flex rounded-md border border-neutral-200 bg-white p-0.5">
+                      {(
+                        [
+                          ["approved_full", `Full ${fmtMoney(a.fullAmountUsd)}`],
+                          ["approved_half", `Half ${fmtMoney(a.halfAmountUsd)}`],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          disabled={changeLevel.isPending || a.status === value}
+                          onClick={() =>
+                            changeLevel.mutate({
+                              awardId: a.awardId,
+                              approval: value,
+                            })
+                          }
+                          aria-pressed={a.status === value}
+                          className={`rounded px-2.5 py-1 text-xs font-medium transition ${
+                            a.status === value
+                              ? "bg-neutral-900 text-white"
+                              : "text-neutral-700 hover:bg-neutral-100"
+                          } disabled:opacity-60`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {program === "marketers" ? (
             <>

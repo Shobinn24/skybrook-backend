@@ -8,6 +8,7 @@ import {
 import {
   BONUS_MARKETERS,
   type BonusMarketer,
+  bonusAmountUsd,
   isAboveBonusFloor,
   isBonusMarketer,
   payoutMonthFromLabel,
@@ -17,6 +18,7 @@ import {
   type VideoEditor,
   extractVideoEditor,
   isVideoEditor,
+  videoEditorBonusAmountUsd,
 } from "@/lib/domain/video-editors";
 import { toEstDate } from "@/lib/tz";
 
@@ -388,6 +390,93 @@ export type BonusProgram = "marketers" | "videoEditors";
  * `program` limits the batch to one roster; omitted = legacy combined
  * behavior (kept so history rows and old tests keep their meaning).
  */
+
+export type ApprovedUnsentAward = {
+  awardId: string;
+  adNumber: string;
+  adName: string;
+  adLink: string | null;
+  marketer: string;
+  tier: BonusAwardTier;
+  status: "approved_full" | "approved_half";
+  amountUsd: number;
+  fullAmountUsd: number;
+  halfAmountUsd: number;
+  crossedAt: string;
+  approvedAt: string | null;
+  halfSuggested: boolean;
+  halfReason: string | null;
+};
+
+/**
+ * Approved awards not yet claimed by a sent batch — the mid-month review
+ * surface (client 2026-08-03): everything the next send will include,
+ * editable between full and half until the send freezes it.
+ */
+export async function getApprovedUnsent(opts?: {
+  program?: BonusProgram;
+}): Promise<ApprovedUnsentAward[]> {
+  const program = opts?.program;
+  const inProgram = (name: string): boolean =>
+    program === "marketers"
+      ? isBonusMarketer(name)
+      : program === "videoEditors"
+        ? isVideoEditor(name)
+        : true;
+
+  const unsent = await db
+    .select()
+    .from(bonusAwards)
+    .where(
+      and(
+        sql`${bonusAwards.status} IN ('approved_full','approved_half')`,
+        isNull(bonusAwards.notificationBatchId),
+      ),
+    )
+    .orderBy(desc(bonusAwards.crossedAt));
+
+  const rows = unsent.filter((a) => inProgram(a.marketer));
+  if (rows.length === 0) return [];
+
+  const adNumbers = Array.from(new Set(rows.map((a) => a.adNumber)));
+  const meta = await db
+    .select({
+      adNumber: fbAdSpendDaily.adNumber,
+      adName: sql<string>`max(${fbAdSpendDaily.adName})`,
+      adLink: sql<string | null>`max(${fbAdSpendDaily.adLink})`,
+    })
+    .from(fbAdSpendDaily)
+    .where(inArray(fbAdSpendDaily.adNumber, adNumbers))
+    .groupBy(fbAdSpendDaily.adNumber);
+  const metaByAd = new Map(meta.map((m) => [m.adNumber, m]));
+
+  return rows.map((a) => {
+    const full = isVideoEditor(a.marketer)
+      ? videoEditorBonusAmountUsd({ tier: a.tier, approval: "approved_full" })
+      : bonusAmountUsd({
+          marketer: a.marketer as BonusMarketer,
+          tier: a.tier,
+          approval: "approved_full",
+        });
+    return {
+      awardId: a.id,
+      adNumber: a.adNumber,
+      adName: metaByAd.get(a.adNumber)?.adName ?? a.adNumber,
+      adLink: metaByAd.get(a.adNumber)?.adLink ?? null,
+      marketer: a.marketer,
+      tier: a.tier,
+      status: a.status as "approved_full" | "approved_half",
+      amountUsd: Number(a.amountUsd),
+      fullAmountUsd: full,
+      halfAmountUsd: full / 2,
+      crossedAt: a.crossedAt,
+      approvedAt: a.approvedAt ? a.approvedAt.toISOString() : null,
+      halfSuggested: a.halfSuggested,
+      halfReason: a.halfReason,
+    };
+  });
+}
+
 export async function previewNotification(opts?: {
   periodLabel?: string;
   program?: BonusProgram;

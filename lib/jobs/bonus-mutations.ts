@@ -118,6 +118,67 @@ export async function approveBonus(opts: ApproveBonusOpts): Promise<{
   return { updated: true, awardId: opts.awardId };
 }
 
+/**
+ * Flip an APPROVED award between full and half (client 2026-08-03:
+ * mid-month review — "look at the ads approved to check if there's any
+ * reason the ad should be 50%, edit on the UI"). Only approved awards
+ * that have NOT been claimed by a sent notification batch can change:
+ * pending rows go through approveBonus, and once a batch has claimed an
+ * award its amount is part of a paid message and must stay frozen.
+ * Recomputes the amount from the canonical rate so a stale UI can't
+ * ship a wrong payout, and stamps who made the change.
+ */
+export async function changeApprovalLevel(opts: {
+  awardId: string;
+  approval: "approved_full" | "approved_half";
+  changedBy: string;
+}): Promise<{ updated: boolean; awardId: string }> {
+  const [current] = await db
+    .select()
+    .from(bonusAwards)
+    .where(eq(bonusAwards.id, opts.awardId))
+    .limit(1);
+
+  if (!current) {
+    throw new Error(`bonus_award not found: ${opts.awardId}`);
+  }
+  const approvedStatuses = ["approved_full", "approved_half"];
+  if (
+    !approvedStatuses.includes(current.status) ||
+    current.notificationBatchId != null ||
+    current.status === opts.approval
+  ) {
+    return { updated: false, awardId: opts.awardId };
+  }
+
+  const amount = awardAmountUsd({
+    marketer: current.marketer,
+    tier: current.tier,
+    approval: opts.approval,
+  });
+
+  await db
+    .update(bonusAwards)
+    .set({
+      status: opts.approval,
+      amountUsd: amount.toFixed(2),
+      approvedBy: opts.changedBy,
+      updatedAt: new Date(),
+    })
+    .where(eq(bonusAwards.id, opts.awardId));
+
+  logger.info("bonus.change_approval_level", {
+    awardId: opts.awardId,
+    from: current.status,
+    to: opts.approval,
+    marketer: current.marketer,
+    tier: current.tier,
+    amount,
+    changedBy: opts.changedBy,
+  });
+  return { updated: true, awardId: opts.awardId };
+}
+
 /** Mark a pending or approved bonus as rejected — won't appear in the
  * notification preview, won't be paid. */
 export async function rejectBonus(opts: {

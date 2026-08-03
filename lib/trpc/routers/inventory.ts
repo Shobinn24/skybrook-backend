@@ -23,12 +23,14 @@ import {
   getNotificationHistory,
   getPendingApprovals,
   getVideoEditorCountSummary,
+  getApprovedUnsent,
   previewNotification,
 } from "@/lib/queries/bonus-tracker";
 import { BONUS_MARKETERS } from "@/lib/domain/bonus-tiers";
 import {
   approveBonus,
   bulkApprovePending,
+  changeApprovalLevel,
   rejectBonus,
   sendNotification,
 } from "@/lib/jobs/bonus-mutations";
@@ -614,6 +616,28 @@ export const inventoryRouter = router({
   bulkApprovePending: marketingProcedure.mutation(({ ctx }) =>
     bulkApprovePending({ approvedBy: ctx.email ?? "unknown" }),
   ),
+
+  // Mid-month review (client 2026-08-03): approved awards not yet claimed
+  // by a sent batch, editable between full and half until the send.
+  approvedUnsentAwards: marketingProcedure
+    .input(
+      z
+        .object({ program: z.enum(["marketers", "videoEditors"]).optional() })
+        .optional(),
+    )
+    .query(({ input }) => getApprovedUnsent(input ?? {})),
+
+  // Flip an approved-unsent award between full and half.
+  changeBonusApprovalLevel: marketingProcedure
+    .input(
+      z.object({
+        awardId: z.string().uuid(),
+        approval: z.enum(["approved_full", "approved_half"]),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      changeApprovalLevel({ ...input, changedBy: ctx.email ?? "unknown" }),
+    ),
 
   // Render the WhatsApp message body + per-marketer totals from every
   // unsent approved award. Pure read — doesn't mutate anything.
