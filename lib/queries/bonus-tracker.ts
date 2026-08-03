@@ -251,6 +251,10 @@ export type PendingApproval = {
   // Lifetime spend on this ad — context for the approver.
   lifetimeSpendUsd: number;
   crossedAt: string;
+  // Auto-half rules (client 2026-08-03): detector-stamped suggestion
+  // that this award should default to 50%, with the matching rule.
+  halfSuggested: boolean;
+  halfReason: string | null;
 };
 
 /**
@@ -321,6 +325,8 @@ export async function getPendingApprovals(opts?: {
         halfAmountUsd: full / 2,
         lifetimeSpendUsd: Number(m.lifetimeSpendUsd),
         crossedAt: p.crossedAt,
+        halfSuggested: p.halfSuggested,
+        halfReason: p.halfReason,
       };
     })
     .filter((r): r is PendingApproval => r !== null)

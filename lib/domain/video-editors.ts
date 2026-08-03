@@ -83,6 +83,18 @@ export function extractVideoEditor(
   }
   const editor = VIDEO_EDITOR_INITIALS[initials];
   if (editor) return { kind: "editor", editor, initials };
+  // Unknown tag in the initials slot (client spec 2026-08-03, the CAROL
+  // case: "... - AIad - CAROL - SR - ..." where CAROL is a tool tag and
+  // the real editor sits in the next segment). Scan the remaining
+  // segments for the first known editor tag before giving up; only an
+  // exact segment match counts, so free-text description words can't
+  // false-fire. No hit -> still surfaced as unknown for a ruling.
+  for (let i = aiadIdx + 2; i < segments.length; i++) {
+    const candidate = segments[i]?.toUpperCase();
+    if (!candidate) continue;
+    const found = VIDEO_EDITOR_INITIALS[candidate];
+    if (found) return { kind: "editor", editor: found, initials: candidate };
+  }
   return { kind: "unknown", initials };
 }
 

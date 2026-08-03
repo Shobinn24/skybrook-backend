@@ -169,26 +169,37 @@ export async function bulkApprovePending(opts: {
   approvedBy: string;
 }): Promise<{ updatedCount: number }> {
   const pending = await db
-    .select({ id: bonusAwards.id, marketer: bonusAwards.marketer, tier: bonusAwards.tier })
+    .select({
+      id: bonusAwards.id,
+      marketer: bonusAwards.marketer,
+      tier: bonusAwards.tier,
+      halfSuggested: bonusAwards.halfSuggested,
+    })
     .from(bonusAwards)
     .where(eq(bonusAwards.status, "pending"));
 
   if (pending.length === 0) return { updatedCount: 0 };
 
-  // Per-row updates — each row gets the right approval-full amount
-  // for its (marketer, tier). Single SQL with CASE would be faster
+  // Per-row updates — each row gets the right approval amount for its
+  // (marketer, tier). Rows the detector flagged with an auto-half rule
+  // (client 2026-08-03: Remake/Rehook/image-editor collab) approve at
+  // HALF, not full — bulk approval honors the same suggestion the
+  // monthly auto-approval uses. Single SQL with CASE would be faster
   // but at the scale we expect (≤100 rows during the one-time
   // backfill), per-row is simpler and easier to audit.
   for (const p of pending) {
+    const approval = p.halfSuggested
+      ? ("approved_half" as const)
+      : ("approved_full" as const);
     const amount = awardAmountUsd({
       marketer: p.marketer,
       tier: p.tier,
-      approval: "approved_full",
+      approval,
     });
     await db
       .update(bonusAwards)
       .set({
-        status: "approved_full",
+        status: approval,
         amountUsd: amount.toFixed(2),
         approvedAt: new Date(),
         approvedBy: opts.approvedBy,

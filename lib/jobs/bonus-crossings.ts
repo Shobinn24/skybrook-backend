@@ -10,6 +10,7 @@ import {
   isAboveBonusFloor,
   type BonusMarketer,
 } from "@/lib/domain/bonus-tiers";
+import { halfBonusReason } from "@/lib/domain/bonus-half-rules";
 import {
   type VideoEditor,
   extractVideoEditor,
@@ -88,6 +89,7 @@ export async function detectAndInsertBonusCrossings(opts?: {
     .select({
       adNumber: fbAdSpendDaily.adNumber,
       marketers: sql<string[]>`min(${fbAdSpendDaily.marketers})`,
+      adNameRaw: sql<string>`min(${fbAdSpendDaily.adNameRaw})`,
       lifetimeSpendUsd: sql<string>`coalesce(sum(${fbAdSpendDaily.costUsd}), 0)`,
     })
     .from(fbAdSpendDaily)
@@ -97,6 +99,8 @@ export async function detectAndInsertBonusCrossings(opts?: {
   const hits: Array<{
     adNumber: string;
     marketers: BonusMarketer[];
+    allMarketers: string[];
+    adNameRaw: string;
     hitTier1: boolean;
     hitTier2: boolean;
   }> = [];
@@ -109,7 +113,14 @@ export async function detectAndInsertBonusCrossings(opts?: {
     const hitTier2 = spend >= BONUS_TIER_2_USD;
     const hitTier1 = hitTier2 || spend >= BONUS_TIER_1_USD; // T2 implies T1
     if (!hitTier1) continue;
-    hits.push({ adNumber: row.adNumber, marketers, hitTier1, hitTier2 });
+    hits.push({
+      adNumber: row.adNumber,
+      marketers,
+      allMarketers: row.marketers ?? [],
+      adNameRaw: row.adNameRaw ?? "",
+      hitTier1,
+      hitTier2,
+    });
   }
 
   // Pull the daily series ONLY for ads that hit a tier, so we can compute
@@ -145,6 +156,7 @@ export async function detectAndInsertBonusCrossings(opts?: {
     tier: "tier1" | "tier2";
     amount: number;
     crossedAt: string;
+    halfReason: string | null;
   }> = [];
 
   for (const hit of hits) {
@@ -179,6 +191,11 @@ export async function detectAndInsertBonusCrossings(opts?: {
       // Hard floor per marketer — silently skip below-floor ads so they
       // never enter the pending queue (Scott 2026-05-20).
       if (!isAboveBonusFloor(marketer, hit.adNumber)) continue;
+      const halfReason = halfBonusReason({
+        marketer,
+        adNameRaw: hit.adNameRaw,
+        adMarketers: hit.allMarketers,
+      });
       if (fireT1) {
         candidates.push({
           adNumber: hit.adNumber,
@@ -186,6 +203,7 @@ export async function detectAndInsertBonusCrossings(opts?: {
           tier: "tier1",
           amount: bonusAmountAtFullUsd({ marketer, tier: "tier1" }),
           crossedAt: crossT1!,
+          halfReason,
         });
       }
       if (fireT2) {
@@ -195,6 +213,7 @@ export async function detectAndInsertBonusCrossings(opts?: {
           tier: "tier2",
           amount: bonusAmountAtFullUsd({ marketer, tier: "tier2" }),
           crossedAt: crossT2!,
+          halfReason,
         });
       }
     }
@@ -223,6 +242,8 @@ export async function detectAndInsertBonusCrossings(opts?: {
         crossedAt: c.crossedAt,
         status: "pending" as const,
         amountUsd: c.amount.toFixed(2),
+        halfSuggested: c.halfReason != null,
+        halfReason: c.halfReason,
       })),
     )
     .onConflictDoNothing({

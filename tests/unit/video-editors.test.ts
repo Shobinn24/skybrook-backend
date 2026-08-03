@@ -60,6 +60,30 @@ describe("extractVideoEditor", () => {
     ).toEqual({ kind: "unknown", initials: "XY" });
   });
 
+  it("scans past an unknown tool tag to the real editor initials (client 2026-08-03, the CAROL case)", () => {
+    expect(
+      extractVideoEditor(
+        "(9055 US BAU) Ad 3148 - AIad - CAROL - SR - Craig Infotainment VID 474 Suitcase",
+      ),
+    ).toEqual({ kind: "editor", editor: "Sebastian", initials: "SR" });
+    // editor tag further along still resolves
+    expect(
+      extractVideoEditor("(P) Ad 9 - AIad - CAROL - something - JM - desc"),
+    ).toEqual({ kind: "editor", editor: "Job", initials: "JM" });
+  });
+
+  it("still surfaces unknown when no editor tag follows the unknown one", () => {
+    expect(
+      extractVideoEditor("(P) Ad 9 - AIad - CAROL - Craig Infotainment VID 474"),
+    ).toEqual({ kind: "unknown", initials: "CAROL" });
+  });
+
+  it("does not let the fallback scan override excluded initials", () => {
+    expect(
+      extractVideoEditor("(P) Ad 9 - AIad - CJ - SR - desc"),
+    ).toEqual({ kind: "excluded", initials: "CJ" });
+  });
+
   it("returns null for names without the AIad marker", () => {
     expect(extractVideoEditor("Ad 2326 - RC - Craig Mens VID 2")).toBeNull();
     expect(extractVideoEditor("Dan Navarra Postpartum")).toBeNull();

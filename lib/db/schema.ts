@@ -557,6 +557,13 @@ export const bonusAwards = pgTable(
     approvedBy: text("approved_by"),
     notificationBatchId: uuid("notification_batch_id"),
     notes: text("notes"),
+    // Auto-half rules (client spec 2026-08-03): stamped by the crossing
+    // detector when the ad matches a 50% pattern (Remake/Rehook in the
+    // name, or an image-editor collab) for Craig/Raul/Tyler. Advisory:
+    // the UI shows it and monthly auto-approval honors it, but operator
+    // approval can override either way.
+    halfSuggested: boolean("half_suggested").notNull().default(false),
+    halfReason: text("half_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

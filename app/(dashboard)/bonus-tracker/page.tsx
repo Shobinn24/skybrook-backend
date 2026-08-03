@@ -643,6 +643,14 @@ export default function BonusTrackerPage() {
                                       ? "T1 ($13k)"
                                       : "T2 ($65k)"}
                                   </span>
+                                  {p.halfSuggested && (
+                                    <span
+                                      className="ml-3 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-800"
+                                      title={p.halfReason ?? undefined}
+                                    >
+                                      {p.halfReason ?? "auto 50%"}
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="mt-0.5 text-xs text-neutral-600 truncate">
                                   {p.adName} · crossed {fmtDate(p.crossedAt)} · lifetime {fmtMoney(p.lifetimeSpendUsd)}
@@ -668,7 +676,11 @@ export default function BonusTrackerPage() {
                                       approval: "approved_full",
                                     })
                                   }
-                                  className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
+                                  className={
+                                    p.halfSuggested
+                                      ? "rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-100 disabled:opacity-50"
+                                      : "rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
+                                  }
                                   title="Approve"
                                 >
                                   Approve
@@ -684,8 +696,12 @@ export default function BonusTrackerPage() {
                                         approval: "approved_half",
                                       })
                                     }
-                                    className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-                                    title="Approve half (rehook / collab)"
+                                    className={
+                                      p.halfSuggested
+                                        ? "rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
+                                        : "rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                                    }
+                                    title={p.halfReason ?? "Approve half (rehook / collab)"}
                                   >
                                     Approve half
                                   </button>
