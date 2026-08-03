@@ -39,6 +39,7 @@ async function seedAdSpend(opts: {
   totalCostUsd: number;
   sourcePullId: string;
   adNameRaw?: string;
+  spendDate?: string;
 }) {
   await db.insert(fbAdSpendDaily).values({
     adNumber: opts.adNumber,
@@ -46,7 +47,7 @@ async function seedAdSpend(opts: {
     adNameRaw: opts.adNameRaw ?? `Ad ${opts.adNumber}`,
     adLink: null,
     marketers: opts.marketers,
-    spendDate: "2026-04-01",
+    spendDate: opts.spendDate ?? "2026-04-01",
     costUsd: opts.totalCostUsd.toFixed(4),
     sourcePullId: opts.sourcePullId,
   });

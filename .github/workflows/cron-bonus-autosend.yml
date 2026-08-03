@@ -1,0 +1,37 @@
+name: Monthly bonus auto-send
+
+# Client spec 2026-08-03: on the 1st of each month, auto-approve all
+# pending bonus awards (auto-half rules applied) and send both program
+# WhatsApp messages, using spend synced through the last day of the
+# month. Scheduled AFTER the 16:00 UTC afternoon ad-spend refresh so the
+# final day's numbers are settled (the morning ingest can undercount
+# yesterday - 2026-05-28 lesson). The 18:30 and 20:30 runs are retries:
+# the endpoint self-guards on day/env-gate/spend-freshness and sends at
+# most once per program per month, so extra fires are no-ops.
+#
+# SHIPS DARK: the job refuses to run until BONUS_AUTO_SEND_ENABLED=true
+# is set on the backend service.
+
+on:
+  schedule:
+    - cron: "30 16,18,20 1 * *"
+  workflow_dispatch:
+
+jobs:
+  autosend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger /api/cron/bonus-monthly-autosend
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::CRON_SECRET secret not set"
+            exit 1
+          fi
+          curl -sS -X POST --max-time 120 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "https://skybrook-backend-production.up.railway.app/api/cron/bonus-monthly-autosend" \
+            | tee /tmp/out.json
+          grep -q '"ok":true' /tmp/out.json
