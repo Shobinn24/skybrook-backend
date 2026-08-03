@@ -9,6 +9,7 @@ import {
   rawPulls,
 } from "@/lib/db/schema";
 import {
+  autoApproveCrossings,
   previousMonthOf,
   runMonthlyBonusAutoSend,
 } from "@/lib/jobs/bonus-auto-send";
@@ -161,5 +162,55 @@ describe("runMonthlyBonusAutoSend", () => {
     expect(retry.programs?.marketers.reason).toMatch(/already exists/);
     expect(retry.programs?.videoEditors.sent).toBe(false);
     expect((await db.select().from(bonusNotificationBatches)).length).toBe(2);
+  });
+});
+
+
+describe("autoApproveCrossings — continuous mid-month approval", () => {
+  beforeAll(() => {
+    if (!process.env.DATABASE_URL)
+      throw new Error("DATABASE_URL not set in test env");
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+    await db.execute(sql`TRUNCATE TABLE bonus_awards CASCADE`);
+    await db.execute(sql`TRUNCATE TABLE bonus_notification_batches CASCADE`);
+    await db.execute(sql`TRUNCATE TABLE data_pulls CASCADE`);
+  });
+
+  it("no-ops when the automation flag is off", async () => {
+    await seedSpend({
+      adNumber: "820",
+      marketers: ["Craig"],
+      totalCostUsd: 20_000,
+      spendDate: "2026-04-10",
+    });
+    const { detectAndInsertBonusCrossings } = await import("@/lib/jobs/bonus-crossings");
+    await detectAndInsertBonusCrossings({ asOfDate: "2026-04-11" });
+    const res = await autoApproveCrossings({ enabled: false });
+    expect(res).toEqual({ ran: false, approved: 0 });
+    const [award] = await db.select().from(bonusAwards);
+    expect(award.status).toBe("pending");
+  });
+
+  it("approves fresh crossings immediately, honoring the half rules", async () => {
+    await seedSpend({
+      adNumber: "821",
+      marketers: ["Craig"],
+      totalCostUsd: 20_000,
+      spendDate: "2026-04-10",
+      adNameRaw: "Ad 821 - Craig VID 3 Rehook",
+    });
+    const { detectAndInsertBonusCrossings } = await import("@/lib/jobs/bonus-crossings");
+    await detectAndInsertBonusCrossings({ asOfDate: "2026-04-11" });
+    const res = await autoApproveCrossings({ enabled: true });
+    expect(res.ran).toBe(true);
+    expect(res.approved).toBe(1);
+    const [award] = await db.select().from(bonusAwards);
+    expect(award.status).toBe("approved_half");
+    expect(Number(award.amountUsd)).toBe(250);
+    expect(award.approvedBy).toBe("auto-crossing");
+    expect(award.notificationBatchId).toBeNull(); // still editable in review
   });
 });

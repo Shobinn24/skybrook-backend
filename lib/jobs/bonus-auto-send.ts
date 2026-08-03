@@ -55,6 +55,30 @@ export function previousMonthOf(estYmd: string): {
   };
 }
 
+/**
+ * Continuous auto-approval (client 2026-08-03 clarification): "the tool
+ * should automatically approve all ads once it's hit" — approval happens
+ * at crossing time all month, so the mid-month review panel always shows
+ * the live approved set (editable full/half/reject) and the 1st only has
+ * to send. Called by the daily cron routes right after crossing
+ * detection; gated by the same env flag as the monthly send so the
+ * whole automation regime switches on and off together.
+ */
+export async function autoApproveCrossings(opts?: {
+  enabled?: boolean;
+}): Promise<{ ran: boolean; approved: number }> {
+  const enabled =
+    opts?.enabled ?? process.env.BONUS_AUTO_SEND_ENABLED === "true";
+  if (!enabled) return { ran: false, approved: 0 };
+  const { updatedCount } = await bulkApprovePending({
+    approvedBy: "auto-crossing",
+  });
+  if (updatedCount > 0) {
+    logger.info("bonus.autoapprove.crossings", { approved: updatedCount });
+  }
+  return { ran: true, approved: updatedCount };
+}
+
 export type AutoSendResult = {
   ran: boolean;
   reason?: string;

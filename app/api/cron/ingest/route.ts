@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { runArrivalEvidenceCheck } from "@/lib/jobs/arrival-evidence-check";
 import { runAutoReceiptDetection } from "@/lib/jobs/auto-receipt";
 import { runCashflowGenerators } from "@/lib/jobs/cashflow-forecast";
+import { autoApproveCrossings } from "@/lib/jobs/bonus-auto-send";
 import {
   detectAndInsertBonusCrossings,
   detectAndInsertVideoEditorCrossings,
@@ -216,6 +217,12 @@ export async function POST(req: Request) {
   const videoEditorCrossings = await stage("video_editor_crossings", () =>
     detectAndInsertVideoEditorCrossings(),
   );
+  // Continuous auto-approval (client 2026-08-03): with the automation
+  // flag on, fresh crossings approve immediately (auto-half rules
+  // honored) so the mid-month review panel always shows the live set.
+  const autoApproved = await stage("bonus_auto_approve", () =>
+    autoApproveCrossings(),
+  );
   // Shipping Performance snapshot (Spec: docs/shipping-checks-spec).
   // Pulls last 60d of US-store orders + computes 30d-trailing stats.
   // Best-effort for the cron response: a Shopify hiccup shouldn't block
@@ -348,6 +355,7 @@ export async function POST(req: Request) {
     orphanSkusDeactivated: orphanSweep ? orphanSweep.deactivated.length : null,
     bonusCrossings,
     videoEditorCrossings,
+    autoApproved,
     shippingSnapshot,
     ...(phase2 ?? { phase2: "stage_failed" }),
     ingestAlertsFired: ingest.alertsFired,
@@ -372,6 +380,7 @@ export async function POST(req: Request) {
     orphanSweep,
     bonusCrossings,
     videoEditorCrossings,
+    autoApproved,
     shippingSnapshot,
     cashflow,
     phase2,

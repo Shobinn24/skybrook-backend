@@ -27,6 +27,7 @@
 //     -H "Authorization: Bearer $CRON_SECRET"
 
 import { NextResponse } from "next/server";
+import { autoApproveCrossings } from "@/lib/jobs/bonus-auto-send";
 import {
   detectAndInsertBonusCrossings,
   detectAndInsertVideoEditorCrossings,
@@ -105,6 +106,10 @@ export async function POST(req: Request) {
   // crossings are wanted; see the detector header in
   // lib/jobs/bonus-crossings.ts for where a date cutoff would live.
   const videoEditorCrossings = await detectAndInsertVideoEditorCrossings();
+
+  // Continuous auto-approval (client 2026-08-03) — same gate and
+  // semantics as the morning ingest pass.
+  const autoApproved = await autoApproveCrossings();
 
   // Replaces the Apps Script `appendDailyTo2026` trigger that was
   // silently skipping date columns because Daily lags FB Ads' 48h
@@ -193,6 +198,7 @@ export async function POST(req: Request) {
     alertsResolved: ingest.alertsResolved,
     bonusCrossings,
     videoEditorCrossings,
+    autoApproved,
     tracker2Append,
     freshness: checkSummary,
   });
