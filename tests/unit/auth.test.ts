@@ -6,6 +6,7 @@ import {
   createSessionToken,
   decodeIdToken,
   getUserRole,
+  isBonusAmountsAllowed,
   isCashflowAllowed,
   isFbAdsOnly,
   isFbAdsOnlyAllowedPath,
@@ -455,5 +456,46 @@ describe("isReviewsOnlyAllowedPath", () => {
   it("no false positive on similarly-prefixed paths", () => {
     expect(isReviewsOnlyAllowedPath("/reviews-old")).toBe(false);
     expect(isReviewsOnlyAllowedPath("/sizing-v1")).toBe(false);
+  });
+});
+
+describe("isBonusAmountsAllowed", () => {
+  const KEY = "SKYBROOK_BONUS_AMOUNTS_EMAILS";
+  afterEach(() => {
+    delete process.env[KEY];
+  });
+
+  it("fails closed when the list is unset or empty", () => {
+    expect(isBonusAmountsAllowed("jasper@skybrookecommerce.com")).toBe(false);
+    expect(isBonusAmountsAllowed("a@b.com", "")).toBe(false);
+    expect(isBonusAmountsAllowed("a@b.com", "   ")).toBe(false);
+  });
+
+  it("rejects a null or empty email", () => {
+    expect(isBonusAmountsAllowed(null, "a@b.com")).toBe(false);
+    expect(isBonusAmountsAllowed(undefined, "a@b.com")).toBe(false);
+    expect(isBonusAmountsAllowed("", "a@b.com")).toBe(false);
+  });
+
+  it("matches case-insensitively and tolerates whitespace in the list", () => {
+    const list = " Scott@Skybrookecommerce.com , craig@skybrookecommerce.com ";
+    expect(isBonusAmountsAllowed("scott@skybrookecommerce.com", list)).toBe(true);
+    expect(isBonusAmountsAllowed("SCOTT@SKYBROOKECOMMERCE.COM", list)).toBe(true);
+    expect(isBonusAmountsAllowed("craig@skybrookecommerce.com", list)).toBe(true);
+  });
+
+  it("does not admit anyone outside the list", () => {
+    const list = "scott@skybrookecommerce.com";
+    expect(isBonusAmountsAllowed("someoneelse@skybrookecommerce.com", list)).toBe(false);
+    // No prefix/substring matching: a longer address that merely contains
+    // a listed one must not pass.
+    expect(isBonusAmountsAllowed("xscott@skybrookecommerce.com", list)).toBe(false);
+  });
+
+  it("is independent of the cashflow allowlist", () => {
+    // The two lists happen to overlap in production, but neither implies
+    // the other — reading company cash is not the same permission as
+    // reading what an individual is paid.
+    expect(isBonusAmountsAllowed("nate@skybrookecommerce.com", "craig@skybrookecommerce.com")).toBe(false);
   });
 });

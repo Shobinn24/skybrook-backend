@@ -14,6 +14,7 @@ const caller = (ctx: Partial<TrpcContext>) =>
     email: "someone@example.com",
     tier: "ops",
     cashflowAllowed: false,
+    bonusAmountsAllowed: false,
     ...ctx,
   });
 
@@ -110,16 +111,16 @@ describe("tRPC tier gating", () => {
   it("getMyAccessTier reflects the session tier for every tier", async () => {
     await expect(
       caller({ tier: "fb_ads_only" }).inventory.getMyAccessTier(),
-    ).resolves.toEqual({ tier: "fb_ads_only" });
+    ).resolves.toEqual({ tier: "fb_ads_only", bonusAmountsAllowed: false });
     await expect(
       caller({ tier: "marketing" }).inventory.getMyAccessTier(),
-    ).resolves.toEqual({ tier: "marketing" });
+    ).resolves.toEqual({ tier: "marketing", bonusAmountsAllowed: false });
     await expect(
       caller({ tier: "ops" }).inventory.getMyAccessTier(),
-    ).resolves.toEqual({ tier: "ops" });
+    ).resolves.toEqual({ tier: "ops", bonusAmountsAllowed: false });
     await expect(
       caller({ tier: "reviews_only" }).inventory.getMyAccessTier(),
-    ).resolves.toEqual({ tier: "reviews_only" });
+    ).resolves.toEqual({ tier: "reviews_only", bonusAmountsAllowed: false });
   });
 
   it("reviews_only cannot reach ops/marketing/fb-ads surfaces (client 2026-07-17)", async () => {
@@ -167,7 +168,7 @@ describe("tRPC tier gating", () => {
     ).resolves.toBeTruthy();
     await expect(
       caller({ tier: "viewer" }).inventory.getMyAccessTier(),
-    ).resolves.toEqual({ tier: "viewer" });
+    ).resolves.toEqual({ tier: "viewer", bonusAmountsAllowed: false });
   });
 
   it("viewer cannot invoke ANY mutation on any surface (client 2026-07-21)", async () => {
@@ -269,5 +270,94 @@ describe("getAccessTier", () => {
       delete process.env.SKYBROOK_FB_ADS_ONLY_EMAILS;
       delete process.env.SKYBROOK_MARKETING_EMAILS;
     }
+  });
+});
+
+// Bonus payout amounts (Jasper 2026-08-04). The UI hides the panel, but the
+// control that actually matters is here: without these, the dollar figures
+// stay readable straight off /api/trpc for anyone with ops access, and the
+// whole change would be decorative.
+describe("bonus payout amounts are allowlist-gated, not role-gated", () => {
+  const AMOUNT_PROCS = [
+    "approvedUnsentAwards",
+    "previewBonusNotification",
+  ] as const;
+
+  it("rejects an ops session that is NOT on the bonus-amounts allowlist", async () => {
+    const c = caller({ tier: "ops", bonusAmountsAllowed: false });
+    for (const proc of AMOUNT_PROCS) {
+      await expectCode(c.inventory[proc]({ program: "marketers" }), "FORBIDDEN");
+    }
+    await expectCode(
+      c.inventory.changeBonusApprovalLevel({
+        awardId: "00000000-0000-4000-8000-000000000000",
+        approval: "approved_half",
+      }),
+      "FORBIDDEN",
+    );
+    await expectCode(
+      c.inventory.sendBonusNotification({ program: "marketers" }),
+      "FORBIDDEN",
+    );
+  });
+
+  it("rejects a marketing session that is NOT on the allowlist", async () => {
+    const c = caller({ tier: "marketing", bonusAmountsAllowed: false });
+    await expectCode(
+      c.inventory.approvedUnsentAwards({ program: "marketers" }),
+      "FORBIDDEN",
+    );
+  });
+
+  it("the allowlist NARROWS and never widens: a restricted tier stays out", async () => {
+    // An fb_ads_only media buyer who somehow lands on the allowlist must
+    // still be rejected by the tier check underneath it.
+    for (const tier of ["fb_ads_only", "reviews_only"] as const) {
+      await expectCode(
+        caller({ tier, bonusAmountsAllowed: true }).inventory.approvedUnsentAwards({
+          program: "marketers",
+        }),
+        "FORBIDDEN",
+      );
+    }
+  });
+
+  it("a viewer NOT on the allowlist is rejected", async () => {
+    await expectCode(
+      caller({ tier: "viewer", bonusAmountsAllowed: false }).inventory.approvedUnsentAwards({
+        program: "marketers",
+      }),
+      "FORBIDDEN",
+    );
+  });
+
+  it("an allowlisted viewer can read amounts but never change or send them", async () => {
+    // The viewer tier reads through every requireTier on queries by design
+    // (client 2026-07-21, external collaborator sees everything). So the
+    // allowlist is the only thing standing between a viewer and payout
+    // dollars, and mutations must still reject — same carve-out cashflow
+    // already makes. Reads are not asserted here: they hit the DB, and
+    // this file is deliberately the no-DB deny-path suite.
+    const c = caller({ tier: "viewer", bonusAmountsAllowed: true });
+    await expectCode(
+      c.inventory.changeBonusApprovalLevel({
+        awardId: "00000000-0000-4000-8000-000000000000",
+        approval: "approved_half",
+      }),
+      "FORBIDDEN",
+    );
+    await expectCode(
+      c.inventory.sendBonusNotification({ program: "marketers" }),
+      "FORBIDDEN",
+    );
+  });
+
+  it("still rejects an allowlisted session with no email at all", async () => {
+    await expectCode(
+      caller({ email: null, bonusAmountsAllowed: true }).inventory.approvedUnsentAwards({
+        program: "marketers",
+      }),
+      "UNAUTHORIZED",
+    );
   });
 });

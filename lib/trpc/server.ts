@@ -99,3 +99,38 @@ export const cashflowProcedure = t.procedure
       return next();
     }),
   );
+
+// Bonus PAYOUT AMOUNTS (Jasper 2026-08-04). Same shape as cashflow: an
+// allowlist on top of the role gate, because what a person is paid is
+// compensation data rather than a role capability.
+//
+// This is enforced at the PROCEDURE, not just in the UI. Hiding the panel
+// client-side alone would leave the amounts readable straight off
+// /api/trpc by anyone with ops access, which is not a confidentiality
+// control, it just looks like one.
+//
+// Still requires ops/marketing underneath: the allowlist widens nothing,
+// it only narrows. An allowlisted address on a restricted tier
+// (fb_ads_only, reviews_only, viewer) is rejected by the tier check.
+export const bonusAmountsProcedure = t.procedure
+  .use(requireTier(["ops", "marketing"]))
+  .use(
+    t.middleware(({ ctx, type, next }) => {
+      if (!ctx.bonusAmountsAllowed) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "your account does not have access to bonus payout amounts",
+        });
+      }
+      // Same carve-out as cashflowProcedure: the viewer tier reads through
+      // every requireTier on queries by design, so an allowlisted viewer
+      // could read amounts, but never change or send them.
+      if (ctx.tier === "viewer" && type !== "query") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "your account does not have access to this resource",
+        });
+      }
+      return next();
+    }),
+  );

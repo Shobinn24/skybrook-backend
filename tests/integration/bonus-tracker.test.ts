@@ -942,6 +942,7 @@ describe("getBonusTracker", () => {
         email: "buyer@example.com",
         tier: "fb_ads_only",
         cashflowAllowed: false,
+        bonusAmountsAllowed: false,
       });
       const tracker = await c.inventory.getBonusTracker();
       expect(tracker.sections.map((s) => s.marketer)).toContain("Craig");

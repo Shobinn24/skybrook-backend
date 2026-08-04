@@ -463,6 +463,10 @@ export default function BonusTrackerPage() {
   });
   const tier = me.data?.tier;
   const isAdmin = tier === "ops" || tier === "marketing";
+  // Payout dollars + the full/half control sit behind their own allowlist
+  // (Jasper 2026-08-04), not the ops/marketing role. The procedures enforce
+  // this too; the flag just avoids rendering a panel whose queries 403.
+  const canSeeAmounts = me.data?.bonusAmountsAllowed === true;
 
   const tracker = trpc.inventory.getBonusTracker.useQuery(undefined, {
     refetchOnWindowFocus: false,
@@ -478,11 +482,13 @@ export default function BonusTrackerPage() {
   type Program = "marketers" | "videoEditors";
   const [program, setProgram] = useState<Program>("marketers");
 
+  // Preview body carries per-recipient payout totals, so it rides the
+  // bonus-amount allowlist rather than the ops/marketing role.
   const preview = trpc.inventory.previewBonusNotification.useQuery(
     { program },
     {
       refetchOnWindowFocus: false,
-      enabled: isAdmin,
+      enabled: canSeeAmounts,
     },
   );
   const history = trpc.inventory.getBonusNotificationHistory.useQuery(
@@ -493,7 +499,7 @@ export default function BonusTrackerPage() {
   // active program, editable between full and half until the send.
   const approvedUnsent = trpc.inventory.approvedUnsentAwards.useQuery(
     { program },
-    { refetchOnWindowFocus: false, enabled: isAdmin },
+    { refetchOnWindowFocus: false, enabled: canSeeAmounts },
   );
   // Summary tab — count-only redesign (Jasper 2026-05-28). Old
   // getBonusSummary route is still alive for compatibility but no
@@ -573,7 +579,7 @@ export default function BonusTrackerPage() {
             T1 = {fmtMoney(BONUS_TIER_1_USD)} crossed, T2 = {fmtMoney(BONUS_TIER_2_USD)} crossed
           </p>
         </div>
-        {isAdmin && previewData && previewData.awardIds.length > 0 && (
+        {canSeeAmounts && previewData && previewData.awardIds.length > 0 && (
           <button
             type="button"
             onClick={() => setShowPreviewModal(true)}
@@ -711,7 +717,7 @@ export default function BonusTrackerPage() {
 
                 return (
                   <div className="space-y-4">
-                    {isAdmin && (
+                    {canSeeAmounts && (
                       <ApprovedUnsentPanel
                         awards={marketerApproved}
                         onChange={changeLevel.mutate}
@@ -1011,7 +1017,7 @@ export default function BonusTrackerPage() {
                       );
                       return (
                         <>
-                  {isAdmin && (
+                  {canSeeAmounts && (
                     <ApprovedUnsentPanel
                       awards={editorApproved}
                       onChange={changeLevel.mutate}

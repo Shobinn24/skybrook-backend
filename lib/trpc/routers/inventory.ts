@@ -57,7 +57,14 @@ import {
 import { getSkuDetail } from "@/lib/queries/sku-detail";
 import { getSustainabilityTimeline } from "@/lib/queries/sustainability-timeline";
 import { toEstDate } from "@/lib/tz";
-import { fbAdsProcedure, marketingProcedure, opsProcedure, router, shellProcedure } from "@/lib/trpc/server";
+import {
+  bonusAmountsProcedure,
+  fbAdsProcedure,
+  marketingProcedure,
+  opsProcedure,
+  router,
+  shellProcedure,
+} from "@/lib/trpc/server";
 
 const locationSchema = z.enum(["US", "CN"]);
 const velocityWindowSchema = z
@@ -571,7 +578,13 @@ export const inventoryRouter = router({
   // controls (approve/reject/bulk/preview/send) instead of rendering
   // buttons that would FORBIDDEN on click. Purely informational — every
   // mutation still enforces its tier server-side.
-  getMyAccessTier: shellProcedure.query(({ ctx }) => ({ tier: ctx.tier })),
+  getMyAccessTier: shellProcedure.query(({ ctx }) => ({
+    tier: ctx.tier,
+    // Drives whether the UI renders payout dollars and the full/half
+    // control. The procedures enforce it independently — this field only
+    // stops the client from rendering a panel whose queries would 403.
+    bonusAmountsAllowed: ctx.bonusAmountsAllowed,
+  })),
 
   // Pending bonuses awaiting Jasper's per-ad approval decision.
   // Optional marketer filter — used by per-marketer tab views (Jasper
@@ -619,7 +632,7 @@ export const inventoryRouter = router({
 
   // Mid-month review (client 2026-08-03): approved awards not yet claimed
   // by a sent batch, editable between full and half until the send.
-  approvedUnsentAwards: marketingProcedure
+  approvedUnsentAwards: bonusAmountsProcedure
     .input(
       z
         .object({ program: z.enum(["marketers", "videoEditors"]).optional() })
@@ -628,7 +641,7 @@ export const inventoryRouter = router({
     .query(({ input }) => getApprovedUnsent(input ?? {})),
 
   // Flip an approved-unsent award between full and half.
-  changeBonusApprovalLevel: marketingProcedure
+  changeBonusApprovalLevel: bonusAmountsProcedure
     .input(
       z.object({
         awardId: z.string().uuid(),
@@ -641,7 +654,7 @@ export const inventoryRouter = router({
 
   // Render the WhatsApp message body + per-marketer totals from every
   // unsent approved award. Pure read — doesn't mutate anything.
-  previewBonusNotification: marketingProcedure
+  previewBonusNotification: bonusAmountsProcedure
     .input(
       z
         .object({
@@ -656,7 +669,7 @@ export const inventoryRouter = router({
   // WhatsApp send itself is wired up by the caller when we have a
   // configured MCP channel; until then the batch is recorded with
   // `whatsapp_status='failed:...'` so the operator can copy / re-send.
-  sendBonusNotification: marketingProcedure
+  sendBonusNotification: bonusAmountsProcedure
     .input(
       z
         .object({

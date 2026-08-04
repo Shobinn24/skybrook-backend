@@ -1,8 +1,9 @@
 // tRPC context. The middleware (middleware.ts) guarantees a valid
 // session exists before any /api/trpc request reaches a procedure, but
 // AUTHORIZATION happens here + in lib/trpc/server.ts: the context
-// carries the session email, its access tier, and the cashflow
-// allowlist flag, and every procedure is built from a tier-scoped
+// carries the session email, its access tier, and the cashflow and
+// bonus-amount allowlist flags, and every procedure is built from a
+// tier-scoped
 // builder that rejects under-privileged sessions. Never trust a
 // client-supplied identity field — attribute writes to ctx.email.
 
@@ -10,6 +11,7 @@ import {
   SESSION_COOKIE,
   verifySessionToken,
   getAccessTier,
+  isBonusAmountsAllowed,
   isCashflowAllowed,
   type AccessTier,
 } from "@/lib/auth";
@@ -18,6 +20,10 @@ export type TrpcContext = {
   email: string | null;
   tier: AccessTier;
   cashflowAllowed: boolean;
+  // Bonus payout dollars + the full/half control (Jasper 2026-08-04).
+  // Its own allowlist, like cashflow, because it is compensation data
+  // rather than a role capability.
+  bonusAmountsAllowed: boolean;
 };
 
 function parseCookie(header: string | null, name: string): string | null {
@@ -42,5 +48,6 @@ export async function createContext(opts?: {
     email,
     tier: getAccessTier(email),
     cashflowAllowed: isCashflowAllowed(email),
+    bonusAmountsAllowed: isBonusAmountsAllowed(email),
   };
 }

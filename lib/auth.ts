@@ -343,6 +343,28 @@ export function getUserRole(
   return list.includes(email.toLowerCase()) ? "marketing" : "ops";
 }
 
+/** Bonus PAYOUT AMOUNTS (the dollar value of an award, and the full/half
+ * control that sets it) are compensation data, so they are gated to an
+ * explicit allowlist (`SKYBROOK_BONUS_AMOUNTS_EMAILS`) rather than the
+ * ops/marketing role split (Jasper 2026-08-04). Fail-closed: empty/unset
+ * list = nobody.
+ *
+ * Scope note: this covers payout DOLLARS only. The tracker's ad-spend
+ * figures, tier progress and approval states stay on the ordinary role
+ * gate, since those are the point of the page and every ops user needs
+ * them. Anything that reveals what a person is actually paid goes behind
+ * this list. */
+export function isBonusAmountsAllowed(
+  email: string | null | undefined,
+  bonusAmountsEmailsRaw?: string,
+): boolean {
+  if (!email) return false;
+  const list = parseAllowedEmails(
+    bonusAmountsEmailsRaw ?? process.env.SKYBROOK_BONUS_AMOUNTS_EMAILS,
+  );
+  return list.includes(email.toLowerCase());
+}
+
 /** Cashflow is sensitive (company cash position) so it is gated to an
  * explicit allowlist (`SKYBROOK_CASHFLOW_EMAILS`), independent of the
  * ops/marketing role split. Fail-closed: empty/unset list = nobody. */
