@@ -12,7 +12,10 @@ import {
 import { VIDEO_EDITORS, type VideoEditor } from "@/lib/domain/video-editors";
 // Type-only import — erased at compile time, so the client bundle never
 // pulls in the query module (which imports the db client).
-import type { BonusAdRow } from "@/lib/queries/bonus-tracker";
+import type {
+  ApprovedUnsentAward,
+  BonusAdRow,
+} from "@/lib/queries/bonus-tracker";
 
 function fmtMoney(n: number): string {
   return n.toLocaleString("en-US", {
@@ -81,6 +84,98 @@ function tierBadge(status: string | undefined, tier: "T1" | "T2") {
     );
   }
   return null;
+}
+
+// Mid-month review panel: the approved awards the next send will include,
+// editable full <-> half until the send claims them.
+//
+// Lives on the INDIVIDUAL recipient tabs, not on Summary (Jasper 2026-08-04:
+// "it's showing up in the Summary page, can you change it back such that it
+// stays at the individual marketer's page instead"). Summary is the
+// scoreboard of what has already been paid, so a live editable queue did not
+// belong there. Callers pass only that recipient's awards, which also matches
+// how the pending-approval queue is already scoped per tab.
+function ApprovedUnsentPanel({
+  awards,
+  onChange,
+  isPending,
+}: {
+  awards: ReadonlyArray<ApprovedUnsentAward>;
+  onChange: (input: {
+    awardId: string;
+    approval: "approved_full" | "approved_half";
+  }) => void;
+  isPending: boolean;
+}) {
+  if (awards.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-blue-200 bg-blue-50/50">
+      <div className="flex items-center justify-between px-4 py-2 text-sm font-medium text-blue-900">
+        <span>
+          Approved this month · {awards.length} award
+          {awards.length === 1 ? "" : "s"} · editable until the notification is
+          sent
+        </span>
+      </div>
+      <div className="divide-y divide-blue-100">
+        {awards.map((a) => (
+          <div
+            key={a.awardId}
+            className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-sm"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-neutral-900">
+                <span>{a.marketer}</span>
+                <span className="ml-2 text-neutral-500">·</span>
+                <span className="ml-2">Ad {a.adNumber}</span>
+                <span className="ml-2 text-neutral-500">·</span>
+                <span className="ml-2">
+                  {a.tier === "tier1" ? "T1 ($13k)" : "T2 ($65k)"}
+                </span>
+                <span className="ml-2 font-semibold">
+                  {fmtMoney(a.amountUsd)}
+                </span>
+                {a.halfSuggested && (
+                  <span
+                    className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-800"
+                    title={a.halfReason ?? undefined}
+                  >
+                    {a.halfReason ?? "auto 50%"}
+                  </span>
+                )}
+              </div>
+              <div className="mt-0.5 truncate text-xs text-neutral-600">
+                {a.adName} · crossed {fmtDate(a.crossedAt)}
+              </div>
+            </div>
+            <div className="inline-flex rounded-md border border-neutral-200 bg-white p-0.5">
+              {(
+                [
+                  ["approved_full", `Full ${fmtMoney(a.fullAmountUsd)}`],
+                  ["approved_half", `Half ${fmtMoney(a.halfAmountUsd)}`],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  disabled={isPending || a.status === value}
+                  onClick={() => onChange({ awardId: a.awardId, approval: value })}
+                  aria-pressed={a.status === value}
+                  className={`rounded px-2.5 py-1 text-xs font-medium transition ${
+                    a.status === value
+                      ? "bg-neutral-900 text-white"
+                      : "text-neutral-700 hover:bg-neutral-100"
+                  } disabled:opacity-60`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // The count-scoreboard table (month × type rows, one column per
@@ -525,83 +620,6 @@ export default function BonusTrackerPage() {
             ))}
           </div>
 
-          {/* Mid-month review (client 2026-08-03): every approved award the
-              next send will include, editable full <-> half until the send
-              claims it. Visible in both programs, admin only. */}
-          {isAdmin && (approvedUnsent.data?.length ?? 0) > 0 && (
-            <div className="rounded-lg border border-blue-200 bg-blue-50/50">
-              <div className="flex items-center justify-between px-4 py-2 text-sm font-medium text-blue-900">
-                <span>
-                  Approved this month · {approvedUnsent.data!.length} award
-                  {approvedUnsent.data!.length === 1 ? "" : "s"} · editable
-                  until the notification is sent
-                </span>
-              </div>
-              <div className="divide-y divide-blue-100">
-                {approvedUnsent.data!.map((a) => (
-                  <div
-                    key={a.awardId}
-                    className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-sm"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium text-neutral-900">
-                        <span>{a.marketer}</span>
-                        <span className="ml-2 text-neutral-500">·</span>
-                        <span className="ml-2">Ad {a.adNumber}</span>
-                        <span className="ml-2 text-neutral-500">·</span>
-                        <span className="ml-2">
-                          {a.tier === "tier1" ? "T1 ($13k)" : "T2 ($65k)"}
-                        </span>
-                        <span className="ml-2 font-semibold">
-                          {fmtMoney(a.amountUsd)}
-                        </span>
-                        {a.halfSuggested && (
-                          <span
-                            className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-800"
-                            title={a.halfReason ?? undefined}
-                          >
-                            {a.halfReason ?? "auto 50%"}
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-0.5 truncate text-xs text-neutral-600">
-                        {a.adName} · crossed {fmtDate(a.crossedAt)}
-                      </div>
-                    </div>
-                    <div className="inline-flex rounded-md border border-neutral-200 bg-white p-0.5">
-                      {(
-                        [
-                          ["approved_full", `Full ${fmtMoney(a.fullAmountUsd)}`],
-                          ["approved_half", `Half ${fmtMoney(a.halfAmountUsd)}`],
-                        ] as const
-                      ).map(([value, label]) => (
-                        <button
-                          key={value}
-                          type="button"
-                          disabled={changeLevel.isPending || a.status === value}
-                          onClick={() =>
-                            changeLevel.mutate({
-                              awardId: a.awardId,
-                              approval: value,
-                            })
-                          }
-                          aria-pressed={a.status === value}
-                          className={`rounded px-2.5 py-1 text-xs font-medium transition ${
-                            a.status === value
-                              ? "bg-neutral-900 text-white"
-                              : "text-neutral-700 hover:bg-neutral-100"
-                          } disabled:opacity-60`}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
           {program === "marketers" ? (
             <>
               {/* Summary + marketer tab strip — Summary first (Jasper 2026-05-26). */}
@@ -685,9 +703,21 @@ export default function BonusTrackerPage() {
                 const marketerPending = pendingItems.filter(
                   (p) => p.marketer === marketer,
                 );
+                // Same scoping for the approved-unsent review queue
+                // (Jasper 2026-08-04, moved off Summary).
+                const marketerApproved = (approvedUnsent.data ?? []).filter(
+                  (a) => a.marketer === marketer,
+                );
 
                 return (
                   <div className="space-y-4">
+                    {isAdmin && (
+                      <ApprovedUnsentPanel
+                        awards={marketerApproved}
+                        onChange={changeLevel.mutate}
+                        isPending={changeLevel.isPending}
+                      />
+                    )}
                     {/* Per-marketer pending approvals (marketing/ops only —
                         fb_ads_only is read-only per client 2026-07-02) */}
                     {isAdmin && marketerPending.length > 0 && (
@@ -976,8 +1006,18 @@ export default function BonusTrackerPage() {
                       const editorPending = pendingItems.filter(
                         (p) => p.marketer === editor,
                       );
+                      const editorApproved = (approvedUnsent.data ?? []).filter(
+                        (a) => a.marketer === editor,
+                      );
                       return (
                         <>
+                  {isAdmin && (
+                    <ApprovedUnsentPanel
+                      awards={editorApproved}
+                      onChange={changeLevel.mutate}
+                      isPending={changeLevel.isPending}
+                    />
+                  )}
                   {/* Per-editor pending approvals (marketing/ops only) */}
                   {isAdmin && editorPending.length > 0 && (
                     <div className="overflow-hidden rounded-md border border-amber-300 bg-amber-50">
