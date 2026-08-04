@@ -278,10 +278,10 @@ describe("detectHalfBonusMismatches", () => {
 
   it("flags count mismatches separately from half-flag advice", () => {
     const awards = [
-      { marketer: "Dan" as const, adNumber: "1", tier: "tier1" as const, approval: "approved_full" as const, paidDate: "2026-03-10" },
+      { marketer: "Jacob" as const, adNumber: "1", tier: "tier1" as const, approval: "approved_full" as const, paidDate: "2026-03-10" },
     ];
     const summary = [
-      { month: "Mar 2026", marketer: "Dan" as const, tier: "tier1" as const, fullCount: 3, halfCount: 0 },
+      { month: "Mar 2026", marketer: "Jacob" as const, tier: "tier1" as const, fullCount: 3, halfCount: 0 },
     ];
     const out = detectHalfBonusMismatches({ awards, summary });
     expect(out[0].note).toContain("count mismatch");

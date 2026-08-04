@@ -15,20 +15,21 @@ import {
 } from "@/lib/domain/bonus-tiers";
 
 describe("BONUS_MARKETERS roster", () => {
-  it("contains the 6 bonus-eligible marketers", () => {
-    expect(BONUS_MARKETERS).toEqual([
-      "Craig",
-      "Raul",
-      "Tyler",
-      "Jacob",
-      "Dan",
-      "JW",
-    ]);
+  it("contains the 5 bonus-eligible marketers", () => {
+    expect(BONUS_MARKETERS).toEqual(["Craig", "Raul", "Tyler", "Jacob", "JW"]);
   });
 
   it("excludes Nate and Scotty", () => {
     expect(isBonusMarketer("Nate")).toBe(false);
     expect(isBonusMarketer("Scotty")).toBe(false);
+  });
+
+  it("excludes Dan, retired from the roster 2026-08-04", () => {
+    // Membership here is what gates crossing detection, the tracker tabs,
+    // the approved-unsent review, the notification builder and the Summary
+    // scoreboard. Asserting the exclusion explicitly means putting him back
+    // has to be a deliberate edit rather than an accident.
+    expect(isBonusMarketer("Dan")).toBe(false);
   });
 
   it("includes Craig and JW", () => {
@@ -68,9 +69,8 @@ describe("bonusCategory()", () => {
     expect(bonusCategory("Tyler")).toBe("main");
   });
 
-  it("classifies Jacob, Dan, JW as secondary", () => {
+  it("classifies Jacob and JW as secondary", () => {
     expect(bonusCategory("Jacob")).toBe("secondary");
-    expect(bonusCategory("Dan")).toBe("secondary");
     expect(bonusCategory("JW")).toBe("secondary");
   });
 });
@@ -86,7 +86,7 @@ describe("bonusAmountUsd()", () => {
   it("pays secondary marketers $250 at T1 / $1500 at T2 (full)", () => {
     expect(bonusAmountUsd({ marketer: "Jacob", tier: "tier1", approval: "approved_full" })).toBe(250);
     expect(bonusAmountUsd({ marketer: "Jacob", tier: "tier2", approval: "approved_full" })).toBe(1500);
-    expect(bonusAmountUsd({ marketer: "Dan", tier: "tier1", approval: "approved_full" })).toBe(250);
+    expect(bonusAmountUsd({ marketer: "JW", tier: "tier1", approval: "approved_full" })).toBe(250);
     expect(bonusAmountUsd({ marketer: "JW", tier: "tier2", approval: "approved_full" })).toBe(1500);
   });
 
@@ -126,10 +126,16 @@ describe("bonusAmountAtFullUsd()", () => {
 });
 
 describe("BONUS_AD_FLOOR", () => {
-  it("sets Jacob floor at 1896, Dan at 1944, JW at 1907 (Scott 2026-05-20)", () => {
+  it("sets Jacob floor at 1896 and JW at 1907 (Scott 2026-05-20)", () => {
     expect(BONUS_AD_FLOOR.Jacob).toBe(1896);
-    expect(BONUS_AD_FLOOR.Dan).toBe(1944);
     expect(BONUS_AD_FLOOR.JW).toBe(1907);
+  });
+
+  it("has one floor entry per roster member and no orphans", () => {
+    // Dan's floor (1944) came out with him on 2026-08-04. A leftover key
+    // for a retired marketer is dead config that reads as if he is still
+    // tracked, so the two lists are asserted to stay in lockstep.
+    expect(Object.keys(BONUS_AD_FLOOR).sort()).toEqual([...BONUS_MARKETERS].sort());
   });
 
   it("keeps Craig, Raul, Tyler at floor 0 (no exclusion)", () => {
@@ -156,14 +162,6 @@ describe("isAboveBonusFloor()", () => {
 
   it("includes JW ads at or above 1907", () => {
     expect(isAboveBonusFloor("JW", "1907")).toBe(true);
-  });
-
-  it("excludes Dan ads strictly below 1944", () => {
-    expect(isAboveBonusFloor("Dan", "1943")).toBe(false);
-  });
-
-  it("includes Dan ads at or above 1944", () => {
-    expect(isAboveBonusFloor("Dan", "1944")).toBe(true);
   });
 
   it("always includes Craig/Raul/Tyler ads (floor is 0)", () => {

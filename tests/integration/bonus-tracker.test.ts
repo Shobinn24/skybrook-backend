@@ -89,7 +89,6 @@ describe("getBonusTracker", () => {
       "Raul",
       "Tyler",
       "Jacob",
-      "Dan",
       "JW",
     ]);
   });
@@ -767,7 +766,7 @@ describe("getBonusTracker", () => {
       expect(preview.messageBody).toContain("Total: $250"); // half of $500
     });
 
-    it("emits Jasper's native multi-marketer format (all roster, JW before Dan)", async () => {
+    it("emits Jasper's native multi-marketer format (all roster, $0 lines included)", async () => {
       const [raw] = await db
         .insert(rawPulls)
         .values({
@@ -837,13 +836,14 @@ describe("getBonusTracker", () => {
       expect(body).toContain("*65k tier*\nAd 1366 - Craig x Meg Drawer Vid 1 B\n- https://facebook.com/1366");
       // Raul section present.
       expect(body).toContain("*Raul*\n1x 13k bonus\nTotal: $500");
-      // $0 marketers still listed, and JW comes before Dan.
+      // $0 marketers are still listed.
       expect(body).toContain("*Tyler*\nTotal: $0");
       expect(body).toContain("*JW*\nTotal: $0");
-      expect(body).toContain("*Dan*\nTotal: $0");
-      expect(body.indexOf("*JW*")).toBeLessThan(body.indexOf("*Dan*"));
-      // Roster order overall: Craig → Raul → Tyler → Jacob → JW → Dan.
-      const order = ["Craig", "Raul", "Tyler", "Jacob", "JW", "Dan"].map(
+      // Dan left the roster 2026-08-04, so he is absent entirely rather
+      // than showing as a $0 line.
+      expect(body).not.toContain("*Dan*");
+      // Roster order overall: Craig → Raul → Tyler → Jacob → JW.
+      const order = ["Craig", "Raul", "Tyler", "Jacob", "JW"].map(
         (m) => body.indexOf(`*${m}*`),
       );
       expect(order).toEqual([...order].sort((a, b) => a - b));
@@ -899,14 +899,14 @@ describe("getBonusTracker", () => {
       const preview = await previewNotification({ periodLabel: "June 2026" });
       const body = preview.messageBody;
 
-      // Marketer roster unchanged: all six appear, in order.
-      for (const m of ["Craig", "Raul", "Tyler", "Jacob", "JW", "Dan"]) {
+      // Marketer roster unchanged: all five appear, in order.
+      for (const m of ["Craig", "Raul", "Tyler", "Jacob", "JW"]) {
         expect(body).toContain(`*${m}*`);
       }
       // Sebastian's editor section appears AFTER the marketer roster,
       // with the editor amount.
       expect(body).toContain("*Sebastian*\n1x 13k bonus\nTotal: $200");
-      expect(body.indexOf("*Sebastian*")).toBeGreaterThan(body.indexOf("*Dan*"));
+      expect(body.indexOf("*Sebastian*")).toBeGreaterThan(body.indexOf("*JW*"));
       expect(body).toContain("Ad 2077 - (Mens CC) Ad 2077 - AIad - SR - UGC remix");
       // Editors with no awards are NOT listed (unlike $0 marketers).
       expect(body).not.toContain("*Greg*");
@@ -1030,7 +1030,6 @@ describe("getBonusTracker", () => {
         "Raul",
         "Tyler",
         "Jacob",
-        "Dan",
         "JW",
       ]);
       expect(summary.rows.every((r) => r.total === 0)).toBe(true);
@@ -1208,10 +1207,10 @@ describe("getBonusTracker", () => {
       expect(summary.marketers).toEqual(BONUS_SUMMARY_MARKETER_ORDER);
     });
 
-    it("uses Jasper's column order (Craig, Raul, Tyler, Jacob, JW, Dan) — JW BEFORE Dan", async () => {
+    it("uses Jasper's column order (Craig, Raul, Tyler, Jacob, JW)", async () => {
       const summary = await getBonusCountSummary();
       expect(summary.marketers).toEqual([
-        "Craig", "Raul", "Tyler", "Jacob", "JW", "Dan",
+        "Craig", "Raul", "Tyler", "Jacob", "JW",
       ]);
     });
 

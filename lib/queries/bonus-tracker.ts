@@ -824,15 +824,14 @@ export function grandTotalFromTotalsJson(value: unknown): number {
 // Mirrors the "Ads Bonus Tracking 3" Summary tab layout exactly so the
 // internal scoreboard and Jasper's manual sheet can be eyeballed side
 // by side without column-swap mental gymnastics. Differs from
-// BONUS_MARKETERS (which is roster order: ...Dan, JW). Display label
-// for "JW" is "J Weston" — handled at the UI layer.
+// BONUS_MARKETERS, which is roster order (Jacob before JW). Display
+// label for "JW" is "J Weston" — handled at the UI layer.
 export const BONUS_SUMMARY_MARKETER_ORDER: ReadonlyArray<BonusMarketer> = [
   "Craig",
   "Raul",
   "Tyler",
   "Jacob",
   "JW",
-  "Dan",
 ];
 
 // 4 bonus types per month per Jasper's layout. The mapping to the

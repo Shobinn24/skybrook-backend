@@ -17,9 +17,9 @@ import "dotenv/config";
 //   - the bonus pipeline, which groups by ad_number, must see the SAME
 //     summed total it always did — not doubled, not split per prefix.
 //
-// We use ad number 2631 (above every marketer's bonus floor, incl. Dan's
-// 1944) so both marketers are eligible and the two-marketer attribution is
-// visible; the shape is otherwise identical to 1631.
+// We use ad number 2631 (above every marketer's bonus floor) so eligibility
+// is never the thing under test and the two-marketer attribution is visible;
+// the shape is otherwise identical to 1631.
 
 const ADNUM = "2631";
 const CANON_RAW = "(9055 CC) Ad 2631 - DN - Craig x Dan Navarra";
@@ -88,14 +88,17 @@ describe("FB variant grain — product split + bonus invariance", () => {
     const result = await detectAndInsertBonusCrossings({ asOfDate: "2026-05-13" });
 
     // $14k total > $13k T1, < $65k → exactly one T1 award per eligible
-    // marketer (Craig, Dan). Two awards, NOT four (would mean per-prefix),
-    // NOT a T2 (would mean the $14k got doubled to $28k).
-    expect(result.inserted).toBe(2);
+    // marketer. The ad is attributed to Craig and Dan, but Dan left the
+    // bonus roster on 2026-08-04, so only Craig is eligible: ONE award,
+    // NOT two (would mean per-prefix), NOT a T2 (would mean the $14k got
+    // doubled to $28k). Multi-marketer award fan-out is covered by
+    // bonus-crossings.test.ts with a pair still on the roster.
+    expect(result.inserted).toBe(1);
     const rows = await db.select().from(bonusAwards);
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(1);
     expect(rows.every((r) => r.adNumber === ADNUM)).toBe(true);
     expect(rows.every((r) => r.tier === "tier1")).toBe(true);
-    expect(new Set(rows.map((r) => r.marketer))).toEqual(new Set(["Craig", "Dan"]));
+    expect(new Set(rows.map((r) => r.marketer))).toEqual(new Set(["Craig"]));
     // Cumulative across all four rows by date: 04-01=$7k, 04-02=$14k →
     // crosses $13k on 04-02 (grain-invariant because firstCrossingDate sums).
     expect(rows.every((r) => r.crossedAt === "2026-04-02")).toBe(true);
@@ -112,6 +115,8 @@ describe("FB variant grain — product split + bonus invariance", () => {
     // Appears ONCE (not once per prefix), with the full $14k lifetime.
     expect(craigRows).toHaveLength(1);
     expect(craigRows[0].lifetimeSpendUsd).toBe(14000);
+    // Attribution still lists both: Dan stays in FB_MARKETERS (ad-spend
+    // attribution) even though he is no longer bonus-eligible.
     expect(craigRows[0].marketers).toEqual(["Craig", "Dan"]);
     // Canonical identity is preserved (the 9055 variant name).
     expect(craigRows[0].adNameRaw).toBe(CANON_RAW);

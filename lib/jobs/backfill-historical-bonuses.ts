@@ -75,7 +75,8 @@ export const HISTORICAL_TABS: ReadonlyArray<{
   { tab: "Tyler", marketer: "Tyler" },
   { tab: "Jacob", marketer: "Jacob" },
   { tab: "J Weston", marketer: "JW" },
-  { tab: "Dan", marketer: "Dan" },
+  // The workbook still has a "Dan" tab, but he was retired from the bonus
+  // roster on 2026-08-04, so a re-run deliberately skips it.
 ];
 
 export const SUMMARY_TAB = "Summary";

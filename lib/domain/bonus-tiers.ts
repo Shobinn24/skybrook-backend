@@ -3,12 +3,20 @@ import { type FbMarketer } from "./fb-marketers";
 // Bonus-eligible marketers — Nate and Scotty are excluded from bonus
 // payouts per Jasper 2026-05-11. Order = display order in the Bonus
 // Tracker tab.
+//
+// Dan removed 2026-08-04 (Jasper: "Can remove Dan from the whole thing,
+// shouldn't matter whether past bonuses were paid or not"). This roster
+// gates crossing detection, the tracker tabs, the approved-unsent review,
+// the notification builder and the Summary scoreboard, so dropping a name
+// here retires them everywhere at once, history included. He stays in
+// FB_MARKETERS: that roster drives ad-spend ATTRIBUTION, which is a
+// separate concern from bonus eligibility, and pulling him from it would
+// silently reattribute his ads to Unassigned across /fb-ads.
 export const BONUS_MARKETERS = [
   "Craig",
   "Raul",
   "Tyler",
   "Jacob",
-  "Dan",
   "JW",
 ] as const satisfies ReadonlyArray<FbMarketer>;
 
@@ -30,7 +38,6 @@ export const BONUS_AD_FLOOR = {
   Raul: 0,
   Tyler: 0,
   Jacob: 1896,
-  Dan: 1944,
   JW: 1907,
 } as const satisfies Record<BonusMarketer, number>;
 
