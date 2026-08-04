@@ -42,6 +42,7 @@ describe("gatherOpsDigest", () => {
       "Inventory snapshot gaps",
       "Open alerts",
       "Supermetrics queries",
+      "New product launches",
     ]);
     // Every check produced a detail string; "check errored" means a query
     // is broken against the live schema, which is exactly what this guards.

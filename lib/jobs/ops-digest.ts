@@ -385,6 +385,17 @@ export async function gatherOpsDigest(now = new Date()): Promise<DigestItem[]> {
     }),
   );
 
+  // New-product launches — novelty rather than coverage. Catches a new
+  // product whose ad prefix maps to a plausible-but-wrong existing line, which
+  // by construction never trips the unmapped-coverage checks. See
+  // lib/jobs/launch-detector.ts.
+  items.push(
+    await check("New product launches", async () => {
+      const { detectLaunchSignals, formatLaunchSignals } = await import("./launch-detector");
+      return formatLaunchSignals(await detectLaunchSignals());
+    }),
+  );
+
   return items;
 }
 
