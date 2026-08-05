@@ -43,6 +43,13 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
+  // Inbound webhooks from external systems (Railway deploy status). No
+  // session cookie exists on these requests; each handler gates on its own
+  // shared secret and 404s without it.
+  if (pathname.startsWith("/api/hooks/")) {
+    return NextResponse.next();
+  }
+
   const secret = process.env.SESSION_SECRET;
   if (!secret) {
     // Dev safety — if misconfigured, show a clear error instead of redirect loop.
