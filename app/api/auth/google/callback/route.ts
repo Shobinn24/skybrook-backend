@@ -7,6 +7,8 @@ import {
   createSessionToken,
   decodeIdToken,
   exchangeCodeForTokens,
+  getAccessTier,
+  isBonusAmountsAllowed,
   parseAllowedEmails,
   verifyOAuthStateToken,
 } from "@/lib/auth";
@@ -77,6 +79,17 @@ export async function GET(req: Request) {
     });
     return errorRedirect(req, result.reason);
   }
+
+  // Log successful logins too (2026-08-05). Sessions are stateless cookies,
+  // so without this line "has person X ever logged in" is unanswerable —
+  // which mattered when auditing who could see the bonus tracker after the
+  // payout-amounts gate landed. Tier is resolved here (not stored) so the
+  // log shows what the session could ACCESS at login time, not just who.
+  logger.info("auth.login", {
+    email: result.email,
+    tier: getAccessTier(result.email),
+    bonusAmountsAllowed: isBonusAmountsAllowed(result.email),
+  });
 
   const token = await createSessionToken(sessionSecret, result.email);
   const dest = statePayload.next.startsWith("/") ? statePayload.next : "/inventory";
