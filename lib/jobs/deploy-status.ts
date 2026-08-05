@@ -59,9 +59,13 @@ export type DeployEvent =
 
 /** Statuses that mean "the running code is now stale and nothing else will
  * say so". CRASHED is included: a crash-looping deploy also leaves the
- * service effectively on its previous behavior. */
-const FAILURE_STATUSES = new Set(["FAILED", "CRASHED"]);
-const SUCCESS_STATUSES = new Set(["SUCCESS"]);
+ * service effectively on its previous behavior, and an OOM kill does the
+ * same (Railway's picker exposes it as its own "Oom Killed" event). */
+const FAILURE_STATUSES = new Set(["FAILED", "CRASHED", "OOM_KILLED", "OOMKILLED"]);
+/** Railway's event vocabulary says "Deployed"/"Redeployed" where the old
+ * payload said SUCCESS; REDEPLOYED matters because a manual
+ * `railway redeploy` fix must clear the alert too. */
+const SUCCESS_STATUSES = new Set(["SUCCESS", "DEPLOYED", "REDEPLOYED"]);
 
 export function parseDeployEvent(body: unknown): DeployEvent {
   const b = asObj(body);
@@ -73,10 +77,9 @@ export function parseDeployEvent(body: unknown): DeployEvent {
     str(b.status)?.toUpperCase() ?? str(details.status)?.toUpperCase() ?? null;
   const type = str(b.type);
   if (!status && type && type.toLowerCase().startsWith("deployment.")) {
-    const suffix = type.split(".")[1]?.toUpperCase();
-    if (suffix === "FAILED" || suffix === "CRASHED" || suffix === "SUCCESS") {
-      status = suffix;
-    }
+    // "Deployment.failed" -> FAILED, "Deployment.oomKilled" -> OOM_KILLED
+    const suffix = type.split(".")[1]?.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase();
+    if (suffix) status = suffix;
   }
   if (!status) return { kind: "ignored", status: null, reason: "no status in payload" };
 

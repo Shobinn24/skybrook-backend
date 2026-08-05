@@ -100,3 +100,34 @@ describe("parseDeployEvent", () => {
     expect(web.dedupKey).not.toBe(poll.dedupKey);
   });
 });
+
+describe("Railway v2 event vocabulary (dashboard picker names)", () => {
+  const base = {
+    resource: {
+      project: { name: "Skybrook Backend" },
+      environment: { name: "production" },
+      service: { name: "skybrook-cron-poll" },
+    },
+  };
+
+  it("Deployment.oomKilled is a failure", () => {
+    expect(parseDeployEvent({ ...base, type: "Deployment.oomKilled" }).kind).toBe("failure");
+  });
+
+  it("Deployment.deployed and Deployment.redeployed are successes", () => {
+    expect(parseDeployEvent({ ...base, type: "Deployment.deployed" }).kind).toBe("success");
+    expect(parseDeployEvent({ ...base, type: "Deployment.redeployed" }).kind).toBe("success");
+  });
+
+  it("DEPLOYED status resolves with the same key its FAILED fired under", () => {
+    const fail = parseDeployEvent({ ...base, type: "Deployment.failed" });
+    const ok = parseDeployEvent({ ...base, type: "Deployment.deployed" });
+    if (fail.kind !== "failure" || ok.kind !== "success") throw new Error("bad kinds");
+    expect(ok.dedupKey).toBe(fail.dedupKey);
+  });
+
+  it("unknown lifecycle types stay ignored (Deployment.building, Deployment.queued)", () => {
+    expect(parseDeployEvent({ ...base, type: "Deployment.building" }).kind).toBe("ignored");
+    expect(parseDeployEvent({ ...base, type: "Deployment.queued" }).kind).toBe("ignored");
+  });
+});
