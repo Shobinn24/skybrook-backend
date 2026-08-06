@@ -643,3 +643,160 @@ describe("runFreshnessCheck", () => {
     expect(drift?.status).toBe("pass");
   });
 });
+
+// --- Self-heal (2026-08-06): stale sheet-fed tables get one surgical
+// re-pull before alerting. These tests inject healFn so no Sheets API
+// call ever happens; the "heal" writes rows the way a real re-ingest
+// would land them.
+describe("runFreshnessCheck self-heal", () => {
+  beforeEach(async () => {
+    await truncate();
+    await seedRawPull();
+    process.env.SLACK_WEBHOOK_ALERTS_URL = "https://hooks.slack.test/alerts";
+    process.env.SLACK_WEBHOOK_DIGEST_URL = "https://hooks.slack.test/digest";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("ok", { status: 200 })),
+    );
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.unstubAllGlobals();
+  });
+
+  async function seedFreshExceptFb() {
+    // Keep the non-healable checks quiet so alert counts isolate the fb
+    // table under test.
+    await db.insert(stockSnapshots).values({
+      snapshotDate: YESTERDAY_EST,
+      sku: "TEST-SKU",
+      location: "US",
+      onHand: 100,
+      sourcePullId: seededRawPullId,
+    });
+  }
+
+  it("heals a stale fb_ad_spend_daily when the re-pull lands fresh rows and does not page", async () => {
+    await seedFreshExceptFb();
+    await db.insert(fbAdSpendDaily).values({
+      adNumber: "1001",
+      adName: "OLD (T1) ad",
+      adNameRaw: "OLD (T1) ad raw",
+      adLink: null,
+      marketers: [],
+      spendDate: TWO_DAYS_AGO_EST,
+      costUsd: "10.0",
+      sourcePullId: seededRawPullId,
+    });
+
+    const healFn = vi.fn(async (sources: string[]) => {
+      expect(sources).toContain("sheets_fb_ads");
+      await db.insert(fbAdSpendDaily).values({
+        adNumber: "1001",
+        adName: "OLD (T1) ad",
+        adNameRaw: "OLD (T1) ad raw",
+        adLink: null,
+        marketers: [],
+        spendDate: YESTERDAY_EST,
+        costUsd: "22.0",
+        sourcePullId: seededRawPullId,
+      });
+    });
+
+    const result = await runFreshnessCheck({
+      now: fixedNow,
+      includeReferenceTabs: false,
+      selfHeal: true,
+      healFn,
+    });
+
+    expect(healFn).toHaveBeenCalledTimes(1);
+    const fb = result.checks.find((c) => c.name === "fb_ad_spend_daily");
+    expect(fb?.status).toBe("pass");
+    expect(result.selfHeal.attempted).toBe(true);
+    expect(result.selfHeal.healed).toBe(1);
+    // The other healable feeds (ad_spend tabs, applovin, campaign) are
+    // empty in this fixture, so they remain stale after the heal — the
+    // point here is only that the healed table stopped paging.
+    expect(result.selfHeal.stillStale).toBeGreaterThan(0);
+  });
+
+  it("still pages when the re-pull lands nothing new, annotated with the heal outcome", async () => {
+    await seedFreshExceptFb();
+    await db.insert(fbAdSpendDaily).values({
+      adNumber: "1001",
+      adName: "OLD (T1) ad",
+      adNameRaw: "OLD (T1) ad raw",
+      adLink: null,
+      marketers: [],
+      spendDate: TWO_DAYS_AGO_EST,
+      costUsd: "10.0",
+      sourcePullId: seededRawPullId,
+    });
+
+    const healFn = vi.fn(async () => {});
+    const result = await runFreshnessCheck({
+      now: fixedNow,
+      includeReferenceTabs: false,
+      selfHeal: true,
+      healFn,
+    });
+
+    expect(healFn).toHaveBeenCalledTimes(1);
+    const fb = result.checks.find((c) => c.name === "fb_ad_spend_daily");
+    expect(fb?.status).toBe("fail");
+    expect(result.selfHeal.attempted).toBe(true);
+    expect(result.selfHeal.stillStale).toBeGreaterThanOrEqual(1);
+    expect(result.alertsFired).toBeGreaterThan(0);
+  });
+
+  it("does not heal by default (selfHeal omitted)", async () => {
+    const healFn = vi.fn(async () => {});
+    await runFreshnessCheck({
+      now: fixedNow,
+      includeReferenceTabs: false,
+      healFn,
+    });
+    expect(healFn).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke the heal when only non-healable checks fail", async () => {
+    // fb_ad_spend_daily fresh; everything else empty/stale (daily_sales,
+    // stock_snapshots, ...) — none of those are sheet-fed healables.
+    await db.insert(fbAdSpendDaily).values({
+      adNumber: "1001",
+      adName: "FRESH ad",
+      adNameRaw: "FRESH ad raw",
+      adLink: null,
+      marketers: [],
+      spendDate: YESTERDAY_EST,
+      costUsd: "10.0",
+      sourcePullId: seededRawPullId,
+    });
+    // Quiet the other healable feeds so only non-healables fail.
+    await db.insert(fbCampaignDaily).values({
+      campaignName: "Cost Cap Campaign",
+      spendDate: YESTERDAY_EST,
+      costUsd: "10.0",
+      purchaseValueUsd: "20.0",
+      sourcePullId: seededRawPullId,
+    });
+
+    const healFn = vi.fn(async (_sources: string[]) => {});
+    const result = await runFreshnessCheck({
+      now: fixedNow,
+      includeReferenceTabs: false,
+      selfHeal: true,
+      healFn,
+    });
+    // ad_spend_daily per-product tabs and applovin are healable and empty
+    // here, so the heal DOES run for them — assert it never asks for the
+    // fb/campaign sources that were fresh.
+    for (const call of healFn.mock.calls) {
+      expect(call[0]).not.toContain("sheets_fb_ads");
+      expect(call[0]).not.toContain("sheets_fb_campaigns");
+    }
+    expect(result.checks.find((c) => c.name === "fb_ad_spend_daily")?.status).toBe("pass");
+  });
+});

@@ -277,7 +277,7 @@ export async function POST(req: Request) {
   const skipFreshness = new URL(req.url).searchParams.get("freshness") === "skip";
   const freshness = skipFreshness
     ? null
-    : await stage("freshness_check", () => runFreshnessCheck());
+    : await stage("freshness_check", () => runFreshnessCheck({ selfHeal: true }));
 
   // Loox reviews: Merchant API sync (both stores) with the forwarding-inbox
   // ingest as fallback. Dormant until LOOX_* env vars are set; best-effort —

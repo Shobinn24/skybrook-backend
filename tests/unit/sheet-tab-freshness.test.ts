@@ -167,3 +167,72 @@ describe("evaluateReferenceTabsFreshness", () => {
     expect(checks[0].dedupKey).not.toBe(checks[1].dedupKey);
   });
 });
+
+// --- Scheduled-append tabs (2026-08-06): before the append hour, T-2 is
+// the healthy state; the threshold only tightens to T-1 afterwards.
+describe("appendedByUtcHour pre-append window", () => {
+  const TAB_APPENDED: MonitoredReferenceTab = {
+    label: "test_tab.appended",
+    sheetId: "sheetC",
+    tabName: "2026",
+    layout: "headerHasDates",
+    appendedByUtcHour: 17,
+  };
+  // 09:14 UTC = the 5:14 EDT morning sweep that used to page daily.
+  const MORNING = () => new Date("2026-05-22T09:14:00Z");
+  const AFTERNOON = () => new Date("2026-05-22T20:00:00Z");
+  const T2 = "2026-05-20";
+
+  it("passes with only T-2 during the pre-append window (the 5am sweep)", async () => {
+    const client = stubClient({
+      "sheetC::'2026'!1:1": { values: [["Ad name", "2026-05-19", T2]] },
+    });
+    const checks = await evaluateReferenceTabsFreshness({
+      now: MORNING,
+      client,
+      tabs: [TAB_APPENDED],
+    });
+    expect(checks[0].status).toBe("pass");
+    expect(checks[0].threshold).toBe(T2);
+    expect(String(checks[0].fields.note ?? "")).toContain("pre-append window");
+  });
+
+  it("fails with only T-2 after the append hour (append actually broken)", async () => {
+    const client = stubClient({
+      "sheetC::'2026'!1:1": { values: [["Ad name", "2026-05-19", T2]] },
+    });
+    const checks = await evaluateReferenceTabsFreshness({
+      now: AFTERNOON,
+      client,
+      tabs: [TAB_APPENDED],
+    });
+    expect(checks[0].status).toBe("fail");
+    expect(checks[0].threshold).toBe("2026-05-21");
+    expect(checks[0].fields.note).toBeUndefined();
+  });
+
+  it("still fails during the pre-append window when even T-2 is missing", async () => {
+    const client = stubClient({
+      "sheetC::'2026'!1:1": { values: [["Ad name", "2026-05-18", "2026-05-19"]] },
+    });
+    const checks = await evaluateReferenceTabsFreshness({
+      now: MORNING,
+      client,
+      tabs: [TAB_APPENDED],
+    });
+    expect(checks[0].status).toBe("fail");
+  });
+
+  it("tabs without appendedByUtcHour keep the tight T-1 threshold in the morning", async () => {
+    const client = stubClient({
+      "sheetA::'Sheet1'!1:1": { values: [["Ad name", T2]] },
+    });
+    const checks = await evaluateReferenceTabsFreshness({
+      now: MORNING,
+      client,
+      tabs: [TAB_HEADER],
+    });
+    expect(checks[0].status).toBe("fail");
+    expect(checks[0].threshold).toBe("2026-05-21");
+  });
+});

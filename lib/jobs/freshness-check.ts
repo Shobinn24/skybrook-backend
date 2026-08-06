@@ -45,6 +45,7 @@ import {
   skus,
   stockSnapshots,
 } from "@/lib/db/schema";
+import type { SourceKey, SourceRunner } from "@/lib/jobs/ingest";
 import { affectedLabel } from "@/lib/jobs/lineage";
 import { logger } from "@/lib/logger";
 import { postAlert, resolveAlert } from "@/lib/notifications/slack";
@@ -68,7 +69,57 @@ export type FreshnessCheckResult = {
   checks: FreshnessCheck[];
   alertsFired: number;
   alertsResolved: number;
+  selfHeal: { attempted: boolean; healed: number; stillStale: number };
 };
+
+// --- Self-heal (2026-08-06). The recurring 5am P1 class: the morning
+// ingest pulls the ad-spend sheets at 5:00, Supermetrics' scheduled
+// refresh lands at ~5:07, and the 5:14 freshness sweep pages on a stale
+// DB table that the sheet has already outrun — a race that self-resolves
+// by the afternoon cron every time. Instead of paging, the sweep now
+// re-pulls JUST the stale sheet-fed source (idempotent, advisory-locked
+// via runIngest) and re-evaluates; it alerts only if the table is STILL
+// stale after the re-pull — i.e. the sheet itself has no fresher data,
+// which is a real Supermetrics outage and worth a page.
+const SELF_HEAL_AD_SPEND_PREFIX = "freshness:ad_spend_daily:product:";
+
+export function healSourcesFor(dedupKey: string | null): SourceKey[] {
+  if (!dedupKey) return [];
+  if (dedupKey === "freshness:fb_ad_spend_daily") return ["sheets_fb_ads"];
+  if (dedupKey === "freshness:applovin_ad_spend_daily") return ["sheets_applovin"];
+  if (dedupKey === "freshness:fb_campaign_daily") return ["sheets_fb_campaigns"];
+  if (dedupKey.startsWith(SELF_HEAL_AD_SPEND_PREFIX)) return ["sheets_ad_spend"];
+  return [];
+}
+
+// Default heal: surgical re-ingest of only the stale sheet sources.
+// Dynamic imports keep this module free of a static cycle with ingest.ts
+// (same pattern as the volume/column-quality evaluators above).
+async function defaultHealRunner(sources: SourceKey[]): Promise<void> {
+  const { runIngest } = await import("./ingest");
+  const sheets = await import("@/lib/sources/sheets");
+  const runnerBySource: Partial<Record<SourceKey, SourceRunner>> = {
+    sheets_ad_spend: sheets.sheetsAdSpendRunner,
+    sheets_fb_ads: sheets.sheetsFbAdsRunner,
+    sheets_fb_campaigns: sheets.sheetsFbCampaignsRunner,
+    sheets_applovin: sheets.sheetsApplovinRunner,
+  };
+  const pick: Partial<Record<SourceKey, SourceRunner>> = {};
+  for (const s of sources) {
+    const runner = runnerBySource[s];
+    if (runner) pick[s] = runner;
+  }
+  if (Object.keys(pick).length === 0) return;
+  const res = await runIngest({ sources: pick });
+  if (res.skipped) {
+    // Another ingest holds the advisory lock — it's landing the same
+    // sheets right now, so the re-evaluate below still gets fresh data
+    // (or the alert fires and the next tick resolves it).
+    logger.info("freshness.self_heal.ingest_skipped_concurrent", {
+      batchId: res.batchId,
+    });
+  }
+}
 
 // Tolerance: data must be present through at least yesterday EST. Today
 // is too tight (the cron itself populates today's row, so a check before
@@ -510,6 +561,12 @@ export async function runFreshnessCheck(opts?: {
   // /api/health (DB-only, fast) vs the cron (full sweep including
   // reference tabs). Defaults to enabled — explicit `false` opts out.
   includeReferenceTabs?: boolean;
+  // Self-heal re-pull for stale sheet-fed tables. Default OFF: the heal
+  // re-runs real sheet ingests, so only the scheduled cron routes opt in
+  // (selfHeal: true) — tests and ad-hoc callers stay side-effect-free.
+  // `healFn` injects a fake heal for tests.
+  selfHeal?: boolean;
+  healFn?: (sources: SourceKey[]) => Promise<void>;
 }): Promise<FreshnessCheckResult> {
   const { asOfDate: today, checks: evaluatedBase } = await evaluateFreshness(opts);
 
@@ -561,6 +618,59 @@ export async function runFreshnessCheck(opts?: {
   }
 
   const evaluated = [...evaluatedBase, ...evaluatedRefTabs];
+
+  // --- Self-heal pass. Runs BEFORE the alert loop: stale sheet-fed DB
+  // tables get one surgical re-pull, then a re-evaluate; only checks
+  // that are STILL stale afterwards page. See the header on
+  // healSourcesFor for the 5am race this exists to absorb.
+  const selfHeal = { attempted: false, healed: 0, stillStale: 0 };
+  const healableFailing = evaluated.filter(
+    (c) => c.status === "fail" && healSourcesFor(c.dedupKey).length > 0,
+  );
+  if (healableFailing.length > 0 && opts?.selfHeal === true) {
+    selfHeal.attempted = true;
+    const sources = [
+      ...new Set(healableFailing.flatMap((c) => healSourcesFor(c.dedupKey))),
+    ];
+    logger.info("freshness.self_heal.attempt", {
+      sources,
+      staleChecks: healableFailing.map((c) => c.name),
+    });
+    try {
+      await (opts?.healFn ?? defaultHealRunner)(sources);
+    } catch (err) {
+      // A failed heal is not itself a page — the still-stale check below
+      // fires the original alert, now annotated with the heal outcome.
+      logger.error("freshness.self_heal.failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    const re = await evaluateFreshness(opts);
+    const reByKey = new Map(
+      re.checks.filter((c) => c.dedupKey).map((c) => [c.dedupKey, c]),
+    );
+    for (let i = 0; i < evaluated.length; i++) {
+      const c = evaluated[i];
+      if (c.status !== "fail" || healSourcesFor(c.dedupKey).length === 0) continue;
+      const after = c.dedupKey ? reByKey.get(c.dedupKey) : undefined;
+      if (after && after.status === "pass") {
+        evaluated[i] = after;
+        selfHeal.healed++;
+      } else {
+        const base = after ?? c;
+        evaluated[i] = {
+          ...base,
+          fields: { ...base.fields, selfHeal: "re-pulled sheet, still stale" },
+        };
+        selfHeal.stillStale++;
+      }
+    }
+    logger.info("freshness.self_heal.done", {
+      healed: selfHeal.healed,
+      stillStale: selfHeal.stillStale,
+    });
+  }
+
   let alertsFired = 0;
   let alertsResolved = 0;
 
@@ -684,7 +794,8 @@ export async function runFreshnessCheck(opts?: {
     alertsFired,
     alertsResolved,
     trpcErrorsResolved: openTrpcErrors.length,
+    selfHeal,
   });
 
-  return { asOfDate: today, checks, alertsFired, alertsResolved };
+  return { asOfDate: today, checks, alertsFired, alertsResolved, selfHeal };
 }

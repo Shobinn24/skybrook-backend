@@ -152,7 +152,7 @@ export async function POST(req: Request) {
   const skipFreshness = new URL(req.url).searchParams.get("freshness") === "skip";
   const freshness = skipFreshness
     ? null
-    : await runFreshnessCheck({ includeReferenceTabs: true });
+    : await runFreshnessCheck({ includeReferenceTabs: true, selfHeal: true });
   const checkSummary = freshness
     ? {
         pass: freshness.checks.filter((c) => c.status === "pass").length,

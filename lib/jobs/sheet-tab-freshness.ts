@@ -29,6 +29,15 @@ export type MonitoredReferenceTab = {
   tabName: string;
   /** Where dates live in this tab's layout. */
   layout: "headerHasDates" | "columnAHasDates";
+  /**
+   * For tabs populated by a SCHEDULED daily append (not a continuous
+   * feed): the UTC hour by which the append has run. Before that hour
+   * the tab legitimately holds only T-2, so the check expects T-2 and
+   * only tightens to T-1 afterwards. Without this, every morning sweep
+   * pages on a "stale" tab whose new column isn't due for hours — the
+   * recurring 5am P1 that always self-resolved by noon (2026-08-06).
+   */
+  appendedByUtcHour?: number;
 };
 
 // Add a tab here when Scott (or anyone) starts using a new sheet view
@@ -47,6 +56,10 @@ export const MONITORED_REFERENCE_TABS: ReadonlyArray<MonitoredReferenceTab> = [
     sheetId: "1L-1NUuB46Vi4yzTCmzFG1f8MptEsr44ewKsVqlDfGOI",
     tabName: "2026",
     layout: "headerHasDates",
+    // Populated by runFbTracker2Append in the 16:00 UTC afternoon cron
+    // (deliberately late — FB's 48h finalization window). Until 17:00
+    // UTC, T-2 is the healthy state; T-1 is only expected afterwards.
+    appendedByUtcHour: 17,
   },
   // Monitoring 30D Check alongside 2026 detects divergence: if 30D
   // has T-1 but 2026 doesn't, only the 2026 check fails — that's the
@@ -122,24 +135,37 @@ export async function evaluateReferenceTabsFreshness(opts?: {
   // Sequential to keep within Sheets API per-second quota and to make
   // a transient 429 affect ONE tab's check, not all of them.
   for (const tab of tabs) {
+    // Scheduled-append tabs relax to T-2 before their append hour — see
+    // the appendedByUtcHour doc on MonitoredReferenceTab.
+    const preAppendWindow =
+      tab.appendedByUtcHour !== undefined &&
+      now().getUTCHours() < tab.appendedByUtcHour;
+    const tabThreshold = preAppendWindow
+      ? toEstDate(new Date(now().getTime() - 48 * 60 * 60 * 1000))
+      : threshold;
     const { maxDate, error } = await maxDateInTab(client, tab);
-    const stale = error !== undefined || maxDate === null || maxDate < threshold;
+    const stale = error !== undefined || maxDate === null || maxDate < tabThreshold;
     checks.push({
       name: `reference_tab.${tab.label}`,
       status: stale ? "fail" : "pass",
       maxDate,
-      threshold,
+      threshold: tabThreshold,
       dedupKey: `freshness:reference_tab:${tab.label}`,
       title: error
         ? `reference tab ${tab.label} unreadable: ${error}`
-        : `reference tab ${tab.label} is stale (max ${maxDate ?? "<none>"} < ${threshold})`,
+        : `reference tab ${tab.label} is stale (max ${maxDate ?? "<none>"} < ${tabThreshold})`,
       fields: {
         label: tab.label,
         sheetId: tab.sheetId,
         tabName: tab.tabName,
         layout: tab.layout,
         maxDate: maxDate ?? "<null>",
-        threshold,
+        threshold: tabThreshold,
+        ...(preAppendWindow
+          ? {
+              note: `pre-append window (before ${tab.appendedByUtcHour}:00 UTC): T-2 is healthy`,
+            }
+          : {}),
         ...(error ? { error } : {}),
       },
     });
