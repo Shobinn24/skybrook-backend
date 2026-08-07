@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { orderEmails, orderLineSizes } from "@/lib/db/schema";
+import { draftSourceOrders, orderEmails, orderLineSizes } from "@/lib/db/schema";
 import { getShopifyAccessToken } from "@/lib/sources/shopify-auth";
 import { logger } from "@/lib/logger";
 import { normalizedTitleSql } from "@/lib/queries/product-title-sql";
@@ -184,6 +184,107 @@ export async function syncOrderEmails(opts?: OrderSyncOpts): Promise<OrderEmailS
   return { configured: anyConfigured, stores: results };
 }
 
+export type DraftOrderSyncResult = {
+  configured: boolean;
+  stores: Array<{ store: string; orders: number; inserted: number; error?: string }>;
+};
+
+// Draft-sourced order ids (Scott 2026-08-06: the repeat-buyer metric
+// counts prior purchases EXCLUDING draft orders). The email/line walks
+// above don't fetch source_name; rather than re-walk 250k orders for one
+// extra field, this walk filters on source_name:shopify_draft_order and
+// lands only the draft subset in draft_source_orders. Same incremental
+// posture as syncOrderEmails: newest stored order_date minus a 2-day
+// overlap, or the full-history start when the table is empty /
+// fullHistory is passed.
+export async function syncDraftSourceOrders(
+  opts?: OrderSyncOpts,
+): Promise<DraftOrderSyncResult> {
+  const results: DraftOrderSyncResult["stores"] = [];
+  let anyConfigured = false;
+  const maxPages = opts?.fullHistory || opts?.from ? 4000 : 200;
+
+  for (const s of STORES) {
+    if (opts?.stores && !opts.stores.includes(s.label)) continue;
+    const domain = process.env[s.env]?.trim();
+    if (!domain) continue;
+    anyConfigured = true;
+    const r: DraftOrderSyncResult["stores"][number] = {
+      store: s.label,
+      orders: 0,
+      inserted: 0,
+    };
+    try {
+      const [newest] = await db
+        .select({ max: sql<string | null>`max(${draftSourceOrders.orderDate})` })
+        .from(draftSourceOrders)
+        .where(eq(draftSourceOrders.store, s.label));
+      const fromStr =
+        opts?.from ??
+        (opts?.fullHistory || !newest?.max
+          ? FULL_HISTORY_START
+          : new Date(new Date(newest.max).getTime() - 2 * 24 * 3600 * 1000)
+              .toISOString()
+              .slice(0, 10));
+      const rangeCond = `source_name:shopify_draft_order created_at:>=${fromStr}${opts?.toExclusive ? ` created_at:<${opts.toExclusive}` : ""}`;
+
+      const token = await getShopifyAccessToken(domain);
+      let cursor: string | null = null;
+      for (let page = 0; page < maxPages; page++) {
+        const query = `{ orders(first: 250, query: "${rangeCond}"${cursor ? `, after: "${cursor}"` : ""}) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id createdAt } } }`;
+        let resp: OrdersPage | undefined;
+        for (let attempt = 1; ; attempt++) {
+          try {
+            resp = (await fetch(`https://${domain}/admin/api/2025-10/graphql.json`, {
+              method: "POST",
+              headers: { "content-type": "application/json", "X-Shopify-Access-Token": token },
+              body: JSON.stringify({ query }),
+              signal: AbortSignal.timeout(60_000),
+            }).then((x) => x.json())) as OrdersPage;
+            break;
+          } catch (err) {
+            if (attempt >= 3) throw err;
+            logger.warn("draft_orders.page_retry", { store: s.label, page, attempt });
+            await sleep(5_000 * attempt);
+          }
+        }
+        if (!resp.data) throw new Error(`draft orders query failed: ${JSON.stringify(resp.errors).slice(0, 200)}`);
+
+        const rows: Array<{ store: string; shopifyOrderId: string; orderDate: string }> = [];
+        for (const o of resp.data.orders.nodes) {
+          r.orders += 1;
+          rows.push({
+            store: s.label,
+            // gid://shopify/Order/6191776623847 -> 6191776623847
+            shopifyOrderId: o.id.split("/").pop()!,
+            orderDate: o.createdAt.slice(0, 10),
+          });
+        }
+        if (rows.length > 0) {
+          const inserted = await db
+            .insert(draftSourceOrders)
+            .values(rows)
+            .onConflictDoNothing()
+            .returning({ id: draftSourceOrders.id });
+          r.inserted += inserted.length;
+        }
+        if (!resp.data.orders.pageInfo.hasNextPage) break;
+        cursor = resp.data.orders.pageInfo.endCursor;
+        await sleep(PAGE_DELAY_MS);
+      }
+    } catch (e) {
+      r.error = e instanceof Error ? e.message.slice(0, 200) : String(e);
+      logger.error("draft_orders.store_failed", { store: s.label, error: r.error });
+    }
+    results.push(r);
+  }
+
+  logger.info("draft_orders.sync.done", { stores: results });
+  return { configured: anyConfigured, stores: results };
+}
+
 export type VerifyResult = { verified: number; unverified: number; unknown: number };
 
 export async function verifyReviewPurchases(): Promise<VerifyResult> {
@@ -262,6 +363,16 @@ export async function runPurchaseVerification(opts?: { fullHistory?: boolean }):
   verify: VerifyResult;
 }> {
   const syncResult = await syncOrderEmails(opts);
+  // Draft-order ids ride the same cron slot (Scott 2026-08-06, repeat-buyer
+  // exclusion). Best-effort: a draft-walk hiccup must not block review
+  // verification; its own store_failed log line covers visibility.
+  try {
+    await syncDraftSourceOrders(opts);
+  } catch (e) {
+    logger.error("draft_orders.sync_failed", {
+      error: e instanceof Error ? e.message.slice(0, 200) : String(e),
+    });
+  }
   const verify = syncResult.configured
     ? await verifyReviewPurchases()
     : { verified: 0, unverified: 0, unknown: 0 };

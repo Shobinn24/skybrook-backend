@@ -1045,6 +1045,29 @@ export const orderLineSizes = pgTable(
   ],
 );
 
+// Draft-sourced order ids (Scott 2026-08-06: the repeat-buyer metric
+// counts prior purchases EXCLUDING draft orders — CS reships, phone
+// orders — which run ~10/day on main and would inflate repeat rates).
+// The order walks don't fetch source_name; rather than re-walk 250k
+// orders with an extra field, a filtered walk on
+// source_name:shopify_draft_order lands just the draft subset here for
+// exclusion joins against order_emails / order_line_sizes. Populated by
+// syncDraftSourceOrders (incremental each cron; fullHistory backfill).
+export const draftSourceOrders = pgTable(
+  "draft_source_orders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    store: text("store").notNull(), // 'main' | 'intl'
+    shopifyOrderId: text("shopify_order_id").notNull(), // numeric gid tail
+    orderDate: date("order_date").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("draft_source_orders_grain_uq").on(t.store, t.shopifyOrderId),
+    index("draft_source_orders_date_idx").on(t.store, t.orderDate),
+  ],
+);
+
 // ── Sizing exchange analysis (Scott 2026-07-15) ─────────────────────
 // Source: the CS returns/replacements workbook, tab EV (one workbook per
 // year). Raw columns are kept verbatim; label/size/direction are derived
