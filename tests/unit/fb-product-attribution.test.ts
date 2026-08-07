@@ -2,9 +2,12 @@ import { describe, it, expect } from "vitest";
 import {
   attributeAppLovinAd,
   attributeFbAd,
+  attributeFbPrefix,
   attributeUrlProduct,
   canonicalProductLabel,
   normalizeFunnelUrl,
+  FB_INTENTIONAL_UNMAPPED_TOKENS,
+  isIntentionalUnmappedPrefix,
 } from "@/lib/domain/fb-product-attribution";
 
 describe("normalizeFunnelUrl", () => {
@@ -187,5 +190,32 @@ describe("attributeUrlProduct", () => {
     expect(attributeUrlProduct("https://everdries.com/")?.bucket).toBe("brand");
     expect(attributeUrlProduct("https://everdries.com/comfortplus")?.bucket).toBe("product");
     expect(attributeUrlProduct("https://everdries.com/clearance")?.bucket).toBe("clearance");
+  });
+});
+
+// --- Intentional-unmapped allowlist (task #119) -------------------------
+describe("isIntentionalUnmappedPrefix", () => {
+  const TOKENS = new Map([["lav", "confirmed test — test fixture"]]);
+
+  it("matches on the first token, lowercased, across variants", () => {
+    expect(isIntentionalUnmappedPrefix("LAV", TOKENS)).toBe(true);
+    expect(isIntentionalUnmappedPrefix("LAV CC", TOKENS)).toBe(true);
+    expect(isIntentionalUnmappedPrefix("lav intl", TOKENS)).toBe(true);
+  });
+
+  it("does not match other prefixes or empties", () => {
+    expect(isIntentionalUnmappedPrefix("Botshort CC", TOKENS)).toBe(false);
+    expect(isIntentionalUnmappedPrefix("", TOKENS)).toBe(false);
+    expect(isIntentionalUnmappedPrefix("   ", TOKENS)).toBe(false);
+  });
+
+  it("ships with an EMPTY production allowlist until a marketer confirms an entry", () => {
+    // Guard against casual additions: every real entry must come with a
+    // confirmed who/when note (see the constant's header comment).
+    expect(FB_INTENTIONAL_UNMAPPED_TOKENS.size).toBe(0);
+  });
+
+  it("allowlisting does NOT change attribution — spend stays visibly Unmapped", () => {
+    expect(attributeFbPrefix("LAV CC")).toEqual({ product: "Unmapped", bucket: "unmapped" });
   });
 });

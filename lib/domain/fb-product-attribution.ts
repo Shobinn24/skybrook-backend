@@ -70,6 +70,38 @@ export function attributeFbAd(adNameRaw: string): FbAttribution {
   return attributeFbPrefix(extractFbPrefix(adNameRaw));
 }
 
+// --- Intentional-unmapped allowlist (task #119) -------------------------
+//
+// Some prefixes are reviewed with the marketing team and DELIBERATELY left
+// unmapped — a one-off test campaign, a promo that spans products, a
+// naming experiment. Before this list existed, the only ways to quiet the
+// recurring digest alert for such a prefix were to rename the ads or to
+// invent a product mapping, both wrong ("Homepage" lived in that limbo for
+// weeks in July before getting its brand bucket).
+//
+// Allowlisting a prefix ONLY suppresses the fb-prefix digest alert. The
+// spend still lands in the Unmapped bucket on /performance — decision
+// 2026-06-25: the tool's dependency on correct ad naming stays VISIBLE,
+// never silently papered over. The open alert for a newly-allowlisted
+// prefix auto-resolves on the next freshness sweep (the vanished-check
+// drain in runFreshnessCheck).
+//
+// Match is on the FIRST token of the prefix, lowercased — the same
+// dispatch grain as the map above, so "(LAV CC)" and "(LAV INTL)" share
+// one entry. Add entries ONLY after the marketer confirms the prefix is
+// intentional, and record who confirmed and when.
+export const FB_INTENTIONAL_UNMAPPED_TOKENS: ReadonlyMap<string, string> = new Map([
+  // ["lav", "confirmed one-off test campaign — <who>, <YYYY-MM-DD>"],
+]);
+
+export function isIntentionalUnmappedPrefix(
+  prefixInner: string,
+  tokens: ReadonlyMap<string, string> = FB_INTENTIONAL_UNMAPPED_TOKENS,
+): boolean {
+  const first = (prefixInner ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  return first !== "" && tokens.has(first);
+}
+
 // AppLovin ad names carry the product in a pipe-delimited segment, e.g.
 //   "<hash>_<adnum> | 9055 | Raul x Applovin 37 | Multi"  -> 9055
 //   "<hash>_<adnum> | HW Gifts | Craig Vid 239"           -> HW

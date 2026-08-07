@@ -79,4 +79,30 @@ describe("evaluateFbPrefixCoverage", () => {
     const checks = await evaluateFbPrefixCoverage();
     expect(checks).toEqual([]);
   });
+
+  // --- Intentional-unmapped allowlist (task #119) -----------------------
+  it("suppresses an allowlisted prefix across its variants; others still fire", async () => {
+    const pull = await seedPull();
+    await db.insert(fbAdSpendDaily).values([
+      // Allowlisted token "lav" in two variants, both over threshold.
+      { adNumber: "10", adName: "a", adNameRaw: "(LAV CC) Ad 10 - test", adPrefix: "LAV CC", adLink: null, marketers: [], spendDate: D, costUsd: "600", sourcePullId: pull },
+      { adNumber: "11", adName: "b", adNameRaw: "(LAV INTL) Ad 11 - test", adPrefix: "LAV INTL", adLink: null, marketers: [], spendDate: D, costUsd: "700", sourcePullId: pull },
+      // A genuinely unmapped typo prefix must STILL fire.
+      { adNumber: "12", adName: "c", adNameRaw: "(Botshort CC) Ad 12 - typo", adPrefix: "Botshort CC", adLink: null, marketers: [], spendDate: D, costUsd: "800", sourcePullId: pull },
+    ]);
+    const checks = await evaluateFbPrefixCoverage({
+      intentionalTokens: new Map([["lav", "test fixture"]]),
+    });
+    const names = checks.map((c) => c.name);
+    expect(names).toEqual(["fb_prefix.botshort_cc"]);
+  });
+
+  it("empty allowlist changes nothing (default behavior preserved)", async () => {
+    const pull = await seedPull();
+    await db.insert(fbAdSpendDaily).values([
+      { adNumber: "13", adName: "d", adNameRaw: "(LAV CC) Ad 13 - test", adPrefix: "LAV CC", adLink: null, marketers: [], spendDate: D, costUsd: "600", sourcePullId: pull },
+    ]);
+    const checks = await evaluateFbPrefixCoverage();
+    expect(checks.map((c) => c.name)).toEqual(["fb_prefix.lav_cc"]);
+  });
 });

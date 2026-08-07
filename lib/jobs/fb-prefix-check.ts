@@ -24,7 +24,11 @@
 import { max, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { fbAdSpendDaily } from "@/lib/db/schema";
-import { attributeFbPrefix } from "@/lib/domain/fb-product-attribution";
+import {
+  attributeFbPrefix,
+  FB_INTENTIONAL_UNMAPPED_TOKENS,
+  isIntentionalUnmappedPrefix,
+} from "@/lib/domain/fb-product-attribution";
 import type { EvaluatedCheck } from "@/lib/jobs/freshness-check";
 
 // Subtract `days` from a YYYY-MM-DD string. UTC math (plain calendar
@@ -45,9 +49,12 @@ export async function evaluateFbPrefixCoverage(opts?: {
   recentDays?: number;
   // Cumulative spend (USD) at/above which an unmapped prefix alerts.
   minSpendUsd?: number;
+  // Test override for the intentional-unmapped allowlist (task #119).
+  intentionalTokens?: ReadonlyMap<string, string>;
 }): Promise<EvaluatedCheck[]> {
   const recentDays = opts?.recentDays ?? 14;
   const minSpendUsd = opts?.minSpendUsd ?? 500;
+  const intentionalTokens = opts?.intentionalTokens ?? FB_INTENTIONAL_UNMAPPED_TOKENS;
 
   const [maxRow] = await db
     .select({ max: max(fbAdSpendDaily.spendDate) })
@@ -80,6 +87,10 @@ export async function evaluateFbPrefixCoverage(opts?: {
     // "rename this prefix" instruction; skip.
     if (!prefix) continue;
     if (attributeFbPrefix(prefix).bucket !== "unmapped") continue;
+    // Task #119: reviewed-and-intentional prefixes don't re-page every
+    // window. Their spend stays in the Unmapped bucket on /performance;
+    // any open alert drains on the next sweep once the check vanishes.
+    if (isIntentionalUnmappedPrefix(prefix, intentionalTokens)) continue;
     const cost = Number(r.cost ?? 0);
     const prev = byPrefix.get(prefix);
     if (prev) {
