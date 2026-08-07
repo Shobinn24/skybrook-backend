@@ -133,6 +133,28 @@ export function pickLatestColumn(
   return pick;
 }
 
+// The latest `count` DISTINCT-date columns ≤ todayYmd, newest first. For a
+// duplicated date header, the rightmost column wins (same tie-break as
+// pickLatestColumn). Lets the inventory fetch fall back to the previous
+// day's column when the newest header has no data under it yet — the
+// 2026-07-30 EV Sec CN episode: a date header added before the counts were
+// pasted made the ingest read an empty column and land a half-sized pull.
+export function pickLatestColumns(
+  parsed: ReadonlyArray<{ colIdx: number; date: string }>,
+  todayYmd: string,
+  count: number
+): Array<{ colIdx: number; date: string }> {
+  const byDate = new Map<string, { colIdx: number; date: string }>();
+  for (const p of parsed) {
+    if (p.date > todayYmd) continue;
+    const cur = byDate.get(p.date);
+    if (!cur || p.colIdx >= cur.colIdx) byDate.set(p.date, p);
+  }
+  return [...byDate.values()]
+    .sort((a, b) => (a.date < b.date ? 1 : -1))
+    .slice(0, count);
+}
+
 export function parseQty(v: unknown): number | null {
   if (v == null || v === "") return null;
   if (typeof v === "number") return Number.isFinite(v) ? Math.trunc(v) : null;

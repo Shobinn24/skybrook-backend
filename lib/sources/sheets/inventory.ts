@@ -10,7 +10,7 @@ import {
   canonicalizeInventorySku,
   colIndexToA1,
   parseQty,
-  pickLatestColumn,
+  pickLatestColumns,
   walkDateHeaders,
 } from "./parse-helpers";
 
@@ -65,9 +65,12 @@ export async function fetchInventorySnapshots(input: {
     tab: string;
     productLine: "Main" | "HF" | "Sec";
     location: "US" | "CN";
-    snapshotDate: string;
+    // Newest candidate first; fetch pulls a qty column for each. The
+    // snapshot uses the newest column WITH data (2026-07-30 EV Sec CN
+    // episode: a date header added before counts were pasted made the
+    // old single-column read land an empty pull).
+    candidates: Array<{ date: string; colLetter: string; qtyRangeIdx: number }>;
     skuRangeIdx: number;
-    qtyRangeIdx: number;
   };
   const dataRanges: string[] = [];
   const pending: (Pending | null)[] = [];
@@ -75,24 +78,28 @@ export async function fetchInventorySnapshots(input: {
   for (let i = 0; i < INVENTORY_TABS.length; i++) {
     const t = INVENTORY_TABS[i];
     const parsed = walkDateHeaders(headerRows[i] ?? [], todayYmd);
-    const latest = pickLatestColumn(parsed, todayYmd);
-    if (!latest) {
+    const picks = pickLatestColumns(parsed, todayYmd, 2);
+    if (picks.length === 0) {
       pending.push(null);
       headerSummary[t.tab] = "no parseable date column ≤ today";
       continue;
     }
-    const colLetter = colIndexToA1(latest.colIdx);
-    headerSummary[t.tab] = `${latest.date} → col ${colLetter}`;
+    const skuRangeIdx = dataRanges.length;
+    dataRanges.push(`'${t.tab}'!A2:A`);
+    const candidates = picks.map((p) => {
+      const colLetter = colIndexToA1(p.colIdx);
+      const qtyRangeIdx = dataRanges.length;
+      dataRanges.push(`'${t.tab}'!${colLetter}2:${colLetter}`);
+      return { date: p.date, colLetter, qtyRangeIdx };
+    });
+    headerSummary[t.tab] = `${candidates[0].date} → col ${candidates[0].colLetter}`;
     pending.push({
       tab: t.tab,
       productLine: t.productLine,
       location: t.location,
-      snapshotDate: latest.date,
-      skuRangeIdx: dataRanges.length,
-      qtyRangeIdx: dataRanges.length + 1,
+      candidates,
+      skuRangeIdx,
     });
-    dataRanges.push(`'${t.tab}'!A2:A`);
-    dataRanges.push(`'${t.tab}'!${colLetter}2:${colLetter}`);
   }
 
   if (dataRanges.length === 0) {
@@ -109,26 +116,59 @@ export async function fetchInventorySnapshots(input: {
   for (const meta of pending) {
     if (!meta) continue;
     const skuCol = (dataValues[meta.skuRangeIdx]?.values ?? []) as unknown[][];
-    const qtyCol = (dataValues[meta.qtyRangeIdx]?.values ?? []) as unknown[][];
-    const len = Math.min(skuCol.length, qtyCol.length);
-    const rows: Array<{ sku: string; onHand: number }> = [];
-    for (let r = 0; r < len; r++) {
-      // Inventory sheet has historically mixed cases (`EV-mixed-xxs` next to
-      // `ev-hw-xxs`) and dash-form pack tokens (`ev-9055-hf-5-l` instead of
-      // the canonical `ev-9055-hf-5x-l` Shopify daily_sales lands on after
-      // `b89fbd6`/`9641126`). Lowercase + canonicalize at parse so `skus`
-      // and `stock_snapshots` end up in the same canonical form as
-      // `daily_sales`, preventing case- or dash-form-mirrored orphans.
-      const sku = canonicalizeInventorySku(String(skuCol[r]?.[0] ?? ""));
-      const qty = parseQty(qtyCol[r]?.[0]);
-      if (!sku || qty === null) continue;
-      rows.push({ sku, onHand: qty });
+
+    const buildRows = (qtyCol: unknown[][]) => {
+      const len = Math.min(skuCol.length, qtyCol.length);
+      const rows: Array<{ sku: string; onHand: number }> = [];
+      for (let r = 0; r < len; r++) {
+        // Inventory sheet has historically mixed cases (`EV-mixed-xxs` next to
+        // `ev-hw-xxs`) and dash-form pack tokens (`ev-9055-hf-5-l` instead of
+        // the canonical `ev-9055-hf-5x-l` Shopify daily_sales lands on after
+        // `b89fbd6`/`9641126`). Lowercase + canonicalize at parse so `skus`
+        // and `stock_snapshots` end up in the same canonical form as
+        // `daily_sales`, preventing case- or dash-form-mirrored orphans.
+        const sku = canonicalizeInventorySku(String(skuCol[r]?.[0] ?? ""));
+        const qty = parseQty(qtyCol[r]?.[0]);
+        if (!sku || qty === null) continue;
+        rows.push({ sku, onHand: qty });
+      }
+      return rows;
+    };
+
+    // A pasted tab has a count for (nearly) every listed SKU, so a column
+    // holding data for under a quarter of them is a header-without-counts
+    // state, not a real snapshot. Fall back to the previous date column
+    // when it has real data; the older snapshotDate then keeps the
+    // freshness check honest (counts never pasted → stale → page), while
+    // the row count never silently halves again.
+    const skuRowCount = skuCol.filter(
+      (r) => canonicalizeInventorySku(String(r?.[0] ?? "")) !== ""
+    ).length;
+    const minRows = Math.max(1, Math.floor(skuRowCount * 0.25));
+
+    let chosen = meta.candidates[0];
+    let rows = buildRows(
+      (dataValues[chosen.qtyRangeIdx]?.values ?? []) as unknown[][]
+    );
+    if (rows.length < minRows && meta.candidates.length > 1) {
+      const prev = meta.candidates[1];
+      const prevRows = buildRows(
+        (dataValues[prev.qtyRangeIdx]?.values ?? []) as unknown[][]
+      );
+      if (prevRows.length >= minRows) {
+        headerSummary[meta.tab] =
+          `${prev.date} → col ${prev.colLetter} ` +
+          `(newest ${chosen.date} col ${chosen.colLetter} has ${rows.length}/${skuRowCount} counts, fell back)`;
+        chosen = prev;
+        rows = prevRows;
+      }
     }
+
     snapshots.push({
       tab: meta.tab,
       productLine: meta.productLine,
       location: meta.location,
-      snapshotDate: meta.snapshotDate,
+      snapshotDate: chosen.date,
       rows,
     });
   }
