@@ -800,3 +800,100 @@ describe("runFreshnessCheck self-heal", () => {
     expect(result.checks.find((c) => c.name === "fb_ad_spend_daily")?.status).toBe("pass");
   });
 });
+
+// --- FB-feed pre-refresh window (2026-08-07): the FB Ads Tracker queries
+// feeding fb_ad_spend_daily / fb_campaign_daily refresh ~11:30 UTC, after
+// the 5am sweep, so T-2 is the healthy morning state for those two tables.
+describe("fb feed pre-refresh window", () => {
+  const MORNING_NOW = () => new Date("2026-05-13T09:14:00Z"); // 5:14am ET sweep
+  // FAKE_NOW (20:00Z) is past the 13:00 UTC gate — tight threshold.
+
+  beforeEach(async () => {
+    await truncate();
+    await seedRawPull();
+    process.env.SLACK_WEBHOOK_ALERTS_URL = "https://hooks.slack.test/alerts";
+    process.env.SLACK_WEBHOOK_DIGEST_URL = "https://hooks.slack.test/digest";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("ok", { status: 200 })),
+    );
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.unstubAllGlobals();
+  });
+
+  async function seedFb(spendDate: string) {
+    await db.insert(fbAdSpendDaily).values({
+      adNumber: "2001",
+      adName: "window ad",
+      adNameRaw: "window ad raw",
+      adLink: null,
+      marketers: [],
+      spendDate,
+      costUsd: "10.0",
+      sourcePullId: seededRawPullId,
+    });
+  }
+
+  it("passes fb_ad_spend_daily with only T-2 during the morning window", async () => {
+    await seedFb(TWO_DAYS_AGO_EST);
+    const { checks } = await evaluateFreshness({ now: MORNING_NOW });
+    const fb = checks.find((c) => c.name === "fb_ad_spend_daily");
+    expect(fb?.status).toBe("pass");
+    expect(fb?.threshold).toBe(TWO_DAYS_AGO_EST);
+    expect(String(fb?.fields.note ?? "")).toContain("pre-refresh window");
+  });
+
+  it("fails fb_ad_spend_daily in the morning window when even T-2 is missing", async () => {
+    await seedFb("2026-05-10"); // T-3
+    const { checks } = await evaluateFreshness({ now: MORNING_NOW });
+    expect(checks.find((c) => c.name === "fb_ad_spend_daily")?.status).toBe("fail");
+  });
+
+  it("keeps the tight T-1 threshold after the gate (T-2 fails at 20:00Z)", async () => {
+    await seedFb(TWO_DAYS_AGO_EST);
+    const { checks } = await evaluateFreshness({ now: fixedNow });
+    const fb = checks.find((c) => c.name === "fb_ad_spend_daily");
+    expect(fb?.status).toBe("fail");
+    expect(fb?.threshold).toBe(YESTERDAY_EST);
+    expect(fb?.fields.note).toBeUndefined();
+  });
+
+  it("applies the same window to fb_campaign_daily", async () => {
+    await db.insert(fbCampaignDaily).values({
+      campaignName: "Window Campaign",
+      spendDate: TWO_DAYS_AGO_EST,
+      costUsd: "10.0",
+      purchaseValueUsd: "20.0",
+      sourcePullId: seededRawPullId,
+    });
+    const { checks } = await evaluateFreshness({ now: MORNING_NOW });
+    expect(checks.find((c) => c.name === "fb_campaign_daily")?.status).toBe("pass");
+    const late = await evaluateFreshness({ now: fixedNow });
+    expect(late.checks.find((c) => c.name === "fb_campaign_daily")?.status).toBe("fail");
+  });
+
+  it("morning window means no self-heal attempt for a T-2 fb table", async () => {
+    await seedFb(TWO_DAYS_AGO_EST);
+    await db.insert(fbCampaignDaily).values({
+      campaignName: "Window Campaign",
+      spendDate: TWO_DAYS_AGO_EST,
+      costUsd: "10.0",
+      purchaseValueUsd: "20.0",
+      sourcePullId: seededRawPullId,
+    });
+    const healFn = vi.fn(async (_sources: string[]) => {});
+    await runFreshnessCheck({
+      now: MORNING_NOW,
+      includeReferenceTabs: false,
+      selfHeal: true,
+      healFn,
+    });
+    for (const call of healFn.mock.calls) {
+      expect(call[0]).not.toContain("sheets_fb_ads");
+      expect(call[0]).not.toContain("sheets_fb_campaigns");
+    }
+  });
+});

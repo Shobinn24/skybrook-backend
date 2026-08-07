@@ -226,18 +226,48 @@ export async function evaluateFreshness(opts?: {
     );
   }
 
+  // fb_ad_spend_daily and fb_campaign_daily are fed by Supermetrics
+  // queries on the FB Ads Tracker sheet ("FB Ads Live" / "Campaign Daily")
+  // whose scheduled trigger fires ~11:30 UTC (~7:30am ET) — two hours
+  // AFTER the 5am sweep. Found 2026-08-07, the first morning of the
+  // self-heal: the heal re-pulled the sheet and correctly reported
+  // "still stale", because the source is stale ON SCHEDULE at that hour.
+  // Same treatment as the 2026 tab's append window: before the refresh
+  // gate the healthy state is T-2; the tight T-1 threshold applies once
+  // the trigger has had time to run, so a genuinely broken refresh still
+  // pages the same day (noon sweep at the latest).
+  const FB_LIVE_REFRESH_GATE_UTC_HOUR = 13;
+  const preFbRefreshWindow = now().getUTCHours() < FB_LIVE_REFRESH_GATE_UTC_HOUR;
+  const fbFeedThreshold = preFbRefreshWindow
+    ? toEstDate(new Date(now().getTime() - 48 * 60 * 60 * 1000))
+    : threshold;
+  const fbFeedNote = preFbRefreshWindow
+    ? {
+        note: `pre-refresh window (before ${FB_LIVE_REFRESH_GATE_UTC_HOUR}:00 UTC): T-2 is healthy, source query refreshes ~11:30 UTC`,
+      }
+    : {};
+
   const [fbAdSpendRow] = await db
     .select({ max: max(fbAdSpendDaily.spendDate) })
     .from(fbAdSpendDaily);
-  checks.push(
-    evalOne(
-      "fb_ad_spend_daily",
-      "freshness:fb_ad_spend_daily",
-      "fb_ad_spend_daily is stale",
-      fbAdSpendRow?.max ?? null,
-      { table: "fb_ad_spend_daily" },
-    ),
-  );
+  {
+    const maxDate = fbAdSpendRow?.max ?? null;
+    const stale = maxDate === null || maxDate < fbFeedThreshold;
+    checks.push({
+      name: "fb_ad_spend_daily",
+      status: stale ? "fail" : "pass",
+      maxDate,
+      threshold: fbFeedThreshold,
+      dedupKey: "freshness:fb_ad_spend_daily",
+      title: "fb_ad_spend_daily is stale",
+      fields: {
+        table: "fb_ad_spend_daily",
+        maxDate: maxDate ?? "<null>",
+        threshold: fbFeedThreshold,
+        ...fbFeedNote,
+      },
+    });
+  }
 
   // AppLovin feed (dedicated "AppLovin Live" Supermetrics sheet). p2 →
   // #skybrook-digest, not a page: the daily scheduled refresh is newly set
@@ -269,16 +299,22 @@ export async function evaluateFreshness(opts?: {
     .from(fbCampaignDaily);
   {
     const maxDate = campaignRow?.max ?? null;
-    const stale = maxDate === null || maxDate < threshold;
+    // Same FB Ads Tracker ~11:30 UTC trigger as fb_ad_spend_daily above.
+    const stale = maxDate === null || maxDate < fbFeedThreshold;
     checks.push({
       name: "fb_campaign_daily",
       status: stale ? "fail" : "pass",
       maxDate,
-      threshold,
+      threshold: fbFeedThreshold,
       dedupKey: "freshness:fb_campaign_daily",
       title: "fb_campaign_daily is stale",
       severity: "p2",
-      fields: { table: "fb_campaign_daily", maxDate: maxDate ?? "<null>", threshold },
+      fields: {
+        table: "fb_campaign_daily",
+        maxDate: maxDate ?? "<null>",
+        threshold: fbFeedThreshold,
+        ...fbFeedNote,
+      },
     });
   }
 
